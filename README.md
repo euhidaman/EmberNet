@@ -100,6 +100,19 @@ python training/prepare_data.py --dataset textvqa chartqa --output-dir ./data
 python training/prepare_data.py --explain
 ```
 
+**What gets saved:**
+After downloading, you'll have:
+- `./data/{dataset_name}/` - Each dataset in its own folder
+- `./data/download_manifest.json` - **Central tracking file** with all download info
+- `./data/dataset_index.json` - Index mapping datasets to stages/domains
+- `./data/{dataset_name}/metadata.json` - Individual dataset metadata
+
+The **download_manifest.json** tracks:
+- All download sessions with timestamps
+- Dataset metadata (samples, size, domain, expert)
+- Download times and success/failure status
+- File paths and HuggingFace IDs
+
 ---
 
 #### Step 4: Train the Model

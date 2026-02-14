@@ -97,6 +97,7 @@ REQUIREMENTS:
 import sys
 import json
 import argparse
+import time
 from pathlib import Path
 from typing import List, Dict
 
@@ -426,6 +427,8 @@ def download_dataset(
     print(f"  Stage:       {info['stage']}")
     print(f"{'='*70}\n")
 
+    start_time = time.time()
+
     try:
         # Load dataset from HuggingFace
         ds = load_dataset(hf_name, trust_remote_code=True)
@@ -434,19 +437,30 @@ def download_dataset(
         save_path.mkdir(parents=True, exist_ok=True)
         ds.save_to_disk(str(save_path))
 
-        # Save metadata
+        download_time = time.time() - start_time
+
+        # Save detailed metadata
         metadata = {
+            "dataset_key": dataset_key,
             "hf_name": hf_name,
             "domain": info["domain"],
+            "expert": info.get("expert", "N/A"),
             "stage": info["stage"],
             "priority": info["priority"],
+            "description": info["description"],
             "splits": list(ds.keys()),
             "num_samples": {split: len(ds[split]) for split in ds.keys()},
+            "total_samples": sum(len(ds[split]) for split in ds.keys()),
+            "estimated_size_gb": info["size_gb"],
+            "download_time_seconds": round(download_time, 2),
+            "save_path": str(save_path.absolute()),
+            "download_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         with open(save_path / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
 
         print(f"✓ Successfully saved {dataset_key} to {save_path}")
+        print(f"  Download time: {download_time:.1f} seconds")
         return True
 
     except Exception as e:
@@ -459,8 +473,14 @@ def download_all_datasets(
     output_dir: Path,
     force: bool = False,
 ) -> Dict[str, bool]:
-    """Download multiple datasets with progress tracking."""
+    """Download multiple datasets with progress tracking and manifest logging."""
     results = {}
+    download_session = {
+        "session_start": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "datasets_requested": dataset_keys,
+        "output_dir": str(output_dir.absolute()),
+        "downloads": []
+    }
 
     total_size = get_total_size(dataset_keys)
     print(f"\n{'#'*70}")
@@ -472,9 +492,58 @@ def download_all_datasets(
     print(f"\nThis may take a while depending on your internet connection...")
     print(f"{'#'*70}\n")
 
+    session_start_time = time.time()
+
     for i, key in enumerate(dataset_keys, 1):
         print(f"\n[{i}/{len(dataset_keys)}] Processing {key}...")
-        results[key] = download_dataset(key, output_dir, force)
+        success = download_dataset(key, output_dir, force)
+        results[key] = success
+
+        # Load metadata from individual dataset folder if successful
+        if success:
+            metadata_path = output_dir / key / "metadata.json"
+            if metadata_path.exists():
+                with open(metadata_path) as f:
+                    dataset_metadata = json.load(f)
+                    download_session["downloads"].append({
+                        "dataset_key": key,
+                        "status": "success",
+                        "metadata": dataset_metadata
+                    })
+        else:
+            download_session["downloads"].append({
+                "dataset_key": key,
+                "status": "failed",
+                "error": "Download failed"
+            })
+
+    session_total_time = time.time() - session_start_time
+    download_session["session_end"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    download_session["total_time_seconds"] = round(session_total_time, 2)
+    download_session["successful_downloads"] = sum(1 for v in results.values() if v)
+    download_session["failed_downloads"] = sum(1 for v in results.values() if not v)
+
+    # Save download session manifest
+    manifest_path = output_dir / "download_manifest.json"
+
+    # Load existing manifest if it exists
+    if manifest_path.exists():
+        with open(manifest_path) as f:
+            manifest_data = json.load(f)
+            if "sessions" not in manifest_data:
+                manifest_data = {"sessions": []}
+    else:
+        manifest_data = {"sessions": []}
+
+    # Append this session
+    manifest_data["sessions"].append(download_session)
+    manifest_data["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Save manifest
+    with open(manifest_path, "w") as f:
+        json.dump(manifest_data, f, indent=2)
+
+    print(f"\n✓ Download manifest saved to {manifest_path}")
 
     return results
 
@@ -772,6 +841,12 @@ Examples:
     print(f"\nData directory: {output_dir.absolute()}")
     print(f"Stage 1 datasets: {len(index['by_stage']['1'])}")
     print(f"Stage 2 datasets: {len(index['by_stage']['2'])}")
+
+    # Manifest file info
+    manifest_path = output_dir / "download_manifest.json"
+    if manifest_path.exists():
+        print(f"\n📋 Download tracking manifest: {manifest_path}")
+        print(f"   This file contains detailed info about all downloaded datasets")
 
     # Next steps
     print("\n" + "="*70)

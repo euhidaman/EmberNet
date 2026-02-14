@@ -3,7 +3,10 @@
 # =============================================================================
 # DATA DIRECTORIES (Large files - never commit)
 # =============================================================================
-data/
+data/*
+!data/.gitkeep
+!data/download_manifest.json
+!data/dataset_index.json
 datasets/
 *.h5
 *.hdf5
