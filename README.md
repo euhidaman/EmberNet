@@ -19,43 +19,207 @@ A high-quality, tiny BitNet b1.58-style Mixture-of-Experts Vision-Language Model
 
 ## Quick Start
 
-### Step 1: Install Dependencies
+### Complete Setup & Training Guide
+
+Follow these steps in order to set up and train EmberNet:
+
+#### Step 1: Install Dependencies
 
 ```bash
+# Navigate to project directory
 cd EmberNet
+
+# Install all required packages
 pip install -r requirements.txt
 ```
 
-### Step 2: Download Training Data
+**Required packages:**
+- `torch>=2.0.0` - Deep learning framework
+- `transformers>=4.36.0` - HuggingFace transformers (for SigLIP)
+- `datasets>=2.14.0` - HuggingFace datasets
+- `wandb>=0.16.0` - Experiment tracking
+- `huggingface_hub>=0.19.0` - HuggingFace authentication
+- `Pillow>=9.0.0` - Image processing
+- `einops>=0.7.0` - Tensor operations
+- `numpy>=1.24.0` - Numerical computing
 
+---
+
+#### Step 2: Authentication Setup
+
+**2a. HuggingFace Login** (REQUIRED - for downloading datasets):
 ```bash
-# See all available datasets
+# Login to HuggingFace
+huggingface-cli login
+
+# When prompted, enter your HuggingFace token
+# Get your token from: https://huggingface.co/settings/tokens
+# Create a token with "read" permissions
+```
+
+**2b. Weights & Biases Login** (OPTIONAL - for experiment tracking):
+```bash
+# Login to W&B
+wandb login
+
+# When prompted, enter your W&B API key
+# Get your API key from: https://wandb.ai/authorize
+# This enables training visualization and metric tracking
+```
+
+---
+
+#### Step 3: Download Training Datasets
+
+**Choose one option based on your needs:**
+
+**Option A: Recommended (~70GB)** - Best balance of quality and size
+```bash
+python training/prepare_data.py --recommended --output-dir ./data
+```
+
+**Option B: All Datasets (~100GB)** - Maximum quality
+```bash
+python training/prepare_data.py --all --output-dir ./data
+```
+
+**Option C: Minimal (~10GB)** - Quick testing only
+```bash
+python training/prepare_data.py --minimal --output-dir ./data
+```
+
+**Other useful commands:**
+```bash
+# List all available datasets before downloading
 python training/prepare_data.py --list
 
-# Download recommended datasets (~70GB) - BEST BALANCE
-python training/prepare_data.py --recommended
+# Download specific datasets only
+python training/prepare_data.py --dataset textvqa chartqa --output-dir ./data
 
-# OR download ALL datasets for maximum quality (~100GB)
-python training/prepare_data.py --all
-
-# OR minimal for quick testing (~10GB)
-python training/prepare_data.py --minimal
+# Explain how alignment works
+python training/prepare_data.py --explain
 ```
 
-### Step 3: Train the Model
+---
+
+#### Step 4: Train the Model
+
+**Stage 1: Projector Alignment (3 epochs, ~6-12 hours on GPU)**
+
+Trains the vision-to-language projector to connect SigLIP visual features with the language model.
 
 ```bash
-# Stage 1: Vision-Language Alignment (3 epochs)
+python training/train.py \
+    --stage 1 \
+    --data-dir ./data \
+    --epochs 3 \
+    --batch-size 8 \
+    --lr 1e-3 \
+    --output-dir ./checkpoints \
+    --wandb-project EmberNet \
+    --wandb-run-name stage1_projector
+```
+
+**Stage 2: Expert Specialization (10 epochs, ~24-48 hours on GPU)**
+
+Trains domain-specific experts on specialized datasets.
+
+```bash
+python training/train.py \
+    --stage 2 \
+    --data-dir ./data \
+    --epochs 10 \
+    --batch-size 4 \
+    --lr 1e-4 \
+    --resume ./checkpoints/checkpoint_epoch_3.pt \
+    --output-dir ./checkpoints \
+    --wandb-project EmberNet \
+    --wandb-run-name stage2_experts
+```
+
+**Training without W&B:**
+```bash
+# Disable Weights & Biases logging
+python training/train.py --stage 1 --data-dir ./data --epochs 3 --batch-size 8 --no-wandb
+```
+
+**Adjust for your hardware:**
+```bash
+# If you get OOM (Out of Memory) errors:
+python training/train.py --stage 1 --data-dir ./data --batch-size 2 --grad-accum 16
+
+# Force CPU training (slower):
+python training/train.py --stage 1 --data-dir ./data --device cpu
+
+# Disable mixed precision (if issues):
+python training/train.py --stage 1 --data-dir ./data --no-amp
+```
+
+---
+
+#### Step 5: Convert Model (Optional)
+
+Convert to optimized ternary format for deployment:
+
+```bash
+python inference/convert.py \
+    ./checkpoints/final_model.pt \
+    ./embernet_optimized.pt
+```
+
+This packs ternary weights to 2-bit representation, reducing model size to <500MB.
+
+---
+
+#### Step 6: Run Inference
+
+**Interactive Mode:**
+```bash
+python inference/infer.py \
+    --model ./checkpoints/final_model.pt \
+    --interactive
+```
+
+**Interactive commands:**
+- `/load image.jpg` - Load an image
+- `/describe` - Describe the image
+- `/ocr` - Extract text from image
+- `/chart` - Analyze chart/graph
+- `/clear` - Reset conversation
+- `/quit` - Exit
+
+**Single Query:**
+```bash
+python inference/infer.py \
+    --model ./checkpoints/final_model.pt \
+    --image photo.jpg \
+    --prompt "What's in this image?"
+```
+
+---
+
+### Quick Reference: All Commands in Order
+
+```bash
+# 1. Install
+cd EmberNet
+pip install -r requirements.txt
+
+# 2. Authenticate
+huggingface-cli login
+wandb login
+
+# 3. Download data
+python training/prepare_data.py --recommended --output-dir ./data
+
+# 4. Train Stage 1
 python training/train.py --stage 1 --data-dir ./data --epochs 3 --batch-size 8
 
-# Stage 2: Expert Specialization (10 epochs)
-python training/train.py --stage 2 --data-dir ./data --epochs 10 --batch-size 4
-```
+# 5. Train Stage 2
+python training/train.py --stage 2 --data-dir ./data --epochs 10 --batch-size 4 --resume ./checkpoints/checkpoint_epoch_3.pt
 
-### Step 4: Run Inference
-
-```bash
-python inference/infer.py --model checkpoints/final_model.pt --interactive
+# 6. Run inference
+python inference/infer.py --model ./checkpoints/final_model.pt --interactive
 ```
 
 ---
@@ -269,49 +433,204 @@ python training/prepare_data.py --all
 
 ### Hardware Requirements
 
-| Stage | Minimum | Recommended |
-|-------|---------|-------------|
-| Stage 1 | 8GB VRAM | 16GB VRAM |
-| Stage 2 | 12GB VRAM | 24GB VRAM |
-| CPU-only | 16GB RAM | 32GB RAM |
+| Stage | Minimum | Recommended | Notes |
+|-------|---------|-------------|-------|
+| Stage 1 | 8GB VRAM | 16GB VRAM | Can use CPU with 16GB RAM (slower) |
+| Stage 2 | 12GB VRAM | 24GB VRAM | Can use CPU with 32GB RAM (slower) |
 
-### Training Commands
+### Expected Training Time
+
+| Stage | GPU (A100) | GPU (RTX 3090) | CPU (32 cores) |
+|-------|------------|----------------|----------------|
+| Stage 1 (3 epochs) | 6-12 hours | 12-24 hours | 3-5 days |
+| Stage 2 (10 epochs) | 24-48 hours | 48-96 hours | 10-15 days |
+
+### Training Commands Reference
+
+**Basic Training (Recommended):**
 
 ```bash
-# Full training pipeline
-
-# 1. Prepare data (do this first!)
-python training/prepare_data.py --recommended --output-dir ./data
-
-# 2. Stage 1: Projector alignment
+# Stage 1: Projector Alignment
 python training/train.py \
     --stage 1 \
     --data-dir ./data \
     --epochs 3 \
     --batch-size 8 \
-    --lr 1e-3 \
     --output-dir ./checkpoints
 
-# 3. Stage 2: Expert fine-tuning (continues from Stage 1)
+# Stage 2: Expert Specialization  
 python training/train.py \
     --stage 2 \
     --data-dir ./data \
     --epochs 10 \
     --batch-size 4 \
-    --lr 1e-4 \
     --resume ./checkpoints/checkpoint_epoch_3.pt \
     --output-dir ./checkpoints
-
-# 4. Convert to optimized format
-python inference/convert.py ./checkpoints/final_model.pt ./embernet_final.pt
 ```
 
-### Training Tips
+**With W&B Logging (Recommended):**
 
-- **Out of memory?** Reduce `--batch-size` and increase `--grad-accum`
-- **Slow training?** Make sure you're using GPU (`--device cuda`)
-- **Resume training:** Use `--resume path/to/checkpoint.pt`
-- **Monitor progress:** Check `checkpoints/` for saved models
+```bash
+# Stage 1
+python training/train.py \
+    --stage 1 \
+    --data-dir ./data \
+    --epochs 3 \
+    --batch-size 8 \
+    --wandb-project EmberNet \
+    --wandb-run-name stage1_projector
+
+# Stage 2
+python training/train.py \
+    --stage 2 \
+    --data-dir ./data \
+    --epochs 10 \
+    --batch-size 4 \
+    --resume ./checkpoints/checkpoint_epoch_3.pt \
+    --wandb-project EmberNet \
+    --wandb-run-name stage2_experts
+```
+
+**Custom Learning Rate:**
+
+```bash
+python training/train.py \
+    --stage 1 \
+    --data-dir ./data \
+    --epochs 3 \
+    --lr 5e-4
+```
+
+**Resume from Checkpoint:**
+
+```bash
+python training/train.py \
+    --stage 2 \
+    --data-dir ./data \
+    --resume ./checkpoints/checkpoint_epoch_5.pt
+```
+
+### Troubleshooting
+
+**Out of Memory (OOM) Errors:**
+```bash
+# Reduce batch size and increase gradient accumulation
+python training/train.py \
+    --stage 1 \
+    --data-dir ./data \
+    --batch-size 2 \
+    --grad-accum 16
+# Effective batch size = 2 * 16 = 32
+```
+
+**Slow Training:**
+```bash
+# Check if GPU is being used
+python training/train.py --stage 1 --data-dir ./data --device cuda
+
+# Increase number of data loading workers
+python training/train.py --stage 1 --data-dir ./data --num-workers 8
+```
+
+**Mixed Precision Issues:**
+```bash
+# Disable automatic mixed precision
+python training/train.py --stage 1 --data-dir ./data --no-amp
+```
+
+**CPU Training:**
+```bash
+# Force CPU (much slower but works without GPU)
+python training/train.py --stage 1 --data-dir ./data --device cpu --batch-size 1
+```
+
+### All Training Arguments
+
+```
+Training Settings:
+  --stage {1,2}              Training stage (1=projector, 2=expert SFT)
+  --epochs N                 Number of training epochs (default: 3)
+  --batch-size N             Training batch size (default: 4)
+  --lr LR                    Learning rate (auto-set: 1e-3 for stage1, 1e-4 for stage2)
+  --grad-accum N             Gradient accumulation steps (default: 4)
+
+Paths:
+  --data-dir DIR             Data directory (default: ./data)
+  --output-dir DIR           Output directory for checkpoints (default: ./checkpoints)
+  --resume PATH              Resume from checkpoint
+
+Hardware:
+  --device DEVICE            Device: cuda/cpu/auto (default: auto)
+  --no-amp                   Disable mixed precision training
+  --num-workers N            Data loading workers (default: 4)
+
+Experiment Tracking:
+  --wandb                    Use W&B logging (default: True)
+  --no-wandb                 Disable W&B logging
+  --wandb-project NAME       W&B project name (default: EmberNet)
+  --wandb-run-name NAME      W&B run name (default: auto-generated)
+```
+
+### What Gets Saved
+
+During training, the following checkpoints are saved to `--output-dir`:
+
+- `checkpoint_epoch_N.pt` - Saved after each epoch
+- `checkpoint_step_N.pt` - Saved every N steps (configurable)
+- `best_model.pt` - Best model based on validation loss
+- `final_model.pt` - Final model after all epochs
+
+Each checkpoint contains:
+- Model state dict
+- Optimizer state dict
+- Scheduler state dict
+- Training configuration
+- Current epoch and step
+- Best loss so far
+
+### Monitoring Training
+
+**With Weights & Biases:**
+Visit https://wandb.ai/your-username/EmberNet to see:
+- Real-time loss curves
+- Learning rate schedules
+- Token statistics
+- Gradient norms
+- Model parameters
+- System metrics (GPU/CPU usage, memory)
+
+**Console Output:**
+```
+======================================================================
+Starting Stage 1 Training
+======================================================================
+Epochs: 3
+Steps per epoch: 1000
+Total steps: 3000
+Batch size: 8
+Gradient accumulation: 4
+Effective batch size: 32
+Learning rate: 0.001
+Device: cuda
+
+--- Token Statistics (per sample) ---
+Total tokens:  2,048
+  ├─ Image tokens: 64
+  └─ Text tokens:  1,984
+
+--- Token Statistics (per batch) ---
+Total tokens:  16,384
+  ├─ Image tokens: 512
+  └─ Text tokens:  15,872
+
+--- Total Training Tokens (all epochs) ---
+Total tokens:  49,152,000
+  ├─ Image tokens: 1,536,000
+  └─ Text tokens:  47,616,000
+======================================================================
+
+Epoch 1/3 | Step 100 | Loss: 2.3456 | Avg Loss: 2.4567 | LR: 1.00e-03
+```
 
 ---
 

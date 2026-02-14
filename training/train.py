@@ -31,6 +31,14 @@ import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
+# Weights & Biases for experiment tracking
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
+    print("Warning: wandb not installed. Install with 'pip install wandb' for experiment tracking.")
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -49,6 +57,11 @@ class TrainingConfig:
     # Paths
     output_dir: str = "./checkpoints"
     data_dir: str = "./data"
+
+    # Experiment tracking
+    use_wandb: bool = True
+    wandb_project: str = "EmberNet"
+    wandb_run_name: Optional[str] = None
     resume_from: Optional[str] = None
 
     # Training hyperparameters
@@ -129,6 +142,31 @@ class Trainer:
         self.scaler = None
         if config.mixed_precision and self.device.type == "cuda":
             self.scaler = torch.cuda.amp.GradScaler()
+
+        # Weights & Biases initialization
+        self.use_wandb = config.use_wandb and HAS_WANDB
+        if self.use_wandb:
+            run_name = config.wandb_run_name or f"stage{config.stage}_bs{config.batch_size}"
+            wandb.init(
+                project=config.wandb_project,
+                name=run_name,
+                config={
+                    "stage": config.stage,
+                    "epochs": config.epochs,
+                    "batch_size": config.batch_size,
+                    "learning_rate": config.learning_rate,
+                    "gradient_accumulation_steps": config.gradient_accumulation_steps,
+                    "model_config": {
+                        "hidden_size": model_config.hidden_size,
+                        "num_layers": model_config.num_layers,
+                        "num_experts": model_config.num_experts,
+                        "num_experts_per_tok": model_config.num_experts_per_tok,
+                    }
+                }
+            )
+            # Watch model gradients and parameters
+            wandb.watch(self.model, log="all", log_freq=100)
+            print(f"✓ Initialized Weights & Biases: {config.wandb_project}/{run_name}")
 
         # Logging
         self.global_step = 0
@@ -318,6 +356,40 @@ class Trainer:
             for param_group in self.optimizer.param_groups:
                 param_group["lr"] = self.config.learning_rate * warmup_factor
 
+    def _calculate_token_statistics(self, train_loader):
+        """Calculate token statistics from a sample batch."""
+        try:
+            # Get first batch
+            sample_batch = next(iter(train_loader))
+
+            # Get dimensions
+            batch_size = sample_batch["input_ids"].shape[0]
+            seq_length = sample_batch["input_ids"].shape[1]
+
+            # Check if we have images (pixel_values present)
+            has_images = "pixel_values" in sample_batch and sample_batch["pixel_values"] is not None
+
+            if has_images:
+                # Vision encoder outputs 64 tokens (from VisionEncoder config)
+                num_image_tokens = self.model.vision_encoder.num_output_tokens if hasattr(self.model, 'vision_encoder') else 64
+                num_text_tokens = seq_length - num_image_tokens
+            else:
+                # No images, all text
+                num_image_tokens = 0
+                num_text_tokens = seq_length
+
+            total_tokens = seq_length
+
+            return {
+                "total_tokens_per_sample": total_tokens,
+                "image_tokens_per_sample": num_image_tokens,
+                "text_tokens_per_sample": num_text_tokens,
+                "batch_size": batch_size,
+            }
+        except Exception as e:
+            print(f"Warning: Could not calculate token statistics: {e}")
+            return None
+
     def train(
         self,
         train_loader=None,
@@ -347,9 +419,12 @@ class Trainer:
         # Create scheduler
         self._create_scheduler(total_steps)
 
-        print(f"\n{'='*50}")
+        # Calculate token statistics
+        token_stats = self._calculate_token_statistics(train_loader)
+
+        print(f"\n{'='*70}")
         print(f"Starting Stage {self.config.stage} Training")
-        print(f"{'='*50}")
+        print(f"{'='*70}")
         print(f"Epochs: {self.config.epochs}")
         print(f"Steps per epoch: {steps_per_epoch}")
         print(f"Total steps: {total_steps}")
@@ -358,7 +433,29 @@ class Trainer:
         print(f"Effective batch size: {self.config.batch_size * self.config.gradient_accumulation_steps}")
         print(f"Learning rate: {self.config.learning_rate}")
         print(f"Device: {self.device}")
-        print(f"{'='*50}\n")
+
+        # Print token statistics
+        if token_stats:
+            print(f"\n--- Token Statistics (per sample) ---")
+            print(f"Total tokens:  {token_stats['total_tokens_per_sample']:,}")
+            print(f"  ├─ Image tokens: {token_stats['image_tokens_per_sample']:,}")
+            print(f"  └─ Text tokens:  {token_stats['text_tokens_per_sample']:,}")
+            print(f"\n--- Token Statistics (per batch) ---")
+            total_batch = token_stats['total_tokens_per_sample'] * token_stats['batch_size']
+            image_batch = token_stats['image_tokens_per_sample'] * token_stats['batch_size']
+            text_batch = token_stats['text_tokens_per_sample'] * token_stats['batch_size']
+            print(f"Total tokens:  {total_batch:,}")
+            print(f"  ├─ Image tokens: {image_batch:,}")
+            print(f"  └─ Text tokens:  {text_batch:,}")
+            print(f"\n--- Total Training Tokens (all epochs) ---")
+            total_training = total_batch * total_steps
+            image_training = image_batch * total_steps
+            text_training = text_batch * total_steps
+            print(f"Total tokens:  {total_training:,}")
+            print(f"  ├─ Image tokens: {image_training:,}")
+            print(f"  └─ Text tokens:  {text_training:,}")
+
+        print(f"{'='*70}\n")
 
         self.model.train()
         start_time = time.time()
@@ -396,12 +493,24 @@ class Trainer:
                             f"Time: {elapsed:.1f}s"
                         )
 
+                        log_dict = {
+                            "train/loss": metrics["loss"],
+                            "train/avg_loss": avg_loss,
+                            "train/lr": lr,
+                            "train/epoch": epoch + 1,
+                            "train/step": self.global_step,
+                        }
+
                         self.training_log.append({
                             "step": self.global_step,
                             "loss": metrics["loss"],
                             "avg_loss": avg_loss,
                             "lr": lr,
                         })
+
+                        # Log to wandb
+                        if self.use_wandb:
+                            wandb.log(log_dict, step=self.global_step)
 
                     # Evaluation
                     if val_loader is not None and self.global_step % self.config.eval_interval == 0:
@@ -411,6 +520,13 @@ class Trainer:
                         if val_loss < self.best_loss:
                             self.best_loss = val_loss
                             self._save_checkpoint("best_model.pt", is_best=True)
+
+                        # Log validation to wandb
+                        if self.use_wandb:
+                            wandb.log({
+                                "val/loss": val_loss,
+                                "val/best_loss": self.best_loss,
+                            }, step=self.global_step)
 
                         self.model.train()
 
@@ -422,6 +538,13 @@ class Trainer:
             epoch_avg_loss = epoch_loss / epoch_steps
             print(f"\nEpoch {epoch+1} Complete | Average Loss: {epoch_avg_loss:.4f}\n")
 
+            # Log epoch metrics to wandb
+            if self.use_wandb:
+                wandb.log({
+                    "epoch/avg_loss": epoch_avg_loss,
+                    "epoch/number": epoch + 1,
+                }, step=self.global_step)
+
             # Save epoch checkpoint
             self._save_checkpoint(f"checkpoint_epoch_{epoch+1}.pt")
 
@@ -431,6 +554,11 @@ class Trainer:
         total_time = time.time() - start_time
         print(f"\nTraining complete in {total_time/60:.1f} minutes")
         print(f"Best validation loss: {self.best_loss:.4f}")
+
+        # Finish wandb run
+        if self.use_wandb:
+            wandb.finish()
+            print("✓ Weights & Biases run completed")
 
     @torch.no_grad()
     def evaluate(self, val_loader) -> float:
@@ -490,6 +618,16 @@ def main():
     parser.add_argument("--num-workers", type=int, default=4,
                         help="Number of data loading workers")
 
+    # Experiment tracking
+    parser.add_argument("--wandb", action="store_true", default=True,
+                        help="Use Weights & Biases for logging (default: True)")
+    parser.add_argument("--no-wandb", action="store_true",
+                        help="Disable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="EmberNet",
+                        help="W&B project name")
+    parser.add_argument("--wandb-run-name", type=str, default=None,
+                        help="W&B run name (default: auto-generated)")
+
     args = parser.parse_args()
 
     # Determine device
@@ -510,6 +648,9 @@ def main():
         device=device,
         mixed_precision=not args.no_amp,
         num_workers=args.num_workers,
+        use_wandb=args.wandb and not args.no_wandb,
+        wandb_project=args.wandb_project,
+        wandb_run_name=args.wandb_run_name,
     )
 
     if args.lr is not None:
