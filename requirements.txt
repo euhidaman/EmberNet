@@ -1,0 +1,18 @@
+# EmberNet VLM Dependencies
+# Core
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Vision encoder and tokenizer
+transformers>=4.36.0
+
+# Image processing
+Pillow>=9.0.0
+
+# Utilities
+einops>=0.7.0
+numpy>=1.24.0
+
+# Optional: for HuggingFace datasets
+datasets>=2.14.0
+
