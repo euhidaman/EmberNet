@@ -133,6 +133,63 @@ EmberNet connects images to language through a carefully designed pipeline:
 - Data: Domain-specific datasets (TextVQA, ChartQA, DocVQA, etc.)
 - Why: Different visual tasks need different skills - one expert can't do everything well
 
+### Expert Architecture & Dataset Mapping
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                    EMBERNET MoE EXPERT ARCHITECTURE                          │
+│                                                                              │
+│  ROUTING: Each token → TOP-2 Experts + SHARED Expert (always active)        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  EXPERT 0: vision_ocr                                                        │
+│  ├─ Specialty: Read text in images, OCR, document parsing                   │
+│  └─ Datasets: TextVQA, DocVQA, OCR-VQA                                      │
+│                                                                              │
+│  EXPERT 1: vision_diagram                                                    │
+│  ├─ Specialty: Understand diagrams, infographics, technical drawings        │
+│  └─ Datasets: AI2D, InfoVQA                                                 │
+│                                                                              │
+│  EXPERT 2: code_math_chart                                                   │
+│  ├─ Specialty: Analyze charts, graphs, plots, data visualizations           │
+│  └─ Datasets: ChartQA, PlotQA, FigureQA, DVQA                              │
+│                                                                              │
+│  EXPERT 3: code_math_formula                                                 │
+│  ├─ Specialty: Handle math equations, formulas, numerical reasoning         │
+│  └─ Datasets: MathVista                                                     │
+│                                                                              │
+│  EXPERT 4: spatial_scene                                                     │
+│  ├─ Specialty: Scene understanding, object detection, descriptions          │
+│  └─ Datasets: VQAv2, Visual Genome                                          │
+│                                                                              │
+│  EXPERT 5: spatial_reasoning                                                 │
+│  ├─ Specialty: Spatial relationships, counting, positional reasoning        │
+│  └─ Datasets: GQA                                                           │
+│                                                                              │
+│  EXPERT 6: agentic_knowledge                                                 │
+│  ├─ Specialty: Knowledge-based QA, facts requiring world knowledge          │
+│  └─ Datasets: OK-VQA, A-OKVQA                                               │
+│                                                                              │
+│  EXPERT 7: agentic_reasoning                                                 │
+│  ├─ Specialty: Multi-step reasoning, logic, science questions               │
+│  └─ Datasets: ScienceQA, CLEVR                                              │
+│                                                                              │
+│  SHARED EXPERT (Always Active)                                               │
+│  ├─ Specialty: Common patterns, language generation, general knowledge      │
+│  └─ Datasets: ALL datasets (learns shared representations)                  │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Example Routing:
+  User: "What does this chart show? The title says Q3 Sales."
+         │
+         ├─> EXPERT 0 (vision_ocr)    - reads "Q3 Sales" text
+         ├─> EXPERT 2 (chart)          - analyzes chart structure  
+         └─> SHARED EXPERT             - general language/context
+         
+  Combined output: "This bar chart shows Q3 sales data..."
+```
+
 ---
 
 ## Complete Dataset List
