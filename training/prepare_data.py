@@ -876,7 +876,14 @@ def download_dataset(
     config_name = info.get("config", None)
     save_path = output_dir / dataset_key
     preferred_download = info.get("preferred_download", "datasets")
-    allow_missing_images = bool(info.get("allow_missing_images", False))
+    
+    # Allow missing images if we're going to download them from URLs or COCO
+    will_download_images = (
+        info.get("download_images_from_urls", False) or 
+        info.get("requires_coco_images", False)
+    )
+    allow_missing_images = bool(info.get("allow_missing_images", False)) or will_download_images
+    
     resolved_method = method
     if resolved_method == "auto":
         resolved_method = preferred_download
@@ -948,7 +955,10 @@ def download_dataset(
             if not image_columns:
                 if allow_missing_images:
                     image_validation_passed = False
-                    print(f"! Warning: No image feature found in dataset: {hf_name}")
+                    if will_download_images:
+                        print(f"! No image feature found - will download images from URLs/external source")
+                    else:
+                        print(f"! Warning: No image feature found in dataset: {hf_name}")
                 else:
                     raise ValueError(f"No image feature found in dataset: {hf_name}")
             if not has_text:
@@ -964,7 +974,10 @@ def download_dataset(
             if sample_count > 0 and missing_images == sample_count:
                 if allow_missing_images:
                     image_validation_passed = False
-                    print(f"! Warning: No images present in sample rows for dataset: {hf_name}")
+                    if will_download_images:
+                        print(f"! No local images found - will download {total_samples} images from URLs/external source")
+                    else:
+                        print(f"! Warning: No images present in sample rows for dataset: {hf_name}")
                 else:
                     raise ValueError(f"No images present in sample rows for dataset: {hf_name}")
 
