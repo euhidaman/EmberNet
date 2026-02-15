@@ -624,3 +624,305 @@ def download_dataset(
         print(f"✗ FAILED to download {dataset_key}: {e}")
         return False
 
+
+def download_multiple_datasets(
+    dataset_keys: List[str],
+    output_dir: Path,
+    force: bool = False,
+) -> Dict[str, bool]:
+    """
+    Download multiple datasets.
+    Returns a dict mapping dataset_key -> success status.
+    """
+    results = {}
+    total = len(dataset_keys)
+
+    print(f"\n{'='*70}")
+    print(f"DOWNLOADING {total} DATASETS")
+    print(f"{'='*70}")
+    print(f"Output directory: {output_dir.absolute()}")
+    print(f"Total estimated size: ~{get_total_size(dataset_keys):.1f} GB")
+    print(f"{'='*70}\n")
+
+    for i, dataset_key in enumerate(dataset_keys, 1):
+        print(f"\n[{i}/{total}] Starting download: {dataset_key}")
+        success = download_dataset(dataset_key, output_dir, force)
+        results[dataset_key] = success
+
+        if success:
+            print(f"✓ [{i}/{total}] Completed: {dataset_key}")
+        else:
+            print(f"✗ [{i}/{total}] Failed: {dataset_key}")
+
+    return results
+
+
+def print_dataset_list():
+    """Print all available datasets with details."""
+    print(f"\n{'='*70}")
+    print("AVAILABLE DATASETS")
+    print(f"{'='*70}\n")
+
+    # Group by stage
+    stage1 = {k: v for k, v in DATASETS.items() if v["stage"] == 1}
+    stage2 = {k: v for k, v in DATASETS.items() if v["stage"] == 2}
+
+    print("STAGE 1 - Vision-Language Alignment:")
+    print("-" * 70)
+    for key, info in stage1.items():
+        print(f"  {key:25s} {info['samples']:>8s} samples  ~{info['size_gb']:>4.1f} GB  [{info['priority']}]")
+        print(f"    {info['hf_name']}")
+
+    print(f"\nSTAGE 2 - Expert Specialization:")
+    print("-" * 70)
+
+    # Group by domain
+    domains = {}
+    for key, info in stage2.items():
+        domain = info["domain"]
+        if domain not in domains:
+            domains[domain] = []
+        domains[domain].append((key, info))
+
+    for domain in sorted(domains.keys()):
+        print(f"\n  {domain.upper().replace('_', ' ')}:")
+        for key, info in domains[domain]:
+            print(f"    {key:23s} {info['samples']:>8s} samples  ~{info['size_gb']:>4.1f} GB  [{info['priority']}]")
+            print(f"      {info['hf_name']}")
+
+    print(f"\n{'='*70}")
+    print(f"Total: {len(DATASETS)} datasets")
+    print(f"  Critical: {len(CRITICAL_DATASETS)} datasets (~{get_total_size(CRITICAL_DATASETS):.1f} GB)")
+    print(f"  Recommended: {len(RECOMMENDED_DATASETS)} datasets (~{get_total_size(RECOMMENDED_DATASETS):.1f} GB)")
+    print(f"  All: {len(ALL_DATASETS)} datasets (~{get_total_size(ALL_DATASETS):.1f} GB)")
+    print(f"{'='*70}\n")
+
+
+def explain_alignment():
+    """Explain vision-language alignment and expert training."""
+    print(f"\n{'='*70}")
+    print("VISION-LANGUAGE ALIGNMENT EXPLAINED")
+    print(f"{'='*70}\n")
+
+    print("""
+EmberNet uses a two-stage training approach:
+
+STAGE 1 - PROJECTOR ALIGNMENT (Vision-Language Connection):
+-----------------------------------------------------------
+Goal: Teach the model to "see" by connecting visual features to language.
+
+What happens:
+1. SigLIP vision encoder extracts visual features (196 tokens) [FROZEN]
+2. Token compression reduces to 64 tokens [TRAINABLE]
+3. Projector MLP maps vision → language space [TRAINABLE]
+4. Language model generates text [MOSTLY FROZEN]
+
+Why: The projector learns that "this visual pattern" = "the word dog"
+
+Datasets: LLaVA-Instruct, ShareGPT4V, ALLaVA, COCO Captions
+Training: 3-5 epochs, learning rate ~1e-3
+
+
+STAGE 2 - EXPERT SPECIALIZATION (Domain-Specific Skills):
+---------------------------------------------------------
+Goal: Train domain experts to be good at specific visual tasks.
+
+What happens:
+1. Vision encoder + Projector [FROZEN - already aligned]
+2. MoE Router learns to route tokens to experts [TRAINABLE]
+3. Domain experts specialize on their data [TRAINABLE]
+
+Why: Different tasks need different skills. OCR needs different 
+     processing than chart analysis or spatial reasoning.
+
+Expert Assignment:
+  - Expert 0: OCR, text reading (TextVQA, DocVQA)
+  - Expert 1: Diagrams, infographics (AI2D)
+  - Expert 2: Charts, graphs (ChartQA, PlotQA)
+  - Expert 3: Math, formulas (MathVista)
+  - Expert 4: Scene understanding (VQAv2, RefCOCO)
+  - Expert 5: Spatial reasoning (GQA, NLVR2)
+  - Expert 6: World knowledge (OK-VQA, A-OKVQA)
+  - Expert 7: Complex reasoning (ScienceQA, VCR)
+
+Datasets: Domain-specific datasets for each expert
+Training: 10-15 epochs, learning rate ~1e-4
+
+Result: A tiny VLM that can handle diverse visual tasks efficiently!
+""")
+
+    print(f"{'='*70}\n")
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Download datasets for EmberNet VLM training",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s --all --output-dir ./data
+  %(prog)s --recommended --output-dir ./data
+  %(prog)s --minimal --output-dir ./data
+  %(prog)s --dataset textvqa chartqa --output-dir ./data
+  %(prog)s --list
+  %(prog)s --explain
+        """
+    )
+
+    # Action arguments
+    action_group = parser.add_mutually_exclusive_group()
+    action_group.add_argument(
+        "--all",
+        action="store_true",
+        help="Download all datasets (~110GB)"
+    )
+    action_group.add_argument(
+        "--recommended",
+        action="store_true",
+        help="Download critical + recommended datasets (~80GB)"
+    )
+    action_group.add_argument(
+        "--critical",
+        action="store_true",
+        help="Download only critical datasets (~50GB)"
+    )
+    action_group.add_argument(
+        "--minimal",
+        action="store_true",
+        help="Download minimal datasets for testing (~40GB)"
+    )
+    action_group.add_argument(
+        "--dataset",
+        nargs="+",
+        metavar="NAME",
+        help="Download specific datasets by name"
+    )
+    action_group.add_argument(
+        "--list",
+        action="store_true",
+        help="List all available datasets and exit"
+    )
+    action_group.add_argument(
+        "--explain",
+        action="store_true",
+        help="Explain vision-language alignment and exit"
+    )
+
+    # Configuration arguments
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="./data",
+        help="Output directory for datasets (default: ./data)"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-download datasets even if they exist"
+    )
+
+    args = parser.parse_args()
+
+    # Handle info commands
+    if args.list:
+        print_dataset_list()
+        return
+
+    if args.explain:
+        explain_alignment()
+        return
+
+    # Check dependencies
+    check_dependencies()
+
+    # Determine which datasets to download
+    if args.all:
+        datasets_to_download = ALL_DATASETS
+        mode = "ALL"
+    elif args.recommended:
+        datasets_to_download = RECOMMENDED_DATASETS
+        mode = "RECOMMENDED"
+    elif args.critical:
+        datasets_to_download = CRITICAL_DATASETS
+        mode = "CRITICAL"
+    elif args.minimal:
+        datasets_to_download = MINIMAL_DATASETS
+        mode = "MINIMAL"
+    elif args.dataset:
+        datasets_to_download = args.dataset
+        mode = "CUSTOM"
+        # Validate dataset names
+        invalid = [d for d in datasets_to_download if d not in DATASETS]
+        if invalid:
+            print(f"ERROR: Unknown datasets: {', '.join(invalid)}")
+            print(f"Available datasets: {', '.join(DATASETS.keys())}")
+            sys.exit(1)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*70}")
+    print(f"EMBERNET DATASET DOWNLOADER")
+    print(f"{'='*70}")
+    print(f"Mode: {mode}")
+    print(f"Datasets: {len(datasets_to_download)}")
+    print(f"Output: {output_dir.absolute()}")
+    print(f"Total size: ~{get_total_size(datasets_to_download):.1f} GB")
+    print(f"{'='*70}\n")
+
+    # Download datasets
+    results = download_multiple_datasets(datasets_to_download, output_dir, args.force)
+
+    # Print summary
+    successful = [k for k, v in results.items() if v]
+    failed = [k for k, v in results.items() if not v]
+
+    print(f"\n{'='*70}")
+    print("DOWNLOAD SUMMARY")
+    print(f"{'='*70}")
+    print(f"Total: {len(results)}")
+    print(f"✓ Successful: {len(successful)}")
+    print(f"✗ Failed: {len(failed)}")
+
+    if failed:
+        print(f"\nFailed datasets:")
+        for dataset in failed:
+            print(f"  ✗ {dataset}")
+
+    print(f"\n{'='*70}")
+
+    # Create download manifest
+    manifest_path = output_dir / "download_manifest.json"
+    manifest = {
+        "download_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": mode,
+        "total_datasets": len(results),
+        "successful": successful,
+        "failed": failed,
+        "datasets": {k: DATASETS[k] for k in datasets_to_download if k in DATASETS}
+    }
+
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    print(f"\nDownload manifest saved to: {manifest_path}")
+
+    if successful:
+        print(f"\n✓ Successfully downloaded {len(successful)} datasets to {output_dir.absolute()}")
+        print("\nNext steps:")
+        print("  1. Start Stage 1 training:")
+        print("     python training/train.py --stage 1 --data-dir ./data --epochs 3")
+        print("  2. After Stage 1 completes, run Stage 2:")
+        print("     python training/train.py --stage 2 --data-dir ./data --epochs 10 --resume <checkpoint>")
+
+    if failed:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+
