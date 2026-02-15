@@ -373,9 +373,9 @@ Example Routing:
 
 | Dataset | HuggingFace ID | Description | Samples | Size |
 |---------|----------------|-------------|---------|------|
-| **LLaVA-Instruct-150K** ★ | `liuhaotian/LLaVA-Instruct-150K` | GPT-4 generated visual conversations | 150K | ~5GB |
-| **ShareGPT4V** ★ | `Lin-Chen/ShareGPT4V` | Detailed image descriptions from GPT-4V | 100K | ~8GB |
-| **ALLaVA** | `FreedomIntelligence/ALLaVA-4V` | Diverse visual instructions | 700K | ~6GB |
+| **LLaVA-Instruct-150K** ★ | `lmms-lab/LLaVA-Instruct-150K` | GPT-4 generated visual conversations | 150K | ~5GB |
+| **ShareGPT4V** ★ | `lmms-lab/ShareGPT4V` | Detailed image descriptions from GPT-4V | 100K | ~8GB |
+| **ALLaVA** | `FreedomIntelligence/ALLaVA-4V` | Diverse visual instructions | 711K | ~6GB |
 
 ### Stage 2: Expert Specialization
 
@@ -383,7 +383,7 @@ Example Routing:
 
 | Dataset | HuggingFace ID | Description | Samples | Size |
 |---------|----------------|-------------|---------|------|
-| **TextVQA** ★ | `textvqa` | Text in natural scenes | 45K | ~2GB |
+| **TextVQA** ★ | `lmms-lab/TextVQA` | Text in natural scenes | 45K | ~2GB |
 | **DocVQA** ★ | `lmms-lab/DocVQA` | Documents, forms, receipts | 50K | ~3GB |
 | **AI2D** ★ | `lmms-lab/ai2d` | Scientific diagrams | 15K | ~1.5GB |
 | **InfoVQA** | `lmms-lab/InfographicVQA` | Infographics | 30K | ~2.5GB |
@@ -403,9 +403,9 @@ Example Routing:
 
 | Dataset | HuggingFace ID | Description | Samples | Size |
 |---------|----------------|-------------|---------|------|
-| **VQAv2** ★ | `HuggingFaceM4/VQAv2` | General visual QA | 1.1M | ~25GB |
+| **VQAv2** ★ | `lmms-lab/VQAv2` | General visual QA | 1.1M | ~25GB |
 | **GQA** | `lmms-lab/GQA` | Scene graph reasoning | 22M | ~15GB |
-| **Visual Genome** | `visual_genome` | Dense scene annotations | 108K | ~15GB |
+| **Visual Genome** | `lmms-lab/VisualGenome` | Dense scene annotations | 108K | ~15GB |
 
 #### Reasoning Expert Datasets
 

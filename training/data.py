@@ -168,10 +168,46 @@ class EmberNetDataset(Dataset):
         if data_path.is_file() and data_path.suffix == ".json":
             return self._load_json(data_path)
         elif data_path.is_dir():
+            # Check for EmberNet dataset index
+            index_path = data_path / "dataset_index.json"
+            if index_path.exists():
+                return self._load_from_index(index_path)
             return self._load_directory(data_path)
         else:
             # Try loading from HuggingFace
             return self._load_huggingface(str(data_path))
+
+    def _load_from_index(self, index_path: Path) -> List[Dict[str, Any]]:
+        """Load datasets based on the index file created by prepare_data.py."""
+        with open(index_path, "r") as f:
+            index = json.load(f)
+
+        all_samples = []
+        datasets_to_load = []
+
+        # In stage 1, we want all datasets assigned to stage 1
+        # In stage 2, we want datasets assigned to the specific domain
+
+        for key, info in index.get("datasets", {}).items():
+            dataset_stage = str(info.get("stage", ""))
+            dataset_domain = info.get("domain", "")
+
+            # Match condition:
+            # - If domain is 'general', we take all stage 1 datasets (for alignment)
+            # - OR if domain matches specifically (for expert SFT)
+            if self.domain == "general":
+                if dataset_stage == "1":
+                    datasets_to_load.append(key)
+            elif dataset_domain == self.domain:
+                datasets_to_load.append(key)
+
+        print(f"Index scan: Found {len(datasets_to_load)} datasets for domain='{self.domain}'")
+
+        for key in datasets_to_load:
+            samples = self._load_huggingface(key)
+            all_samples.extend(samples)
+
+        return all_samples
 
     def _load_json(self, json_path: Path) -> List[Dict[str, Any]]:
         """Load data from JSON file."""
@@ -737,4 +773,3 @@ def prepare_training_data(
         download_dataset(dataset_name, str(output_dir))
 
     print(f"\nData preparation complete. Data saved to {output_dir}")
-
