@@ -118,6 +118,7 @@ DATASETS = {
     # NOTE: Stage 1 trains the PROJECTOR, not the experts
     # =========================================================================
 
+    # NOTE: Using alternative high-quality instruction datasets that don't require loading scripts
     "llava_instruct_150k": {
         "hf_name": "liuhaotian/LLaVA-Instruct-150K",
         "config": None,
@@ -131,7 +132,7 @@ DATASETS = {
     },
     "sharegpt4v": {
         "hf_name": "Lin-Chen/ShareGPT4V",
-        "config": None,
+        "config": "ShareGPT4V",
         "description": "Detailed image descriptions from GPT-4V",
         "stage": 1,
         "domain": "general",
@@ -151,9 +152,9 @@ DATASETS = {
         "priority": "recommended",
         "samples": "700K",
     },
-    # NOTE: COCO - using direct HuggingFace dataset
+    # NOTE: Using COCO from anas-awadalla's Parquet version
     "coco_captions": {
-        "hf_name": "HuggingFaceM4/COCO",
+        "hf_name": "anas-awadalla/coco",
         "config": None,
         "description": "COCO image captions for general visual understanding",
         "stage": 1,
@@ -369,8 +370,9 @@ DATASETS = {
         "priority": "critical",
         "samples": "21K",
     },
+    # NOTE: RefCOCO - Using anas-awadalla's Parquet version
     "refcoco": {
-        "hf_name": "HuggingFaceM4/refcoco",
+        "hf_name": "anas-awadalla/refcoco",
         "config": None,
         "description": "Referring expressions and visual grounding",
         "stage": 2,
@@ -386,8 +388,9 @@ DATASETS = {
     # For action recognition, instruction following, navigation
     # =========================================================================
 
+    # NOTE: Visual Genome - Using lmms-lab VG dataset
     "visual_genome_region": {
-        "hf_name": "visual-genome/visual-genome",
+        "hf_name": "lmms-lab/VG",
         "config": None,
         "description": "Dense region descriptions and relationships",
         "stage": 2,
@@ -441,8 +444,9 @@ DATASETS = {
         "priority": "optional",
         "samples": "3.3M",
     },
+    # NOTE: VCR - Using lmms-lab version
     "visual_commonsense": {
-        "hf_name": "HuggingFaceM4/VCR",
+        "hf_name": "lmms-lab/VCR",
         "config": None,
         "description": "Visual Commonsense Reasoning with rationales",
         "stage": 2,
@@ -574,20 +578,11 @@ def download_dataset(
     start_time = time.time()
 
     try:
-        # Load dataset from HuggingFace
-        # We try to use trust_remote_code=True as many VLM datasets use custom loaders
-        # but fallback if the library version doesn't support it or if it's not needed.
-        try:
-            if config_name:
-                ds = load_dataset(hf_name, config_name, trust_remote_code=True)
-            else:
-                ds = load_dataset(hf_name, trust_remote_code=True)
-        except Exception:
-            # Fallback for datasets that don't need/support trust_remote_code
-            if config_name:
-                ds = load_dataset(hf_name, config_name)
-            else:
-                ds = load_dataset(hf_name)
+        # Load dataset from HuggingFace (explicitly disable trust_remote_code)
+        if config_name:
+            ds = load_dataset(hf_name, config_name, trust_remote_code=False)
+        else:
+            ds = load_dataset(hf_name, trust_remote_code=False)
 
         # Save to disk
         save_path.mkdir(parents=True, exist_ok=True)
