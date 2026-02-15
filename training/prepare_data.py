@@ -307,7 +307,8 @@ DATASETS = {
     # =========================================================================
 
     "aokvqa": {
-        "hf_name": "lmms-lab/A-OKVQA",
+        "hf_name": "HuggingFaceM4/A-OKVQA",
+        "config": None,
         "description": "Augmented outside knowledge VQA with rationales",
         "stage": 2,
         "domain": "agentic_knowledge",
@@ -318,6 +319,7 @@ DATASETS = {
     },
     "scienceqa": {
         "hf_name": "derek-thomas/ScienceQA",
+        "config": None,
         "description": "Science questions with diagrams",
         "stage": 2,
         "domain": "agentic_reasoning",
@@ -327,7 +329,8 @@ DATASETS = {
         "samples": "21K",
     },
     "clevr": {
-        "hf_name": "lmms-lab/CLEVR",
+        "hf_name": "clevr/clevr",
+        "config": None,
         "description": "Compositional visual reasoning",
         "stage": 2,
         "domain": "agentic_reasoning",
@@ -409,6 +412,7 @@ def download_dataset(
 
     info = DATASETS[dataset_key]
     hf_name = info["hf_name"]
+    config_name = info.get("config", None)
     save_path = output_dir / dataset_key
 
     # Check if already exists
@@ -420,6 +424,8 @@ def download_dataset(
     print(f"DOWNLOADING: {dataset_key}")
     print(f"{'='*70}")
     print(f"  Source:      {hf_name}")
+    if config_name:
+        print(f"  Config:      {config_name}")
     print(f"  Description: {info['description']}")
     print(f"  Samples:     {info['samples']}")
     print(f"  Size:        ~{info['size_gb']} GB")
@@ -430,8 +436,11 @@ def download_dataset(
     start_time = time.time()
 
     try:
-        # Load dataset from HuggingFace
-        ds = load_dataset(hf_name, trust_remote_code=True)
+        # Load dataset from HuggingFace (without trust_remote_code)
+        if config_name:
+            ds = load_dataset(hf_name, config_name)
+        else:
+            ds = load_dataset(hf_name)
 
         # Save to disk
         save_path.mkdir(parents=True, exist_ok=True)
@@ -443,6 +452,7 @@ def download_dataset(
         metadata = {
             "dataset_key": dataset_key,
             "hf_name": hf_name,
+            "config": config_name,
             "domain": info["domain"],
             "expert": info.get("expert", "N/A"),
             "stage": info["stage"],

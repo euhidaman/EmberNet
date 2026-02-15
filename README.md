@@ -113,8 +113,6 @@ The **download_manifest.json** tracks:
 - Download times and success/failure status
 - File paths and HuggingFace IDs
 
----
-
 #### Step 4: Train the Model
 
 **Stage 1: Projector Alignment (3 epochs, ~6-12 hours on GPU)**
