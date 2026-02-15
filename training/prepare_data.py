@@ -101,6 +101,7 @@ REQUIREMENTS:
 """
 
 import sys
+import os
 import json
 import argparse
 import time
@@ -121,7 +122,7 @@ DATASETS = {
     # NOTE: Using alternative high-quality instruction datasets that don't require loading scripts
     "llava_instruct_150k": {
         "hf_name": "adamo1139/llava-instruct-150k-with-images",
-        "config": None,
+        "config": "default",
         "description": "LLaVA-Instruct-150K with images included",
         "stage": 1,
         "domain": "general",
@@ -160,13 +161,14 @@ DATASETS = {
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
+        "requires_remote_code": True,
         "size_gb": 3.0,
         "priority": "recommended",
         "samples": "118K",
     },
     "conceptual_captions": {
         "hf_name": "google-research-datasets/conceptual_captions",
-        "config": None,
+        "config": "unlabeled",
         "description": "Large-scale image captioning (diverse domains)",
         "stage": 1,
         "domain": "general",
@@ -183,7 +185,7 @@ DATASETS = {
 
     "textvqa": {
         "hf_name": "lmms-lab/textvqa",
-        "config": None,
+        "config": "default",
         "description": "Text reading in natural scene images",
         "stage": 2,
         "domain": "vision_ocr",
@@ -229,7 +231,7 @@ DATASETS = {
     # },
     "ai2d": {
         "hf_name": "lmms-lab/ai2d",
-        "config": None,
+        "config": "default",
         "description": "Scientific diagram understanding",
         "stage": 2,
         "domain": "vision_diagram",
@@ -246,7 +248,7 @@ DATASETS = {
 
     "chartqa": {
         "hf_name": "ahmed-masry/ChartQA",
-        "config": None,
+        "config": "default",
         "description": "Chart understanding - bar, line, pie charts",
         "stage": 2,
         "domain": "code_math_chart",
@@ -258,7 +260,7 @@ DATASETS = {
     # NOTE: PlotQA alternative path (lmms-lab version doesn't exist)
     "plotqa": {
         "hf_name": "achang/plot_qa",
-        "config": None,
+        "config": "default",
         "description": "Scientific plot understanding (alternative source)",
         "stage": 2,
         "domain": "code_math_chart",
@@ -293,7 +295,7 @@ DATASETS = {
     # },
     "mathvista": {
         "hf_name": "AI4Math/MathVista",
-        "config": None,
+        "config": "default",
         "description": "Mathematical visual reasoning",
         "stage": 2,
         "domain": "code_math_formula",
@@ -310,7 +312,7 @@ DATASETS = {
 
     "vqav2": {
         "hf_name": "lmms-lab/VQAv2",
-        "config": None,
+        "config": "default",
         "description": "General visual question answering",
         "stage": 2,
         "domain": "spatial_scene",
@@ -345,18 +347,19 @@ DATASETS = {
     # NOTE: Visual Genome - Using ranjaykrishna/visual_genome (region_descriptions_v1.2.0)
     "visual_genome_region": {
         "hf_name": "ranjaykrishna/visual_genome",
-        "config": "region_descriptions_v1.2.0",
+        "config": "region_descriptions",
         "description": "Dense region descriptions and relationships",
         "stage": 2,
         "domain": "spatial_scene",
         "expert": "Expert 4: spatial_scene",
+        "requires_remote_code": True,
         "size_gb": 10.0,
         "priority": "optional",
         "samples": "108K",
     },
     "okvqa": {
         "hf_name": "lmms-lab/OK-VQA",
-        "config": None,
+        "config": "default",
         "description": "Outside knowledge visual QA",
         "stage": 2,
         "domain": "agentic_knowledge",
@@ -373,7 +376,7 @@ DATASETS = {
 
     "aokvqa": {
         "hf_name": "HuggingFaceM4/A-OKVQA",
-        "config": None,
+        "config": "default",
         "description": "Augmented outside knowledge VQA with rationales",
         "stage": 2,
         "domain": "agentic_knowledge",
@@ -384,7 +387,7 @@ DATASETS = {
     },
     "scienceqa": {
         "hf_name": "derek-thomas/ScienceQA",
-        "config": None,
+        "config": "default",
         "description": "Science questions with diagrams",
         "stage": 2,
         "domain": "agentic_reasoning",
@@ -396,7 +399,7 @@ DATASETS = {
     # NOTE: RefCOCO - lmms-lab formatted version
     "refcoco": {
         "hf_name": "lmms-lab/RefCOCO",
-        "config": None,
+        "config": "default",
         "description": "Referring expressions and visual grounding",
         "stage": 2,
         "domain": "spatial_scene",
@@ -413,7 +416,7 @@ DATASETS = {
 
     "nlvr2": {
         "hf_name": "lmms-lab/NLVR2",
-        "config": None,
+        "config": "default",
         "description": "Natural language visual reasoning (pair images)",
         "stage": 2,
         "domain": "spatial_reasoning",
@@ -424,7 +427,7 @@ DATASETS = {
     },
     "vsr": {
         "hf_name": "cambridgeltl/vsr_random",
-        "config": None,
+        "config": "default",
         "description": "Visual Spatial Reasoning dataset",
         "stage": 2,
         "domain": "spatial_reasoning",
@@ -435,7 +438,7 @@ DATASETS = {
     },
     "winoground": {
         "hf_name": "facebook/winoground",
-        "config": None,
+        "config": "default",
         "description": "Visio-linguistic compositional reasoning",
         "stage": 2,
         "domain": "agentic_reasoning",
@@ -443,6 +446,7 @@ DATASETS = {
         "size_gb": 0.2,
         "priority": "optional",
         "samples": "800",
+        "requires_hf_token": True,
     },
     # NOTE: VCR is not available on HuggingFace Hub; requires manual download.
     # "visual_commonsense": {
@@ -537,6 +541,134 @@ def get_total_size(dataset_keys: List[str]) -> float:
     return sum(DATASETS[k]["size_gb"] for k in dataset_keys if k in DATASETS)
 
 
+def _is_text_feature(feature) -> bool:
+    from datasets import Sequence, Value
+
+    if isinstance(feature, Value) and feature.dtype == "string":
+        return True
+    if isinstance(feature, Sequence):
+        return _is_text_feature(feature.feature)
+    if isinstance(feature, dict):
+        return any(_is_text_feature(sub_feature) for sub_feature in feature.values())
+    return False
+
+
+def _is_image_feature(feature) -> bool:
+    from datasets import Image, Sequence
+
+    if isinstance(feature, Image):
+        return True
+    if isinstance(feature, Sequence):
+        return _is_image_feature(feature.feature)
+    if isinstance(feature, dict):
+        return any(_is_image_feature(sub_feature) for sub_feature in feature.values())
+    return False
+
+
+def _zip_contains(base_dir: Path, rel_path: Path) -> bool:
+    import zipfile
+
+    rel_posix = rel_path.as_posix()
+    for zip_path in base_dir.glob("*.zip"):
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                if rel_posix in zf.namelist():
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _image_value_present(value, base_dir: Path | None = None) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (str, Path)):
+        path = Path(value)
+        if path.is_absolute() and path.exists():
+            return True
+        if path.exists():
+            return True
+        if base_dir is not None:
+            if (base_dir / path).exists():
+                return True
+            if _zip_contains(base_dir, path):
+                return True
+        return False
+    if isinstance(value, dict):
+        path = value.get("path") or value.get("filename")
+        if path:
+            path = Path(path)
+            if path.is_absolute() and path.exists():
+                return True
+            if path.exists():
+                return True
+            if base_dir is not None:
+                if (base_dir / path).exists():
+                    return True
+                if _zip_contains(base_dir, path):
+                    return True
+        return value.get("bytes") is not None
+    if hasattr(value, "convert"):
+        return True
+    return True
+
+
+def _image_columns(features) -> List[str]:
+    from datasets import Value
+
+    columns = []
+    for name, feature in features.items():
+        if _is_image_feature(feature):
+            columns.append(name)
+        elif isinstance(feature, Value) and feature.dtype == "string":
+            if name in {"image", "image_path", "img", "picture"}:
+                columns.append(name)
+    return columns
+
+
+def _load_dataset_with_fallback(
+    hf_name: str,
+    config_name: str | None = None,
+    token: str | None = None,
+    trust_remote_code: bool = False,
+):
+    """Load a dataset from Hugging Face with robust config fallback."""
+    from datasets import get_dataset_config_names, load_dataset
+
+    errors = []
+    candidates: List[str | None] = []
+
+    if config_name:
+        candidates.append(config_name)
+
+    candidates.append(None)
+
+    try:
+        for cfg in get_dataset_config_names(hf_name, trust_remote_code=trust_remote_code):
+            if cfg not in candidates:
+                candidates.append(cfg)
+    except Exception:
+        pass
+
+    for cfg in candidates:
+        try:
+            if cfg is None:
+                ds = load_dataset(hf_name, trust_remote_code=trust_remote_code, token=token)
+            else:
+                ds = load_dataset(
+                    hf_name,
+                    cfg,
+                    trust_remote_code=trust_remote_code,
+                    token=token,
+                )
+            return ds, cfg
+        except Exception as exc:
+            errors.append(f"config={cfg!r}: {exc}")
+
+    joined = " | ".join(errors) if errors else "unknown error"
+    raise RuntimeError(f"Could not load dataset '{hf_name}' with any config. {joined}")
+
+
 def download_dataset(
     dataset_key: str,
     output_dir: Path,
@@ -545,8 +677,6 @@ def download_dataset(
     """
     Download a single dataset from HuggingFace.
     """
-    from datasets import load_dataset
-
     if dataset_key not in DATASETS:
         print(f"ERROR: Unknown dataset: {dataset_key}")
         print(f"Available: {', '.join(DATASETS.keys())}")
@@ -556,6 +686,19 @@ def download_dataset(
     hf_name = info["hf_name"]
     config_name = info.get("config", None)
     save_path = output_dir / dataset_key
+    trust_remote_code = bool(info.get("requires_remote_code", False))
+    hf_token = (
+        os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    )
+
+    if info.get("requires_hf_token", False) and not hf_token:
+        print(
+            f"✗ {dataset_key} requires Hugging Face access token. "
+            "Set HF_TOKEN and accept dataset access terms on the dataset page."
+        )
+        return False
 
     # Check if already exists
     if save_path.exists() and not force:
@@ -579,10 +722,32 @@ def download_dataset(
 
     try:
         # Load dataset from HuggingFace (explicitly disable trust_remote_code)
-        if config_name:
-            ds = load_dataset(hf_name, config_name, trust_remote_code=False)
-        else:
-            ds = load_dataset(hf_name, trust_remote_code=False)
+        ds, resolved_config = _load_dataset_with_fallback(
+            hf_name,
+            config_name,
+            token=hf_token,
+            trust_remote_code=trust_remote_code,
+        )
+
+        first_split = next(iter(ds.keys()))
+        features = ds[first_split].features
+        image_columns = _image_columns(features)
+        has_text = _is_text_feature(features)
+
+        if not image_columns:
+            raise ValueError(f"No image feature found in dataset: {hf_name}")
+        if not has_text:
+            raise ValueError(f"No text feature found in dataset: {hf_name}")
+
+        sample_count = min(32, len(ds[first_split]))
+        missing_images = 0
+        for idx in range(sample_count):
+            row = ds[first_split][idx]
+            has_image = any(_image_value_present(row.get(col), save_path) for col in image_columns)
+            if not has_image:
+                missing_images += 1
+        if sample_count > 0 and missing_images == sample_count:
+            raise ValueError(f"No images present in sample rows for dataset: {hf_name}")
 
         # Save to disk
         save_path.mkdir(parents=True, exist_ok=True)
@@ -594,12 +759,17 @@ def download_dataset(
         metadata = {
             "dataset_key": dataset_key,
             "hf_name": hf_name,
-            "config": config_name,
+            "config": resolved_config,
+            "requested_config": config_name,
             "domain": info["domain"],
             "expert": info.get("expert", "N/A"),
             "stage": info["stage"],
             "priority": info["priority"],
             "description": info["description"],
+            "image_columns": image_columns,
+            "text_feature_present": has_text,
+            "image_samples_checked": sample_count,
+            "image_samples_missing": missing_images,
             "splits": list(ds.keys()),
             "num_samples": {split: len(ds[split]) for split in ds.keys()},
             "total_samples": sum(len(ds[split]) for split in ds.keys()),
@@ -904,7 +1074,32 @@ Examples:
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
 
+    # Create dataset index consumed by training/data.py
+    index_path = output_dir / "dataset_index.json"
+    index = {
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": mode,
+        "datasets": {},
+    }
+    for dataset_key in successful:
+        info = dict(DATASETS[dataset_key])
+        metadata_path = output_dir / dataset_key / "metadata.json"
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as meta_file:
+                    metadata = json.load(meta_file)
+                info["resolved_config"] = metadata.get("config")
+                info["splits"] = metadata.get("splits", [])
+                info["num_samples"] = metadata.get("num_samples", {})
+            except Exception:
+                pass
+        index["datasets"][dataset_key] = info
+
+    with open(index_path, "w", encoding="utf-8") as f:
+        json.dump(index, f, indent=2)
+
     print(f"\nDownload manifest saved to: {manifest_path}")
+    print(f"Dataset index saved to: {index_path}")
 
     if successful:
         print(f"\n✓ Successfully downloaded {len(successful)} datasets to {output_dir.absolute()}")

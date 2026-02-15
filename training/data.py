@@ -50,6 +50,9 @@ except ImportError:
 DOMAIN_TAGS = {
     "vision_ocr": "[DOMAIN: OCR/Text Recognition]",
     "vision_diagram": "[DOMAIN: Diagram Understanding]",
+    "spatial_scene": "[DOMAIN: Scene Understanding]",
+    "spatial_reasoning": "[DOMAIN: Spatial Reasoning]",
+    "agentic_knowledge": "[DOMAIN: Knowledge Grounding]",
     "robotics_action": "[DOMAIN: Action Recognition]",
     "robotics_spatial": "[DOMAIN: Spatial Reasoning]",
     "code_math_chart": "[DOMAIN: Chart Analysis]",
@@ -142,6 +145,7 @@ class EmberNetDataset(Dataset):
         self.split = split
         self.domain = domain
         self.domain_tag = DOMAIN_TAGS.get(domain, DOMAIN_TAGS["general"])
+        self.data_root = Path(self.config.data_dir)
 
         self.image_processor = ImageProcessor(self.config.image_size)
 
@@ -172,6 +176,9 @@ class EmberNetDataset(Dataset):
             index_path = data_path / "dataset_index.json"
             if index_path.exists():
                 return self._load_from_index(index_path)
+            manifest_path = data_path / "download_manifest.json"
+            if manifest_path.exists():
+                return self._load_from_index(manifest_path)
             return self._load_directory(data_path)
         else:
             # Try loading from HuggingFace
@@ -184,11 +191,16 @@ class EmberNetDataset(Dataset):
 
         all_samples = []
         datasets_to_load = []
+        available = index.get("datasets", {})
+
+        if index_path.name == "download_manifest.json":
+            successful = set(index.get("successful", []))
+            available = {k: v for k, v in available.items() if k in successful}
 
         # In stage 1, we want all datasets assigned to stage 1
         # In stage 2, we want datasets assigned to the specific domain
 
-        for key, info in index.get("datasets", {}).items():
+        for key, info in available.items():
             dataset_stage = str(info.get("stage", ""))
             dataset_domain = info.get("domain", "")
 
@@ -208,6 +220,21 @@ class EmberNetDataset(Dataset):
             all_samples.extend(samples)
 
         return all_samples
+
+    def _select_split(self, dataset_obj):
+        """Select the best split from DatasetDict/Dataset objects."""
+        if hasattr(dataset_obj, "column_names"):
+            return dataset_obj
+
+        if hasattr(dataset_obj, "keys"):
+            splits = list(dataset_obj.keys())
+            for preferred in [self.split, "train", "validation", "val", "test"]:
+                if preferred in splits:
+                    return dataset_obj[preferred]
+            if splits:
+                return dataset_obj[splits[0]]
+
+        return dataset_obj
 
     def _load_json(self, json_path: Path) -> List[Dict[str, Any]]:
         """Load data from JSON file."""
@@ -258,27 +285,71 @@ class EmberNetDataset(Dataset):
     def _load_huggingface(self, dataset_name: str) -> List[Dict[str, Any]]:
         """Load from HuggingFace datasets (saved to disk or from hub)."""
         try:
-            from datasets import load_from_disk, load_dataset
+            from datasets import get_dataset_config_names, load_from_disk, load_dataset
+
+            base_dir = None
 
             # First try loading from disk (downloaded by prepare_data.py)
             disk_path = Path(self.config.data_dir) / dataset_name
             if disk_path.exists():
                 print(f"Loading {dataset_name} from disk: {disk_path}")
                 ds = load_from_disk(str(disk_path))
-                if self.split in ds:
-                    ds = ds[self.split]
-                else:
-                    # Use first available split
-                    ds = ds[list(ds.keys())[0]]
+                ds = self._select_split(ds)
+                base_dir = disk_path
             else:
                 # Try loading from HuggingFace hub
                 print(f"Loading {dataset_name} from HuggingFace...")
-                ds = load_dataset(dataset_name, split=self.split, trust_remote_code=True)
+                ds = None
+                errors = []
+
+                try:
+                    ds = load_dataset(dataset_name, trust_remote_code=False)
+                    ds = self._select_split(ds)
+                except Exception as e:
+                    errors.append(str(e))
+
+                if ds is None:
+                    try:
+                        ds = load_dataset(dataset_name, trust_remote_code=True)
+                        ds = self._select_split(ds)
+                    except Exception as e:
+                        errors.append(f"remote_code=True: {e}")
+
+                if ds is None:
+                    try:
+                        for config_name in get_dataset_config_names(dataset_name, trust_remote_code=False):
+                            try:
+                                ds = load_dataset(dataset_name, config_name, trust_remote_code=False)
+                                ds = self._select_split(ds)
+                                break
+                            except Exception as cfg_e:
+                                errors.append(f"{config_name}: {cfg_e}")
+                    except Exception as cfg_list_e:
+                        errors.append(f"config listing failed: {cfg_list_e}")
+
+                if ds is None:
+                    try:
+                        for config_name in get_dataset_config_names(dataset_name, trust_remote_code=True):
+                            try:
+                                ds = load_dataset(dataset_name, config_name, trust_remote_code=True)
+                                ds = self._select_split(ds)
+                                break
+                            except Exception as cfg_e:
+                                errors.append(f"remote_code=True/{config_name}: {cfg_e}")
+                    except Exception as cfg_list_e:
+                        errors.append(f"remote_code=True config listing failed: {cfg_list_e}")
+
+                if ds is None:
+                    raise RuntimeError("; ".join(errors) if errors else "dataset load failed")
 
             samples = []
             for item in ds:
                 # Handle different dataset formats
-                sample = self._parse_dataset_item(item, dataset_name)
+                sample = self._parse_dataset_item(item, dataset_name, base_dir)
+                if isinstance(sample, tuple):
+                    sample = sample[0]
+                if sample and base_dir and "_base_dir" not in sample:
+                    sample["_base_dir"] = str(base_dir)
                 if sample:
                     samples.append(sample)
 
@@ -288,7 +359,12 @@ class EmberNetDataset(Dataset):
             print(f"Could not load dataset {dataset_name}: {e}")
             return self._create_dummy_data()
 
-    def _parse_dataset_item(self, item: Dict, dataset_name: str) -> Optional[Dict[str, Any]]:
+    def _parse_dataset_item(
+        self,
+        item: Dict,
+        dataset_name: str,
+        base_dir: Optional[Path] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Parse an item from various dataset formats."""
 
         # Get image - handle different field names
@@ -298,6 +374,27 @@ class EmberNetDataset(Dataset):
             item.get("picture") or
             item.get("image_path")
         )
+        image = self._normalize_image_value(image, base_dir)
+
+        # ScienceQA format
+        if "question" in item and "choices" in item and "answer" in item:
+            choices = item["choices"]
+            answer_idx = item["answer"]
+            if isinstance(answer_idx, int) and 0 <= answer_idx < len(choices):
+                answer = choices[answer_idx]
+            else:
+                answer = str(answer_idx)
+
+            question = item["question"]
+            if choices:
+                choices_str = "\n".join([f"{chr(65+i)}. {c}" for i, c in enumerate(choices)])
+                question = f"{question}\n\nChoices:\n{choices_str}"
+
+            return {
+                "image": image,
+                "question": question,
+                "answer": answer,
+            }
 
         # =====================================================================
         # STAGE 1: ALIGNMENT DATASETS
@@ -318,19 +415,19 @@ class EmberNetDataset(Dataset):
                     elif role in ["gpt", "assistant"] and not assistant_msg:
                         assistant_msg = content
                 if human_msg and assistant_msg:
-                    return {
+                    return self._attach_base_dir({
                         "image": image,
                         "question": human_msg.replace("<image>", "").strip(),
                         "answer": assistant_msg,
-                    }
+                    }, base_dir)
 
         # ShareGPT4V format
         if "caption" in item and "image" in item:
-            return {
+            return self._attach_base_dir({
                 "image": image,
                 "question": "Describe this image in detail.",
                 "answer": item["caption"],
-            }
+            }, base_dir)
 
         # =====================================================================
         # STAGE 2: VISION/OCR DATASETS
@@ -350,7 +447,7 @@ class EmberNetDataset(Dataset):
             }
 
         # DocVQA / InfoVQA format
-        if "question" in item and "answer" in item:
+        if "question" in item and "answer" in item and "choices" not in item:
             answer = item["answer"]
             if isinstance(answer, list):
                 answer = answer[0] if answer else ""
@@ -381,14 +478,6 @@ class EmberNetDataset(Dataset):
                 "image": image,
                 "question": item["query"],
                 "answer": str(item["label"]),
-            }
-
-        # MathVista format
-        if "question" in item and "answer" in item:
-            return {
-                "image": image,
-                "question": item["question"],
-                "answer": str(item["answer"]),
             }
 
         # PlotQA / FigureQA format
@@ -430,39 +519,6 @@ class EmberNetDataset(Dataset):
             }
 
         # =====================================================================
-        # STAGE 2: SCIENCE/REASONING DATASETS
-        # =====================================================================
-
-        # ScienceQA format
-        if "question" in item and "choices" in item and "answer" in item:
-            choices = item["choices"]
-            answer_idx = item["answer"]
-            if isinstance(answer_idx, int) and 0 <= answer_idx < len(choices):
-                answer = choices[answer_idx]
-            else:
-                answer = str(answer_idx)
-
-            # Format question with choices
-            question = item["question"]
-            if choices:
-                choices_str = "\n".join([f"{chr(65+i)}. {c}" for i, c in enumerate(choices)])
-                question = f"{question}\n\nChoices:\n{choices_str}"
-
-            return {
-                "image": image,
-                "question": question,
-                "answer": answer,
-            }
-
-        # CLEVR format
-        if "question" in item and "answer" in item:
-            return {
-                "image": image,
-                "question": item["question"],
-                "answer": str(item["answer"]),
-            }
-
-        # =====================================================================
         # FALLBACK: Generic format
         # =====================================================================
 
@@ -488,6 +544,49 @@ class EmberNetDataset(Dataset):
             "question": str(question),
             "answer": str(answer),
         }
+
+    def _attach_base_dir(
+        self,
+        sample: Dict[str, Any],
+        base_dir: Optional[Path],
+    ) -> Dict[str, Any]:
+        if base_dir is not None:
+            sample["_base_dir"] = str(base_dir)
+        return sample
+
+    def _normalize_image_value(
+        self,
+        image_value: Any,
+        base_dir: Optional[Path],
+    ) -> Any:
+        if image_value is None:
+            return None
+
+        if HAS_PIL and hasattr(image_value, "convert"):
+            return image_value
+
+        if isinstance(image_value, dict):
+            img_path = image_value.get("path") or image_value.get("filename")
+            img_bytes = image_value.get("bytes")
+
+            if img_bytes is not None and HAS_PIL:
+                import io
+
+                try:
+                    return Image.open(io.BytesIO(img_bytes))
+                except Exception:
+                    pass
+
+            if img_path:
+                path = Path(img_path)
+                if base_dir is not None and not path.is_absolute():
+                    return str(path)
+                return str(path)
+
+        if isinstance(image_value, (str, Path)):
+            return str(image_value)
+
+        return image_value
 
     def _create_dummy_data(self, num_samples: int = 100) -> List[Dict[str, Any]]:
         """Create dummy data for testing."""
@@ -558,15 +657,48 @@ class EmberNetDataset(Dataset):
                 return sample["image"]
             elif HAS_PIL and hasattr(sample["image"], "convert"):
                 return self.image_processor(sample["image"])
+            elif isinstance(sample["image"], (str, Path)):
+                path = Path(sample["image"])
+                if path.exists() and HAS_PIL:
+                    image = Image.open(path)
+                    return self.image_processor(image)
+                base_dir = sample.get("_base_dir")
+                if base_dir:
+                    image = self._load_image_from_zip(Path(base_dir), path)
+                    if image is not None:
+                        return self.image_processor(image)
 
         if "image_path" in sample and sample["image_path"]:
             path = Path(sample["image_path"])
             if path.exists() and HAS_PIL:
                 image = Image.open(path)
                 return self.image_processor(image)
+            base_dir = sample.get("_base_dir")
+            if base_dir:
+                image = self._load_image_from_zip(Path(base_dir), path)
+                if image is not None:
+                    return self.image_processor(image)
 
         # Return random tensor as placeholder
         return torch.randn(3, self.config.image_size, self.config.image_size)
+
+    def _load_image_from_zip(self, base_dir: Path, rel_path: Path) -> Optional["Image.Image"]:
+        if not HAS_PIL:
+            return None
+
+        import io
+        import zipfile
+
+        rel_posix = rel_path.as_posix()
+        for zip_path in base_dir.glob("*.zip"):
+            try:
+                with zipfile.ZipFile(zip_path) as zf:
+                    if rel_posix in zf.namelist():
+                        with zf.open(rel_posix) as f:
+                            return Image.open(io.BytesIO(f.read()))
+            except Exception:
+                continue
+        return None
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -622,10 +754,19 @@ class MixedDomainDataset(Dataset):
             ratio = ratios.get(name, 0.0)
             num_samples = int(total_samples * ratio)
 
+            if num_samples <= 0:
+                continue
+            if len(dataset) == 0:
+                print(f"Warning: dataset '{name}' is empty; skipping")
+                continue
+
             # Sample with replacement if needed
             indices = random.choices(range(len(dataset)), k=num_samples)
             for idx in indices:
                 self.samples.append((name, idx))
+
+        if not self.samples:
+            raise ValueError("No samples were available to build MixedDomainDataset")
 
         # Shuffle
         random.shuffle(self.samples)
@@ -689,8 +830,10 @@ def create_dataloaders(
             "vision_diagram": config.vision_ratio / 2,
             "code_math_chart": config.code_math_ratio / 2,
             "code_math_formula": config.code_math_ratio / 2,
-            "robotics_spatial": config.robotics_ratio,
-            "agentic_reasoning": config.agentic_ratio,
+            "spatial_scene": config.robotics_ratio / 2,
+            "spatial_reasoning": config.robotics_ratio / 2,
+            "agentic_knowledge": config.agentic_ratio / 2,
+            "agentic_reasoning": config.agentic_ratio / 2,
             "general": config.general_ratio,
         }
 
