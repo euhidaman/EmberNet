@@ -30,14 +30,14 @@ Stage 1 (Alignment): Trains PROJECTOR, not experts
   - LLaVA-Instruct, ShareGPT4V, ALLaVA → Projector learns vision-language mapping
 
 Stage 2 (Expert SFT): Trains EXPERTS based on domain
-  - TextVQA, DocVQA, OCR-VQA      → Expert 0 (vision_ocr)
-  - AI2D, InfoVQA                  → Expert 1 (vision_diagram)
-  - ChartQA, PlotQA, FigureQA      → Expert 2 (code_math_chart)
-  - MathVista                      → Expert 3 (code_math_formula)
-  - VQAv2, Visual Genome           → Expert 4 (spatial_scene)
-  - GQA                            → Expert 5 (spatial_reasoning)
-  - OK-VQA, A-OKVQA                → Expert 6 (agentic_knowledge)
-  - ScienceQA, CLEVR               → Expert 7 (agentic_reasoning)
+  - TextVQA, DocVQA                → Expert 0 (vision_ocr)
+  - AI2D                            → Expert 1 (vision_diagram)
+  - ChartQA, PlotQA                 → Expert 2 (code_math_chart)
+  - MathVista                       → Expert 3 (code_math_formula)
+  - VQAv2                           → Expert 4 (spatial_scene)
+  - GQA                             → Expert 5 (spatial_reasoning)
+  - OK-VQA, A-OKVQA                 → Expert 6 (agentic_knowledge)
+  - ScienceQA                       → Expert 7 (agentic_reasoning)
 
 ================================================================================
 COMPLETE DATASET LIST
@@ -51,6 +51,8 @@ The projector learns to map SigLIP image embeddings into the LLM's embedding spa
 - LLaVA-Instruct-150K: High-quality image-text conversations
 - ShareGPT4V: Detailed image descriptions and conversations
 - ALLaVA: Diverse visual instruction data
+- COCO Captions: General image captioning and description
+- Conceptual Captions: Large-scale diverse image captioning (optional)
 
 STAGE 2 - EXPERT SPECIALIZATION (Domain-Specific Fine-tuning):
 --------------------------------------------------------------
@@ -60,26 +62,30 @@ VISION/OCR EXPERTS (0, 1):
 - TextVQA: Reading text in natural scene images
 - DocVQA: Understanding documents, forms, receipts
 - AI2D: Scientific diagrams with annotations
-- InfoVQA: Infographics understanding
-- OCR-VQA: Book covers, signs, product labels
+(Note: InfoVQA, OCR-VQA not available as standalone datasets)
 
 CODE/MATH EXPERTS (2, 3):
 - ChartQA: Bar charts, line graphs, pie charts
-- PlotQA: Scientific plots and figures
-- FigureQA: Figure understanding and reasoning
-- DVQA: Data visualization QA
+- PlotQA: Scientific plots and figures (alternative source: achang/plot_qa)
 - MathVista: Mathematical visual reasoning
+(Note: FigureQA, DVQA not available as standalone datasets)
 
 SPATIAL/SCENE EXPERTS (4, 5):
 - VQAv2: General visual question answering
 - GQA: Scene graph based visual reasoning
-- Visual Genome: Dense scene annotations
+- RefCOCO: Visual grounding and referring expressions (optional)
+- Visual Genome: Dense region descriptions (optional)
+- NLVR2: Natural language visual reasoning with image pairs
+- VSR: Visual spatial reasoning
+(Note: Original Visual Genome dataset not available as standalone)
 
 REASONING EXPERTS (6, 7):
 - OK-VQA: Outside knowledge VQA
 - A-OKVQA: Augmented outside knowledge VQA
 - ScienceQA: Science diagrams and questions
-- CLEVR: Compositional reasoning
+- VCR: Visual Commonsense Reasoning with rationales
+- Winoground: Visio-linguistic compositional reasoning (optional)
+(Note: CLEVR not available as standalone dataset)
 
 USAGE:
 ======
@@ -113,8 +119,8 @@ DATASETS = {
     # =========================================================================
 
     "llava_instruct_150k": {
-        "hf_name": "lmms-lab/LLaVA-Instruct-150K",
-        "config": "default",
+        "hf_name": "liuhaotian/LLaVA-Instruct-150K",
+        "config": None,
         "description": "High-quality GPT-4 generated visual conversations",
         "stage": 1,
         "domain": "general",
@@ -124,8 +130,8 @@ DATASETS = {
         "samples": "150K",
     },
     "sharegpt4v": {
-        "hf_name": "lmms-lab/ShareGPT4V",
-        "config": "default",
+        "hf_name": "Lin-Chen/ShareGPT4V",
+        "config": None,
         "description": "Detailed image descriptions from GPT-4V",
         "stage": 1,
         "domain": "general",
@@ -145,6 +151,18 @@ DATASETS = {
         "priority": "recommended",
         "samples": "700K",
     },
+    # NOTE: COCO - using direct HuggingFace dataset
+    "coco_captions": {
+        "hf_name": "HuggingFaceM4/COCO",
+        "config": None,
+        "description": "COCO image captions for general visual understanding",
+        "stage": 1,
+        "domain": "general",
+        "expert": "Projector (not experts)",
+        "size_gb": 3.0,
+        "priority": "recommended",
+        "samples": "118K",
+    },
 
     # =========================================================================
     # STAGE 2: VISION/OCR EXPERTS (Expert 0 & 1)
@@ -152,8 +170,8 @@ DATASETS = {
     # =========================================================================
 
     "textvqa": {
-        "hf_name": "lmms-lab/TextVQA",
-        "config": "default",
+        "hf_name": "lmms-lab/textvqa",
+        "config": None,
         "description": "Text reading in natural scene images",
         "stage": 2,
         "domain": "vision_ocr",
@@ -173,31 +191,33 @@ DATASETS = {
         "priority": "critical",
         "samples": "50K",
     },
-    "infovqa": {
-        "hf_name": "lmms-lab/InfographicVQA",
-        "config": "default",
-        "description": "Infographics understanding",
-        "stage": 2,
-        "domain": "vision_diagram",
-        "expert": "Expert 1: vision_diagram",
-        "size_gb": 2.5,
-        "priority": "recommended",
-        "samples": "30K",
-    },
-    "ocrvqa": {
-        "hf_name": "howard-hou/OCR-VQA",
-        "config": "default",
-        "description": "OCR on book covers, signs, products",
-        "stage": 2,
-        "domain": "vision_ocr",
-        "expert": "Expert 0: vision_ocr",
-        "size_gb": 4.0,
-        "priority": "recommended",
-        "samples": "200K",
-    },
+    # NOTE: InfographicVQA removed - exists as subset in DocVQA/Cauldron, not standalone
+    # "infovqa": {
+    #     "hf_name": "lmms-lab/InfographicVQA",
+    #     "config": "default",
+    #     "description": "Infographics understanding (NOT AVAILABLE - use DocVQA subset)",
+    #     "stage": 2,
+    #     "domain": "vision_diagram",
+    #     "expert": "Expert 1: vision_diagram",
+    #     "size_gb": 2.5,
+    #     "priority": "optional",
+    #     "samples": "30K",
+    # },
+    # REPLACED: OCR-VQA path could not be verified - commented out
+    # "ocrvqa": {
+    #     "hf_name": "howard-hou/OCR-VQA",
+    #     "config": "default",
+    #     "description": "OCR on book covers, signs, products (PATH NOT VERIFIED)",
+    #     "stage": 2,
+    #     "domain": "vision_ocr",
+    #     "expert": "Expert 0: vision_ocr",
+    #     "size_gb": 4.0,
+    #     "priority": "optional",
+    #     "samples": "200K",
+    # },
     "ai2d": {
         "hf_name": "lmms-lab/ai2d",
-        "config": "default",
+        "config": None,
         "description": "Scientific diagram understanding",
         "stage": 2,
         "domain": "vision_diagram",
@@ -214,7 +234,7 @@ DATASETS = {
 
     "chartqa": {
         "hf_name": "ahmed-masry/ChartQA",
-        "config": "default",
+        "config": None,
         "description": "Chart understanding - bar, line, pie charts",
         "stage": 2,
         "domain": "code_math_chart",
@@ -223,42 +243,45 @@ DATASETS = {
         "priority": "critical",
         "samples": "32K",
     },
+    # NOTE: PlotQA alternative path (lmms-lab version doesn't exist)
     "plotqa": {
-        "hf_name": "lmms-lab/PlotQA",
-        "config": "default",
-        "description": "Scientific plot understanding",
+        "hf_name": "achang/plot_qa",
+        "config": None,
+        "description": "Scientific plot understanding (alternative source)",
         "stage": 2,
         "domain": "code_math_chart",
         "expert": "Expert 2: code_math_chart",
         "size_gb": 8.0,
-        "priority": "recommended",
+        "priority": "optional",
         "samples": "224K",
     },
-    "figureqa": {
-        "hf_name": "lmms-lab/FigureQA",
-        "config": "default",
-        "description": "Figure understanding and visual reasoning",
-        "stage": 2,
-        "domain": "code_math_chart",
-        "expert": "Expert 2: code_math_chart",
-        "size_gb": 5.0,
-        "priority": "recommended",
-        "samples": "180K",
-    },
-    "dvqa": {
-        "hf_name": "lmms-lab/DVQA",
-        "config": "default",
-        "description": "Data visualization QA",
-        "stage": 2,
-        "domain": "code_math_chart",
-        "expert": "Expert 2: code_math_chart",
-        "size_gb": 3.0,
-        "priority": "optional",
-        "samples": "300K",
-    },
+    # NOTE: FigureQA doesn't exist as standalone - exists in HuggingFaceM4/the_cauldron
+    # "figureqa": {
+    #     "hf_name": "lmms-lab/FigureQA",
+    #     "config": "default",
+    #     "description": "Figure understanding and visual reasoning (NOT AVAILABLE)",
+    #     "stage": 2,
+    #     "domain": "code_math_chart",
+    #     "expert": "Expert 2: code_math_chart",
+    #     "size_gb": 5.0,
+    #     "priority": "optional",
+    #     "samples": "180K",
+    # },
+    # NOTE: DVQA doesn't exist as standalone - exists in larger collections
+    # "dvqa": {
+    #     "hf_name": "lmms-lab/DVQA",
+    #     "config": "default",
+    #     "description": "Data visualization QA (NOT AVAILABLE)",
+    #     "stage": 2,
+    #     "domain": "code_math_chart",
+    #     "expert": "Expert 2: code_math_chart",
+    #     "size_gb": 3.0,
+    #     "priority": "optional",
+    #     "samples": "300K",
+    # },
     "mathvista": {
         "hf_name": "AI4Math/MathVista",
-        "config": "default",
+        "config": None,
         "description": "Mathematical visual reasoning",
         "stage": 2,
         "domain": "code_math_formula",
@@ -275,7 +298,7 @@ DATASETS = {
 
     "vqav2": {
         "hf_name": "lmms-lab/VQAv2",
-        "config": "default",
+        "config": None,
         "description": "General visual question answering",
         "stage": 2,
         "domain": "spatial_scene",
@@ -295,20 +318,21 @@ DATASETS = {
         "samples": "22M",
         "expert": "Expert 5: spatial_reasoning",
     },
-    "visual_genome": {
-        "hf_name": "lmms-lab/VisualGenome",
-        "config": "default",
-        "description": "Dense scene annotations and relationships",
-        "stage": 2,
-        "domain": "spatial_scene",
-        "expert": "Expert 4: spatial_scene",
-        "size_gb": 15.0,
-        "priority": "optional",
-        "samples": "108K images",
-    },
+    # NOTE: Visual Genome doesn't exist as standalone in this format
+    # "visual_genome": {
+    #     "hf_name": "lmms-lab/VisualGenome",
+    #     "config": "default",
+    #     "description": "Dense scene annotations and relationships (NOT AVAILABLE)",
+    #     "stage": 2,
+    #     "domain": "spatial_scene",
+    #     "expert": "Expert 4: spatial_scene",
+    #     "size_gb": 15.0,
+    #     "priority": "optional",
+    #     "samples": "108K images",
+    # },
     "okvqa": {
         "hf_name": "lmms-lab/OK-VQA",
-        "config": "default",
+        "config": None,
         "description": "Outside knowledge visual QA",
         "stage": 2,
         "domain": "agentic_knowledge",
@@ -325,7 +349,7 @@ DATASETS = {
 
     "aokvqa": {
         "hf_name": "HuggingFaceM4/A-OKVQA",
-        "config": "default",
+        "config": None,
         "description": "Augmented outside knowledge VQA with rationales",
         "stage": 2,
         "domain": "agentic_knowledge",
@@ -336,7 +360,7 @@ DATASETS = {
     },
     "scienceqa": {
         "hf_name": "derek-thomas/ScienceQA",
-        "config": "default",
+        "config": None,
         "description": "Science questions with diagrams",
         "stage": 2,
         "domain": "agentic_reasoning",
@@ -345,17 +369,114 @@ DATASETS = {
         "priority": "critical",
         "samples": "21K",
     },
-    "clevr": {
-        "hf_name": "lmms-lab/CLEVR",
-        "config": "default",
-        "description": "Compositional visual reasoning",
+    "refcoco": {
+        "hf_name": "HuggingFaceM4/refcoco",
+        "config": None,
+        "description": "Referring expressions and visual grounding",
+        "stage": 2,
+        "domain": "spatial_scene",
+        "expert": "Expert 4: spatial_scene",
+        "size_gb": 2.0,
+        "priority": "optional",
+        "samples": "142K",
+    },
+
+    # =========================================================================
+    # STAGE 2: ACTION & EMBODIED AI DATASETS
+    # For action recognition, instruction following, navigation
+    # =========================================================================
+
+    "visual_genome_region": {
+        "hf_name": "visual-genome/visual-genome",
+        "config": None,
+        "description": "Dense region descriptions and relationships",
+        "stage": 2,
+        "domain": "spatial_scene",
+        "expert": "Expert 4: spatial_scene",
+        "size_gb": 10.0,
+        "priority": "optional",
+        "samples": "108K",
+    },
+    "nlvr2": {
+        "hf_name": "lmms-lab/NLVR2",
+        "config": None,
+        "description": "Natural language visual reasoning (pair images)",
+        "stage": 2,
+        "domain": "spatial_reasoning",
+        "expert": "Expert 5: spatial_reasoning",
+        "size_gb": 3.0,
+        "priority": "recommended",
+        "samples": "107K",
+    },
+    "vsr": {
+        "hf_name": "cambridgeltl/vsr_random",
+        "config": None,
+        "description": "Visual Spatial Reasoning dataset",
+        "stage": 2,
+        "domain": "spatial_reasoning",
+        "expert": "Expert 5: spatial_reasoning",
+        "size_gb": 0.5,
+        "priority": "optional",
+        "samples": "10K",
+    },
+    "winoground": {
+        "hf_name": "facebook/winoground",
+        "config": None,
+        "description": "Visio-linguistic compositional reasoning",
         "stage": 2,
         "domain": "agentic_reasoning",
         "expert": "Expert 7: agentic_reasoning",
-        "size_gb": 18.0,
+        "size_gb": 0.2,
         "priority": "optional",
-        "samples": "850K",
+        "samples": "800",
     },
+    "conceptual_captions": {
+        "hf_name": "google-research-datasets/conceptual_captions",
+        "config": None,
+        "description": "Large-scale image captioning (diverse domains)",
+        "stage": 1,
+        "domain": "general",
+        "expert": "Projector (not experts)",
+        "size_gb": 12.0,
+        "priority": "optional",
+        "samples": "3.3M",
+    },
+    "visual_commonsense": {
+        "hf_name": "HuggingFaceM4/VCR",
+        "config": None,
+        "description": "Visual Commonsense Reasoning with rationales",
+        "stage": 2,
+        "domain": "agentic_reasoning",
+        "expert": "Expert 7: agentic_reasoning",
+        "size_gb": 6.0,
+        "priority": "recommended",
+        "samples": "290K",
+    },
+
+    # NOTE: Visual7W path could not be verified
+    # "visual7w": {
+    #     "hf_name": "nlphuji/visual7w",
+    #     "config": None,
+    #     "description": "Visual question answering with pointing (PATH NOT VERIFIED)",
+    #     "stage": 2,
+    #     "domain": "spatial_reasoning",
+    #     "expert": "Expert 5: spatial_reasoning",
+    #     "size_gb": 3.0,
+    #     "priority": "optional",
+    #     "samples": "47K",
+    # },
+    # NOTE: CLEVR doesn't exist as standalone in lmms-lab
+    # "clevr": {
+    #     "hf_name": "lmms-lab/CLEVR",
+    #     "config": "default",
+    #     "description": "Compositional visual reasoning (NOT AVAILABLE)",
+    #     "stage": 2,
+    #     "domain": "agentic_reasoning",
+    #     "expert": "Expert 7: agentic_reasoning",
+    #     "size_gb": 18.0,
+    #     "priority": "optional",
+    #     "samples": "850K",
+    # },
 }
 
 # =============================================================================
