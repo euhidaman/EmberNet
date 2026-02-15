@@ -120,9 +120,9 @@ DATASETS = {
 
     # NOTE: Using alternative high-quality instruction datasets that don't require loading scripts
     "llava_instruct_150k": {
-        "hf_name": "liuhaotian/LLaVA-Instruct-150K",
+        "hf_name": "adamo1139/llava-instruct-150k-with-images",
         "config": None,
-        "description": "High-quality GPT-4 generated visual conversations",
+        "description": "LLaVA-Instruct-150K with images included",
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
@@ -152,10 +152,10 @@ DATASETS = {
         "priority": "recommended",
         "samples": "700K",
     },
-    # NOTE: Using COCO from anas-awadalla's Parquet version
+    # NOTE: COCO captions from HuggingFaceM4/COCO
     "coco_captions": {
-        "hf_name": "anas-awadalla/coco",
-        "config": None,
+        "hf_name": "HuggingFaceM4/COCO",
+        "config": "2014_captions",
         "description": "COCO image captions for general visual understanding",
         "stage": 1,
         "domain": "general",
@@ -163,6 +163,17 @@ DATASETS = {
         "size_gb": 3.0,
         "priority": "recommended",
         "samples": "118K",
+    },
+    "conceptual_captions": {
+        "hf_name": "google-research-datasets/conceptual_captions",
+        "config": None,
+        "description": "Large-scale image captioning (diverse domains)",
+        "stage": 1,
+        "domain": "general",
+        "expert": "Projector (not experts)",
+        "size_gb": 12.0,
+        "priority": "optional",
+        "samples": "3.3M",
     },
 
     # =========================================================================
@@ -331,6 +342,18 @@ DATASETS = {
     #     "priority": "optional",
     #     "samples": "108K images",
     # },
+    # NOTE: Visual Genome - Using ranjaykrishna/visual_genome (region_descriptions_v1.2.0)
+    "visual_genome_region": {
+        "hf_name": "ranjaykrishna/visual_genome",
+        "config": "region_descriptions_v1.2.0",
+        "description": "Dense region descriptions and relationships",
+        "stage": 2,
+        "domain": "spatial_scene",
+        "expert": "Expert 4: spatial_scene",
+        "size_gb": 10.0,
+        "priority": "optional",
+        "samples": "108K",
+    },
     "okvqa": {
         "hf_name": "lmms-lab/OK-VQA",
         "config": None,
@@ -370,15 +393,15 @@ DATASETS = {
         "priority": "critical",
         "samples": "21K",
     },
-    # NOTE: RefCOCO - Using anas-awadalla's Parquet version
+    # NOTE: RefCOCO - lmms-lab formatted version
     "refcoco": {
-        "hf_name": "anas-awadalla/refcoco",
+        "hf_name": "lmms-lab/RefCOCO",
         "config": None,
         "description": "Referring expressions and visual grounding",
         "stage": 2,
         "domain": "spatial_scene",
         "expert": "Expert 4: spatial_scene",
-        "size_gb": 2.0,
+        "size_gb": 2.3,
         "priority": "optional",
         "samples": "142K",
     },
@@ -388,18 +411,6 @@ DATASETS = {
     # For action recognition, instruction following, navigation
     # =========================================================================
 
-    # NOTE: Visual Genome - Using lmms-lab VG dataset
-    "visual_genome_region": {
-        "hf_name": "lmms-lab/VG",
-        "config": None,
-        "description": "Dense region descriptions and relationships",
-        "stage": 2,
-        "domain": "spatial_scene",
-        "expert": "Expert 4: spatial_scene",
-        "size_gb": 10.0,
-        "priority": "optional",
-        "samples": "108K",
-    },
     "nlvr2": {
         "hf_name": "lmms-lab/NLVR2",
         "config": None,
@@ -433,29 +444,18 @@ DATASETS = {
         "priority": "optional",
         "samples": "800",
     },
-    "conceptual_captions": {
-        "hf_name": "google-research-datasets/conceptual_captions",
-        "config": None,
-        "description": "Large-scale image captioning (diverse domains)",
-        "stage": 1,
-        "domain": "general",
-        "expert": "Projector (not experts)",
-        "size_gb": 12.0,
-        "priority": "optional",
-        "samples": "3.3M",
-    },
-    # NOTE: VCR - Using lmms-lab version
-    "visual_commonsense": {
-        "hf_name": "lmms-lab/VCR",
-        "config": None,
-        "description": "Visual Commonsense Reasoning with rationales",
-        "stage": 2,
-        "domain": "agentic_reasoning",
-        "expert": "Expert 7: agentic_reasoning",
-        "size_gb": 6.0,
-        "priority": "recommended",
-        "samples": "290K",
-    },
+    # NOTE: VCR is not available on HuggingFace Hub; requires manual download.
+    # "visual_commonsense": {
+    #     "hf_name": "visual_commonsense",
+    #     "config": None,
+    #     "description": "Visual Commonsense Reasoning with rationales (manual download)",
+    #     "stage": 2,
+    #     "domain": "agentic_reasoning",
+    #     "expert": "Expert 7: agentic_reasoning",
+    #     "size_gb": 6.0,
+    #     "priority": "recommended",
+    #     "samples": "290K",
+    # },
 
     # NOTE: Visual7W path could not be verified
     # "visual7w": {
