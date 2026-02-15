@@ -140,6 +140,7 @@ DATASETS = {
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
+        "allow_missing_images": True,
         "size_gb": 8.0,
         "priority": "critical",
         "samples": "100K",
@@ -151,6 +152,7 @@ DATASETS = {
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
+        "allow_missing_images": True,
         "size_gb": 6.0,
         "priority": "recommended",
         "samples": "700K",
@@ -175,6 +177,7 @@ DATASETS = {
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
+        "allow_missing_images": True,
         "size_gb": 12.0,
         "priority": "optional",
         "samples": "3.3M",
@@ -255,6 +258,7 @@ DATASETS = {
         "stage": 2,
         "domain": "code_math_chart",
         "expert": "Expert 2: code_math_chart",
+        "allow_missing_images": True,
         "size_gb": 1.0,
         "priority": "critical",
         "samples": "32K",
@@ -333,6 +337,7 @@ DATASETS = {
         "priority": "recommended",
         "samples": "22M",
         "expert": "Expert 5: spatial_reasoning",
+        "allow_missing_images": True,
     },
     # NOTE: Visual Genome doesn't exist as standalone in this format
     # "visual_genome": {
@@ -434,6 +439,7 @@ DATASETS = {
         "stage": 2,
         "domain": "spatial_reasoning",
         "expert": "Expert 5: spatial_reasoning",
+        "allow_missing_images": True,
         "size_gb": 0.5,
         "priority": "optional",
         "samples": "10K",
@@ -585,7 +591,10 @@ def _image_value_present(value, base_dir: Path | None = None) -> bool:
     if value is None:
         return False
     if isinstance(value, (str, Path)):
-        path = Path(value)
+        value_str = str(value)
+        if value_str.startswith("http://") or value_str.startswith("https://"):
+            return True
+        path = Path(value_str)
         if path.is_absolute() and path.exists():
             return True
         if path.exists():
@@ -597,6 +606,9 @@ def _image_value_present(value, base_dir: Path | None = None) -> bool:
                 return True
         return False
     if isinstance(value, dict):
+        url_value = value.get("url") or value.get("image_url")
+        if url_value:
+            return True
         path = value.get("path") or value.get("filename")
         if path:
             path = Path(path)
@@ -623,7 +635,7 @@ def _image_columns(features) -> List[str]:
         if _is_image_feature(feature):
             columns.append(name)
         elif isinstance(feature, Value) and feature.dtype == "string":
-            if name in {"image", "image_path", "img", "picture"}:
+            if name in {"image", "image_path", "img", "picture", "image_url", "image_uri", "url"}:
                 columns.append(name)
     return columns
 
@@ -712,7 +724,6 @@ def _snapshot_download_dataset(
         repo_id=hf_name,
         repo_type="dataset",
         local_dir=str(save_path),
-        local_dir_use_symlinks=False,
         token=token,
     )
 
@@ -746,6 +757,7 @@ def download_dataset(
     config_name = info.get("config", None)
     save_path = output_dir / dataset_key
     preferred_download = info.get("preferred_download", "datasets")
+    allow_missing_images = bool(info.get("allow_missing_images", False))
     resolved_method = method
     if resolved_method == "auto":
         resolved_method = preferred_download
@@ -794,6 +806,7 @@ def download_dataset(
             resolved_config = config_name
             image_columns = []
             has_text = True
+            image_validation_passed = False
             sample_count = 0
             missing_images = 0
             splits = []
@@ -811,9 +824,14 @@ def download_dataset(
             features = ds[first_split].features
             image_columns = _image_columns(features)
             has_text = _is_text_feature(features)
+            image_validation_passed = True
 
             if not image_columns:
-                raise ValueError(f"No image feature found in dataset: {hf_name}")
+                if allow_missing_images:
+                    image_validation_passed = False
+                    print(f"! Warning: No image feature found in dataset: {hf_name}")
+                else:
+                    raise ValueError(f"No image feature found in dataset: {hf_name}")
             if not has_text:
                 raise ValueError(f"No text feature found in dataset: {hf_name}")
 
@@ -825,7 +843,11 @@ def download_dataset(
                 if not has_image:
                     missing_images += 1
             if sample_count > 0 and missing_images == sample_count:
-                raise ValueError(f"No images present in sample rows for dataset: {hf_name}")
+                if allow_missing_images:
+                    image_validation_passed = False
+                    print(f"! Warning: No images present in sample rows for dataset: {hf_name}")
+                else:
+                    raise ValueError(f"No images present in sample rows for dataset: {hf_name}")
 
             # Save to disk
             save_path.mkdir(parents=True, exist_ok=True)
@@ -853,6 +875,7 @@ def download_dataset(
             "text_feature_present": has_text,
             "image_samples_checked": sample_count,
             "image_samples_missing": missing_images,
+            "image_validation_passed": image_validation_passed,
             "splits": splits,
             "num_samples": num_samples,
             "total_samples": total_samples,
@@ -914,6 +937,7 @@ def download_dataset(
                     "text_feature_present": True,
                     "image_samples_checked": 0,
                     "image_samples_missing": 0,
+                    "image_validation_passed": False,
                     "splits": [],
                     "num_samples": {},
                     "total_samples": 0,
