@@ -163,7 +163,7 @@ DATASETS = {
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
-        "requires_remote_code": True,
+        "preferred_download": "snapshot",
         "size_gb": 3.0,
         "priority": "recommended",
         "samples": "118K",
@@ -354,7 +354,7 @@ DATASETS = {
         "stage": 2,
         "domain": "spatial_scene",
         "expert": "Expert 4: spatial_scene",
-        "requires_remote_code": True,
+        "preferred_download": "snapshot",
         "size_gb": 10.0,
         "priority": "optional",
         "samples": "108K",
@@ -632,7 +632,6 @@ def _load_dataset_with_fallback(
     hf_name: str,
     config_name: str | None = None,
     token: str | None = None,
-    trust_remote_code: bool = False,
 ):
     """Load a dataset from Hugging Face with robust config fallback."""
     from datasets import get_dataset_config_names, load_dataset
@@ -646,7 +645,7 @@ def _load_dataset_with_fallback(
     candidates.append(None)
 
     try:
-        for cfg in get_dataset_config_names(hf_name, trust_remote_code=trust_remote_code):
+        for cfg in get_dataset_config_names(hf_name):
             if cfg not in candidates:
                 candidates.append(cfg)
     except Exception:
@@ -655,12 +654,11 @@ def _load_dataset_with_fallback(
     for cfg in candidates:
         try:
             if cfg is None:
-                ds = load_dataset(hf_name, trust_remote_code=trust_remote_code, token=token)
+                ds = load_dataset(hf_name, token=token)
             else:
                 ds = load_dataset(
                     hf_name,
                     cfg,
-                    trust_remote_code=trust_remote_code,
                     token=token,
                 )
             return ds, cfg
@@ -747,7 +745,6 @@ def download_dataset(
     hf_name = info["hf_name"]
     config_name = info.get("config", None)
     save_path = output_dir / dataset_key
-    trust_remote_code = bool(info.get("requires_remote_code", False))
     preferred_download = info.get("preferred_download", "datasets")
     resolved_method = method
     if resolved_method == "auto":
@@ -808,7 +805,6 @@ def download_dataset(
                 hf_name,
                 config_name,
                 token=hf_token,
-                trust_remote_code=trust_remote_code,
             )
 
             first_split = next(iter(ds.keys()))
@@ -874,6 +870,54 @@ def download_dataset(
         return True
 
     except Exception as e:
+        err_msg = str(e)
+        if resolved_method == "datasets" and "Dataset scripts are no longer supported" in err_msg:
+            print(f"! {dataset_key}: datasets API blocked script-based loading; retrying with snapshot method")
+            try:
+                start_time = time.time()
+                save_path.mkdir(parents=True, exist_ok=True)
+                snapshot_meta = _snapshot_download_dataset(
+                    hf_name,
+                    save_path,
+                    token=hf_token,
+                    extract_archives=extract_archives,
+                )
+                download_time = time.time() - start_time
+
+                metadata = {
+                    "dataset_key": dataset_key,
+                    "hf_name": hf_name,
+                    "config": config_name,
+                    "requested_config": config_name,
+                    "domain": info["domain"],
+                    "expert": info.get("expert", "N/A"),
+                    "stage": info["stage"],
+                    "priority": info["priority"],
+                    "description": info["description"],
+                    "download_method": "snapshot",
+                    "image_columns": [],
+                    "text_feature_present": True,
+                    "image_samples_checked": 0,
+                    "image_samples_missing": 0,
+                    "splits": [],
+                    "num_samples": {},
+                    "total_samples": 0,
+                    "estimated_size_gb": info["size_gb"],
+                    "download_time_seconds": round(download_time, 2),
+                    "save_path": str(save_path.absolute()),
+                    "download_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                metadata.update(snapshot_meta)
+                with open(save_path / "metadata.json", "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2)
+
+                print(f"✓ Successfully saved {dataset_key} to {save_path} (snapshot fallback)")
+                print(f"  Download time: {download_time:.1f} seconds")
+                return True
+            except Exception as fallback_e:
+                print(f"✗ FAILED fallback snapshot for {dataset_key}: {fallback_e}")
+                return False
+
         print(f"✗ FAILED to download {dataset_key}: {e}")
         return False
 
@@ -1205,6 +1249,7 @@ Examples:
                 with open(metadata_path, "r", encoding="utf-8") as meta_file:
                     metadata = json.load(meta_file)
                 info["resolved_config"] = metadata.get("config")
+                info["download_method"] = metadata.get("download_method")
                 info["splits"] = metadata.get("splits", [])
                 info["num_samples"] = metadata.get("num_samples", {})
             except Exception:

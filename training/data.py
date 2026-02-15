@@ -203,6 +203,11 @@ class EmberNetDataset(Dataset):
         for key, info in available.items():
             dataset_stage = str(info.get("stage", ""))
             dataset_domain = info.get("domain", "")
+            download_method = info.get("download_method", "datasets")
+
+            if download_method == "snapshot":
+                print(f"Skipping {key}: downloaded via snapshot mode (not normalized with datasets.save_to_disk)")
+                continue
 
             # Match condition:
             # - If domain is 'general', we take all stage 1 datasets (for alignment)
