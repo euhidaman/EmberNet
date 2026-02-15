@@ -105,6 +105,7 @@ import os
 import json
 import argparse
 import time
+import tarfile
 from pathlib import Path
 from typing import List, Dict
 
@@ -127,6 +128,7 @@ DATASETS = {
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
+        "preferred_download": "snapshot",
         "size_gb": 5.0,
         "priority": "critical",
         "samples": "150K",
@@ -669,10 +671,69 @@ def _load_dataset_with_fallback(
     raise RuntimeError(f"Could not load dataset '{hf_name}' with any config. {joined}")
 
 
+def _extract_archives_in_dir(dataset_dir: Path) -> int:
+    """Extract archives found under dataset_dir. Returns count extracted."""
+    import zipfile
+
+    extracted = 0
+    archive_patterns = ["*.zip", "*.tar", "*.tar.gz", "*.tgz", "*.tar.bz2", "*.tbz2"]
+    archive_files = []
+    for pattern in archive_patterns:
+        archive_files.extend(dataset_dir.rglob(pattern))
+
+    for archive_path in archive_files:
+        target_dir = archive_path.parent
+        try:
+            suffixes = [s.lower() for s in archive_path.suffixes]
+            if archive_path.suffix.lower() == ".zip":
+                with zipfile.ZipFile(archive_path) as zf:
+                    zf.extractall(target_dir)
+                extracted += 1
+            elif ".tar" in suffixes or archive_path.suffix.lower() in {".tgz", ".tbz2"}:
+                with tarfile.open(archive_path) as tf:
+                    tf.extractall(target_dir)
+                extracted += 1
+        except Exception as exc:
+            print(f"Warning: Failed to extract {archive_path}: {exc}")
+
+    return extracted
+
+
+def _snapshot_download_dataset(
+    hf_name: str,
+    save_path: Path,
+    token: str | None = None,
+    extract_archives: bool = False,
+) -> Dict[str, object]:
+    """Download dataset repository files directly (zip/tar/parquet/etc)."""
+    from huggingface_hub import snapshot_download
+
+    save_path.mkdir(parents=True, exist_ok=True)
+
+    snapshot_download(
+        repo_id=hf_name,
+        repo_type="dataset",
+        local_dir=str(save_path),
+        local_dir_use_symlinks=False,
+        token=token,
+    )
+
+    extracted_count = 0
+    if extract_archives:
+        extracted_count = _extract_archives_in_dir(save_path)
+
+    return {
+        "snapshot_path": str(save_path.absolute()),
+        "archives_extracted": extracted_count,
+    }
+
+
 def download_dataset(
     dataset_key: str,
     output_dir: Path,
     force: bool = False,
+    method: str = "auto",
+    extract_archives: bool = False,
 ) -> bool:
     """
     Download a single dataset from HuggingFace.
@@ -687,6 +748,10 @@ def download_dataset(
     config_name = info.get("config", None)
     save_path = output_dir / dataset_key
     trust_remote_code = bool(info.get("requires_remote_code", False))
+    preferred_download = info.get("preferred_download", "datasets")
+    resolved_method = method
+    if resolved_method == "auto":
+        resolved_method = preferred_download
     hf_token = (
         os.environ.get("HF_TOKEN")
         or os.environ.get("HUGGING_FACE_HUB_TOKEN")
@@ -716,42 +781,63 @@ def download_dataset(
     print(f"  Size:        ~{info['size_gb']} GB")
     print(f"  Domain:      {info['domain']}")
     print(f"  Stage:       {info['stage']}")
+    print(f"  Method:      {resolved_method}")
     print(f"{'='*70}\n")
 
     start_time = time.time()
 
     try:
-        # Load dataset from HuggingFace (explicitly disable trust_remote_code)
-        ds, resolved_config = _load_dataset_with_fallback(
-            hf_name,
-            config_name,
-            token=hf_token,
-            trust_remote_code=trust_remote_code,
-        )
+        if resolved_method == "snapshot":
+            snapshot_meta = _snapshot_download_dataset(
+                hf_name,
+                save_path,
+                token=hf_token,
+                extract_archives=extract_archives,
+            )
+            resolved_config = config_name
+            image_columns = []
+            has_text = True
+            sample_count = 0
+            missing_images = 0
+            splits = []
+            num_samples = {}
+            total_samples = 0
+        else:
+            # Load dataset from HuggingFace via datasets library
+            ds, resolved_config = _load_dataset_with_fallback(
+                hf_name,
+                config_name,
+                token=hf_token,
+                trust_remote_code=trust_remote_code,
+            )
 
-        first_split = next(iter(ds.keys()))
-        features = ds[first_split].features
-        image_columns = _image_columns(features)
-        has_text = _is_text_feature(features)
+            first_split = next(iter(ds.keys()))
+            features = ds[first_split].features
+            image_columns = _image_columns(features)
+            has_text = _is_text_feature(features)
 
-        if not image_columns:
-            raise ValueError(f"No image feature found in dataset: {hf_name}")
-        if not has_text:
-            raise ValueError(f"No text feature found in dataset: {hf_name}")
+            if not image_columns:
+                raise ValueError(f"No image feature found in dataset: {hf_name}")
+            if not has_text:
+                raise ValueError(f"No text feature found in dataset: {hf_name}")
 
-        sample_count = min(32, len(ds[first_split]))
-        missing_images = 0
-        for idx in range(sample_count):
-            row = ds[first_split][idx]
-            has_image = any(_image_value_present(row.get(col), save_path) for col in image_columns)
-            if not has_image:
-                missing_images += 1
-        if sample_count > 0 and missing_images == sample_count:
-            raise ValueError(f"No images present in sample rows for dataset: {hf_name}")
+            sample_count = min(32, len(ds[first_split]))
+            missing_images = 0
+            for idx in range(sample_count):
+                row = ds[first_split][idx]
+                has_image = any(_image_value_present(row.get(col), save_path) for col in image_columns)
+                if not has_image:
+                    missing_images += 1
+            if sample_count > 0 and missing_images == sample_count:
+                raise ValueError(f"No images present in sample rows for dataset: {hf_name}")
 
-        # Save to disk
-        save_path.mkdir(parents=True, exist_ok=True)
-        ds.save_to_disk(str(save_path))
+            # Save to disk
+            save_path.mkdir(parents=True, exist_ok=True)
+            ds.save_to_disk(str(save_path))
+            splits = list(ds.keys())
+            num_samples = {split: len(ds[split]) for split in ds.keys()}
+            total_samples = sum(len(ds[split]) for split in ds.keys())
+            snapshot_meta = {}
 
         download_time = time.time() - start_time
 
@@ -766,18 +852,20 @@ def download_dataset(
             "stage": info["stage"],
             "priority": info["priority"],
             "description": info["description"],
+            "download_method": resolved_method,
             "image_columns": image_columns,
             "text_feature_present": has_text,
             "image_samples_checked": sample_count,
             "image_samples_missing": missing_images,
-            "splits": list(ds.keys()),
-            "num_samples": {split: len(ds[split]) for split in ds.keys()},
-            "total_samples": sum(len(ds[split]) for split in ds.keys()),
+            "splits": splits,
+            "num_samples": num_samples,
+            "total_samples": total_samples,
             "estimated_size_gb": info["size_gb"],
             "download_time_seconds": round(download_time, 2),
             "save_path": str(save_path.absolute()),
             "download_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
+        metadata.update(snapshot_meta)
         with open(save_path / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
 
@@ -794,6 +882,8 @@ def download_multiple_datasets(
     dataset_keys: List[str],
     output_dir: Path,
     force: bool = False,
+    method: str = "auto",
+    extract_archives: bool = False,
 ) -> Dict[str, bool]:
     """
     Download multiple datasets.
@@ -811,7 +901,13 @@ def download_multiple_datasets(
 
     for i, dataset_key in enumerate(dataset_keys, 1):
         print(f"\n[{i}/{total}] Starting download: {dataset_key}")
-        success = download_dataset(dataset_key, output_dir, force)
+        success = download_dataset(
+            dataset_key,
+            output_dir,
+            force,
+            method=method,
+            extract_archives=extract_archives,
+        )
         results[dataset_key] = success
 
         if success:
@@ -986,6 +1082,18 @@ Examples:
         action="store_true",
         help="Re-download datasets even if they exist"
     )
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="auto",
+        choices=["auto", "datasets", "snapshot"],
+        help="Download method: auto (per-dataset), datasets (load+save), snapshot (raw repo files)"
+    )
+    parser.add_argument(
+        "--extract-archives",
+        action="store_true",
+        help="When using snapshot method, extract zip/tar archives after download"
+    )
 
     args = parser.parse_args()
 
@@ -1040,7 +1148,13 @@ Examples:
     print(f"{'='*70}\n")
 
     # Download datasets
-    results = download_multiple_datasets(datasets_to_download, output_dir, args.force)
+    results = download_multiple_datasets(
+        datasets_to_download,
+        output_dir,
+        args.force,
+        method=args.method,
+        extract_archives=args.extract_archives,
+    )
 
     # Print summary
     successful = [k for k, v in results.items() if v]
@@ -1065,6 +1179,8 @@ Examples:
     manifest = {
         "download_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "mode": mode,
+        "download_method": args.method,
+        "extract_archives": bool(args.extract_archives),
         "total_datasets": len(results),
         "successful": successful,
         "failed": failed,

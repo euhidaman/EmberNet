@@ -293,9 +293,34 @@ class EmberNetDataset(Dataset):
             disk_path = Path(self.config.data_dir) / dataset_name
             if disk_path.exists():
                 print(f"Loading {dataset_name} from disk: {disk_path}")
-                ds = load_from_disk(str(disk_path))
-                ds = self._select_split(ds)
-                base_dir = disk_path
+                try:
+                    ds = load_from_disk(str(disk_path))
+                    ds = self._select_split(ds)
+                    base_dir = disk_path
+                except Exception:
+                    # Snapshot/raw repo layout fallback
+                    print(f"Disk path is not saved Dataset format, trying local dataset repo for {dataset_name}...")
+                    ds = None
+                    local_errors = []
+                    try:
+                        ds = load_dataset(str(disk_path), trust_remote_code=False)
+                        ds = self._select_split(ds)
+                        base_dir = disk_path
+                    except Exception as e:
+                        local_errors.append(str(e))
+
+                    if ds is None:
+                        try:
+                            ds = load_dataset(str(disk_path), trust_remote_code=True)
+                            ds = self._select_split(ds)
+                            base_dir = disk_path
+                        except Exception as e:
+                            local_errors.append(f"remote_code=True: {e}")
+
+                    if ds is None:
+                        raise RuntimeError(
+                            f"Could not load local dataset at {disk_path}: " + "; ".join(local_errors)
+                        )
             else:
                 # Try loading from HuggingFace hub
                 print(f"Loading {dataset_name} from HuggingFace...")
