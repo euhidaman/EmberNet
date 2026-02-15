@@ -867,6 +867,21 @@ def download_dataset(
 
         print(f"✓ Successfully saved {dataset_key} to {save_path}")
         print(f"  Download time: {download_time:.1f} seconds")
+
+        # Special handling for llava_instruct_150k - auto extract if needed
+        if dataset_key == "llava_instruct_150k":
+            zip_file = save_path / "train2017.zip"
+            if zip_file.exists():
+                print(f"  Extracting images from train2017.zip...")
+                try:
+                    import zipfile
+                    with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+                        zip_ref.extractall(save_path)
+                    print(f"  ✓ Images extracted successfully")
+                except Exception as e:
+                    print(f"  ! Warning: Failed to extract images: {e}")
+                    print(f"    You can manually extract {zip_file}")
+
         return True
 
     except Exception as e:
