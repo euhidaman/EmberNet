@@ -125,19 +125,19 @@ DATASETS = {
     # NOTE: Stage 1 trains the PROJECTOR, not the experts
     # =========================================================================
 
-    # NOTE: Using official LLaVA dataset (JSON only, COCO images separate)
+    # NOTE: Using LLaVA-Instruct-150K with images included (easier for training)
     "llava_instruct_150k": {
-        "hf_name": "liuhaotian/LLaVA-Instruct-150K",
+        "hf_name": "adamo1139/llava-instruct-150k-with-images",
         "config": None,
-        "description": "LLaVA-Instruct-150K (JSON only, requires COCO images)",
+        "description": "LLaVA-Instruct-150K with images included",
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
-        "preferred_download": "datasets",
-        "size_gb": 0.1,
+        "preferred_download": "snapshot",
+        "extract_archives": True,
+        "size_gb": 5.0,
         "priority": "critical",
         "samples": "150K",
-        "allow_missing_images": True,
     },
     "sharegpt4v": {
         "hf_name": "Lin-Chen/ShareGPT4V",
@@ -147,7 +147,7 @@ DATASETS = {
         "domain": "general",
         "expert": "Projector (not experts)",
         "download_images_from_urls": True,
-        "image_url_field": "image",
+        "image_url_field": "imageUrl",  # Correct field name
         "size_gb": 8.0,
         "priority": "critical",
         "samples": "100K",
@@ -890,6 +890,10 @@ def download_dataset(
     )
     allow_missing_images = bool(info.get("allow_missing_images", False)) or will_download_images
     
+    # Auto-enable extraction for datasets that need it
+    if info.get("extract_archives", False):
+        extract_archives = True
+
     # Force datasets API for URL-based downloads (can't download URLs with snapshot method)
     if will_download_images:
         resolved_method = "datasets"
@@ -1011,6 +1015,15 @@ def download_dataset(
         if ds is not None and info.get("download_images_from_urls", False):
                 url_field = info.get("image_url_field", "image")
                 print(f"\n  Dataset contains image URLs - downloading actual images...")
+
+                # Ensure splits/num_samples/total_samples are set (in case they weren't initialized earlier)
+                if not splits:
+                    splits = list(ds.keys())
+                if not num_samples:
+                    num_samples = {split: len(ds[split]) for split in ds.keys()}
+                if total_samples == 0:
+                    total_samples = sum(len(ds[split]) for split in ds.keys())
+
                 downloaded_count = 0
                 failed_count = 0
                 
