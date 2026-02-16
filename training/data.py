@@ -505,6 +505,17 @@ class EmberNetDataset(Dataset):
             }
 
         # =====================================================================
+        # ShareGPT4V format (raw JSON files from snapshot)
+        # =====================================================================
+
+        if "image" in item and "conversations" not in item and "caption" not in item:
+            return self._attach_base_dir({
+                "image": image,
+                "question": "Describe this image in detail.",
+                "answer": item.get("text", item.get("description", "An image.")),
+            }, base_dir)
+
+        # =====================================================================
         # STAGE 1: ALIGNMENT DATASETS
         # =====================================================================
 
@@ -527,6 +538,40 @@ class EmberNetDataset(Dataset):
                         "image": image,
                         "question": human_msg.replace("<image>", "").strip(),
                         "answer": assistant_msg,
+                    }, base_dir)
+
+        # =====================================================================
+        # ALLaVA format (from snapshot with allava_laion/allava_vflan folders)
+        # =====================================================================
+
+        if "id" in item and str(item.get("id", "")).startswith("allava_"):
+            convs = item.get("conversations", [])
+            if len(convs) >= 2:
+                question = ""
+                answer = ""
+                for conv in convs:
+                    role = conv.get("from", "")
+                    value = conv.get("value", "")
+                    if role == "human":
+                        question = value.replace("<image>", "").strip()
+                    elif role == "gpt":
+                        answer = value
+
+                if question and answer:
+                    img_value = item.get("image", "")
+                    img_path = image
+                    if base_dir and img_value:
+                        from pathlib import Path
+                        img_path_obj = base_dir / img_value
+                        if not img_path_obj.exists():
+                            img_path_obj = base_dir / "allava_laion" / "images" / img_value.split("/")[-1]
+                        if img_path_obj.exists():
+                            img_path = str(img_path_obj)
+
+                    return self._attach_base_dir({
+                        "image": img_path,
+                        "question": question,
+                        "answer": answer,
                     }, base_dir)
 
         # ShareGPT4V format
@@ -587,6 +632,23 @@ class EmberNetDataset(Dataset):
                 "question": item["query"],
                 "answer": str(item["label"]),
             }
+
+        # ChartQA alternative format (from snapshot with imgname)
+        if "imgname" in item and "query" in item:
+            img_path = image
+            if base_dir:
+                from pathlib import Path
+                for ext in ['.png', '.jpg', '.jpeg']:
+                    potential_path = base_dir / "ChartQA Dataset" / "train" / "png" / f"{item['imgname']}{ext}"
+                    if potential_path.exists():
+                        img_path = str(potential_path)
+                        break
+
+            return self._attach_base_dir({
+                "image": img_path,
+                "question": item["query"],
+                "answer": str(item.get("label", item.get("answer", ""))),
+            }, base_dir)
 
         # PlotQA / FigureQA format
         if "question_string" in item and "answer" in item:

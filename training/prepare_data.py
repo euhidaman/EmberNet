@@ -141,29 +141,30 @@ DATASETS = {
     },
     "sharegpt4v": {
         "hf_name": "Lin-Chen/ShareGPT4V",
-        "config": "ShareGPT4V",
+        "config": None,
         "description": "Detailed image descriptions from GPT-4V",
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
-        "download_images_from_urls": True,
-        "image_url_field": "imageUrl",  # Correct field name
+        "preferred_download": "snapshot",
         "size_gb": 8.0,
         "priority": "critical",
         "samples": "100K",
+        "note": "Raw JSON files with image URLs - requires manual image download or use images from other sources"
     },
     "allava_instruct": {
         "hf_name": "FreedomIntelligence/ALLaVA-4V",
-        "config": "allava_vflan",
+        "config": None,
         "description": "Diverse visual instruction tuning data",
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
-        "download_images_from_urls": True,
-        "image_url_field": "image",
+        "preferred_download": "snapshot",
+        "extract_archives": True,
         "size_gb": 6.0,
         "priority": "recommended",
         "samples": "700K",
+        "note": "Contains allava_laion and allava_vflan folders with JSON+images"
     },
     # NOTE: COCO captions from HuggingFaceM4/COCO
     "coco_captions": {
@@ -262,16 +263,17 @@ DATASETS = {
 
     "chartqa": {
         "hf_name": "ahmed-masry/ChartQA",
-        "config": "default",
+        "config": None,
         "description": "Chart understanding - bar, line, pie charts",
         "stage": 2,
         "domain": "code_math_chart",
         "expert": "Expert 2: code_math_chart",
-        "download_images_from_urls": True,
-        "image_url_field": "image",
+        "preferred_download": "snapshot",
+        "extract_archives": True,
         "size_gb": 1.0,
         "priority": "critical",
         "samples": "32K",
+        "note": "Use snapshot download - images stored in ZIP file at repo root"
     },
     # NOTE: PlotQA alternative path (lmms-lab version doesn't exist)
     "plotqa": {
@@ -339,17 +341,17 @@ DATASETS = {
     },
     "gqa": {
         "hf_name": "lmms-lab/GQA",
-        "config": "train_balanced_instructions",
+        "config": "default",
         "description": "Scene graph based visual reasoning",
         "stage": 2,
         "domain": "spatial_reasoning",
         "size_gb": 15.0,
         "priority": "recommended",
-        "samples": "22M",
+        "samples": "1.1M",
         "expert": "Expert 5: spatial_reasoning",
         "download_images_from_urls": True,
-        "image_url_field": "image",
-        "requires_coco_images": False,  # GQA has its own images via URLs
+        "image_url_field": "imageId",
+        "note": "Images need to be downloaded from URLs in dataset"
     },
     # NOTE: Visual Genome doesn't exist as standalone in this format
     # "visual_genome": {
@@ -365,16 +367,16 @@ DATASETS = {
     # },
     # NOTE: Visual Genome - Using ranjaykrishna/visual_genome (region_descriptions_v1.2.0)
     "visual_genome_region": {
-        "hf_name": "ranjaykrishna/visual_genome",
-        "config": "region_descriptions",
+        "hf_name": "visual_genome",
+        "config": "region_descriptions_v1.2.0",
         "description": "Dense region descriptions and relationships",
         "stage": 2,
         "domain": "spatial_scene",
         "expert": "Expert 4: spatial_scene",
-        "preferred_download": "snapshot",
         "size_gb": 10.0,
         "priority": "optional",
         "samples": "108K",
+        "note": "Official Visual Genome dataset with region descriptions"
     },
     "okvqa": {
         "hf_name": "lmms-lab/OK-VQA",
