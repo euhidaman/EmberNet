@@ -125,18 +125,19 @@ DATASETS = {
     # NOTE: Stage 1 trains the PROJECTOR, not the experts
     # =========================================================================
 
-    # NOTE: Using alternative high-quality instruction datasets that don't require loading scripts
+    # NOTE: Using official LLaVA dataset (JSON only, COCO images separate)
     "llava_instruct_150k": {
-        "hf_name": "adamo1139/llava-instruct-150k-with-images",
-        "config": "default",
-        "description": "LLaVA-Instruct-150K with images included",
+        "hf_name": "liuhaotian/LLaVA-Instruct-150K",
+        "config": None,
+        "description": "LLaVA-Instruct-150K (JSON only, requires COCO images)",
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
-        "preferred_download": "snapshot",
-        "size_gb": 5.0,
+        "preferred_download": "datasets",
+        "size_gb": 0.1,
         "priority": "critical",
         "samples": "150K",
+        "allow_missing_images": True,
     },
     "sharegpt4v": {
         "hf_name": "Lin-Chen/ShareGPT4V",
@@ -453,18 +454,6 @@ DATASETS = {
         "size_gb": 0.5,
         "priority": "optional",
         "samples": "10K",
-    },
-    "winoground": {
-        "hf_name": "facebook/winoground",
-        "config": "default",
-        "description": "Visio-linguistic compositional reasoning",
-        "stage": 2,
-        "domain": "agentic_reasoning",
-        "expert": "Expert 7: agentic_reasoning",
-        "size_gb": 0.2,
-        "priority": "optional",
-        "samples": "800",
-        "requires_hf_token": True,
     },
     # NOTE: VCR is not available on HuggingFace Hub; requires manual download.
     # "visual_commonsense": {
@@ -950,6 +939,12 @@ def download_dataset(
             features = ds[first_split].features
             image_columns = _image_columns(features)
             has_text = _is_text_feature(features)
+
+            # Calculate total samples early for error messages and metadata
+            splits = list(ds.keys())
+            num_samples = {split: len(ds[split]) for split in ds.keys()}
+            total_samples = sum(len(ds[split]) for split in ds.keys())
+
             image_validation_passed = True
 
             if not image_columns:
@@ -984,9 +979,6 @@ def download_dataset(
             # Save to disk
             save_path.mkdir(parents=True, exist_ok=True)
             ds.save_to_disk(str(save_path))
-            splits = list(ds.keys())
-            num_samples = {split: len(ds[split]) for split in ds.keys()}
-            total_samples = sum(len(ds[split]) for split in ds.keys())
             snapshot_meta = {}
             
             # Download images from URLs if needed
@@ -1040,6 +1032,7 @@ def download_dataset(
             "priority": info["priority"],
             "description": info["description"],
             "download_method": resolved_method,
+            "download_success": True,
             "image_columns": image_columns,
             "text_feature_present": has_text,
             "image_samples_checked": sample_count,
@@ -1060,19 +1053,6 @@ def download_dataset(
         print(f"✓ Successfully saved {dataset_key} to {save_path}")
         print(f"  Download time: {download_time:.1f} seconds")
 
-        # Special handling for llava_instruct_150k - auto extract if needed
-        if dataset_key == "llava_instruct_150k":
-            zip_file = save_path / "train2017.zip"
-            if zip_file.exists():
-                print(f"  Extracting images from train2017.zip...")
-                try:
-                    import zipfile
-                    with zipfile.ZipFile(zip_file, 'r') as zip_ref:
-                        zip_ref.extractall(save_path)
-                    print(f"  ✓ Images extracted successfully")
-                except Exception as e:
-                    print(f"  ! Warning: Failed to extract images: {e}")
-                    print(f"    You can manually extract {zip_file}")
 
         return True
 
@@ -1102,6 +1082,7 @@ def download_dataset(
                     "priority": info["priority"],
                     "description": info["description"],
                     "download_method": "snapshot",
+                    "download_success": True,
                     "image_columns": [],
                     "text_feature_present": True,
                     "image_samples_checked": 0,
@@ -1124,9 +1105,33 @@ def download_dataset(
                 return True
             except Exception as fallback_e:
                 print(f"✗ FAILED fallback snapshot for {dataset_key}: {fallback_e}")
+                # Write error metadata
+                save_path.mkdir(parents=True, exist_ok=True)
+                error_metadata = {
+                    "dataset_key": dataset_key,
+                    "hf_name": hf_name,
+                    "config": config_name,
+                    "download_success": False,
+                    "error": str(fallback_e),
+                    "download_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                with open(save_path / "metadata.json", "w", encoding="utf-8") as f:
+                    json.dump(error_metadata, f, indent=2)
                 return False
 
         print(f"✗ FAILED to download {dataset_key}: {e}")
+        # Write error metadata
+        save_path.mkdir(parents=True, exist_ok=True)
+        error_metadata = {
+            "dataset_key": dataset_key,
+            "hf_name": hf_name,
+            "config": config_name,
+            "download_success": False,
+            "error": err_msg,
+            "download_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with open(save_path / "metadata.json", "w", encoding="utf-8") as f:
+            json.dump(error_metadata, f, indent=2)
         return False
 
 
