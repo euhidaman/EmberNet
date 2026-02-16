@@ -268,7 +268,7 @@ DATASETS = {
         "domain": "code_math_chart",
         "expert": "Expert 2: code_math_chart",
         "download_images_from_urls": True,
-        "image_url_field": "imgname",
+        "image_url_field": "image",
         "size_gb": 1.0,
         "priority": "critical",
         "samples": "32K",
@@ -347,7 +347,9 @@ DATASETS = {
         "priority": "recommended",
         "samples": "22M",
         "expert": "Expert 5: spatial_reasoning",
-        "requires_coco_images": True,
+        "download_images_from_urls": True,
+        "image_url_field": "image",
+        "requires_coco_images": False,  # GQA has its own images via URLs
     },
     # NOTE: Visual Genome doesn't exist as standalone in this format
     # "visual_genome": {
@@ -450,7 +452,7 @@ DATASETS = {
         "domain": "spatial_reasoning",
         "expert": "Expert 5: spatial_reasoning",
         "download_images_from_urls": True,
-        "image_url_field": "image",
+        "image_url_field": "image_url",
         "size_gb": 0.5,
         "priority": "optional",
         "samples": "10K",
@@ -491,6 +493,21 @@ DATASETS = {
     #     "size_gb": 18.0,
     #     "priority": "optional",
     #     "samples": "850K",
+    # },
+
+    # NOTE: Winoground - REMOVED (requires HF token + gated access, only 400 samples, not worth complexity)
+    # Small eval-only dataset, not useful for training. Use other reasoning datasets instead.
+    # "winoground": {
+    #     "hf_name": "facebook/winoground",
+    #     "config": "default",
+    #     "description": "Visio-linguistic compositional reasoning (REMOVED - gated, eval-only)",
+    #     "stage": 2,
+    #     "domain": "spatial_reasoning",
+    #     "expert": "Expert 5: spatial_reasoning",
+    #     "requires_hf_token": True,
+    #     "size_gb": 0.1,
+    #     "priority": "optional",
+    #     "samples": "400",
     # },
 }
 
@@ -873,9 +890,14 @@ def download_dataset(
     )
     allow_missing_images = bool(info.get("allow_missing_images", False)) or will_download_images
     
-    resolved_method = method
-    if resolved_method == "auto":
+    # Force datasets API for URL-based downloads (can't download URLs with snapshot method)
+    if will_download_images:
+        resolved_method = "datasets"
+    elif method == "auto":
         resolved_method = preferred_download
+    else:
+        resolved_method = method
+
     hf_token = (
         os.environ.get("HF_TOKEN")
         or os.environ.get("HUGGING_FACE_HUB_TOKEN")
@@ -911,6 +933,19 @@ def download_dataset(
     start_time = time.time()
 
     try:
+        # Initialize common variables at the top to avoid undefined variable errors
+        resolved_config = config_name
+        image_columns = []
+        has_text = True
+        image_validation_passed = False
+        sample_count = 0
+        missing_images = 0
+        splits = []
+        num_samples = {}
+        total_samples = 0
+        ds = None
+        snapshot_meta = {}
+
         if resolved_method == "snapshot":
             snapshot_meta = _snapshot_download_dataset(
                 hf_name,
@@ -918,15 +953,7 @@ def download_dataset(
                 token=hf_token,
                 extract_archives=extract_archives,
             )
-            resolved_config = config_name
-            image_columns = []
-            has_text = True
-            image_validation_passed = False
-            sample_count = 0
-            missing_images = 0
-            splits = []
-            num_samples = {}
-            total_samples = 0
+            # snapshot-specific values already initialized above
         else:
             # Load dataset from HuggingFace via datasets library
             ds, resolved_config = _load_dataset_with_fallback(
@@ -979,10 +1006,9 @@ def download_dataset(
             # Save to disk
             save_path.mkdir(parents=True, exist_ok=True)
             ds.save_to_disk(str(save_path))
-            snapshot_meta = {}
-            
-            # Download images from URLs if needed
-            if info.get("download_images_from_urls", False):
+
+        # Download images from URLs if needed (works for both snapshot and datasets methods)
+        if ds is not None and info.get("download_images_from_urls", False):
                 url_field = info.get("image_url_field", "image")
                 print(f"\n  Dataset contains image URLs - downloading actual images...")
                 downloaded_count = 0
@@ -1005,18 +1031,18 @@ def download_dataset(
                     print(f"\n  ✓ Downloaded {downloaded_count} images total")
                     snapshot_meta["images_downloaded"] = downloaded_count
                     snapshot_meta["images_failed"] = failed_count
-            
-            # Download COCO images if needed (for datasets like GQA)
-            if info.get("requires_coco_images", False):
-                print(f"\n  Dataset requires COCO images - downloading...")
-                coco_success = _download_coco_images(save_path)
-                if coco_success:
-                    image_validation_passed = True
-                    print(f"  ✓ COCO images downloaded")
-                    snapshot_meta["coco_images_downloaded"] = True
-                else:
-                    print(f"  ✗ Failed to download COCO images")
-                    snapshot_meta["coco_images_downloaded"] = False
+
+        # Download COCO images if needed (for datasets like GQA or LLaVA)
+        if info.get("requires_coco_images", False):
+            print(f"\n  Dataset requires COCO images - downloading...")
+            coco_success = _download_coco_images(save_path)
+            if coco_success:
+                image_validation_passed = True
+                print(f"  ✓ COCO images downloaded")
+                snapshot_meta["coco_images_downloaded"] = True
+            else:
+                print(f"  ✗ Failed to download COCO images")
+                snapshot_meta["coco_images_downloaded"] = False
 
         download_time = time.time() - start_time
 

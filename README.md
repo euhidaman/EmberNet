@@ -73,20 +73,29 @@ wandb login
 
 **Choose one option based on your needs:**
 
-**Option A: Recommended (~70GB)** - Best balance of quality and size
-```bash
-python training/prepare_data.py --recommended --output-dir ./data
-```
-
-**Option B: All Datasets (~100GB)** - Maximum quality
+**Option A: All Datasets (~100GB)** - Best quality, all datasets
 ```bash
 python training/prepare_data.py --all --output-dir ./data
 ```
+Downloads all 20 datasets for maximum model quality.
 
-**Option C: Minimal (~10GB)** - Quick testing only
+**Option B: Recommended (~70GB)** - Good balance of quality and size
+```bash
+python training/prepare_data.py --recommended --output-dir ./data
+```
+Downloads critical + recommended datasets (excludes optional ones).
+
+**Option C: Critical Only (~50GB)** - Core datasets only
+```bash
+python training/prepare_data.py --critical --output-dir ./data
+```
+Downloads only the most important datasets.
+
+**Option D: Minimal (~10GB)** - Quick testing
 ```bash
 python training/prepare_data.py --minimal --output-dir ./data
 ```
+Downloads a tiny subset for testing the pipeline.
 
 **Other useful commands:**
 ```bash
@@ -94,11 +103,17 @@ python training/prepare_data.py --minimal --output-dir ./data
 python training/prepare_data.py --list
 
 # Download specific datasets only
-python training/prepare_data.py --dataset textvqa chartqa --output-dir ./data
+python training/prepare_data.py --dataset textvqa chartqa vqav2 --output-dir ./data
 
 # Explain how alignment works
 python training/prepare_data.py --explain
 ```
+
+**What gets downloaded:**
+- Stage 1 datasets: LLaVA-Instruct, ShareGPT4V, ALLaVA, COCO Captions, etc.
+- Stage 2 datasets: TextVQA, DocVQA, AI2D, ChartQA, PlotQA, VQAv2, GQA, OK-VQA, A-OKVQA, ScienceQA, RefCOCO, NLVR2, VSR, and more
+
+**Note:** Some datasets (ShareGPT4V, ALLaVA, ChartQA, GQA, VSR) download images from URLs, which may take longer than loading pre-packaged datasets.
 
 **What gets saved:**
 After downloading, you'll have:
@@ -131,6 +146,15 @@ python training/train.py \
     --wandb-run-name stage1_projector
 ```
 
+**Parameters explained:**
+- `--stage 1` - Train vision projector only (vision encoder frozen, language model frozen)
+- `--data-dir ./data` - Where datasets were downloaded (contains download_manifest.json)
+- `--epochs 3` - Number of training passes through Stage 1 datasets
+- `--batch-size 8` - Images per GPU batch (reduce if OOM)
+- `--lr 1e-3` - Learning rate (higher for projector training from scratch)
+- `--output-dir ./checkpoints` - Where to save model checkpoints
+- `--wandb-project EmberNet` - W&B project name (optional, omit if no W&B)
+
 **Stage 2: Expert Specialization (10 epochs, ~24-48 hours on GPU)**
 
 Trains domain-specific experts on specialized datasets.
@@ -142,11 +166,18 @@ python training/train.py \
     --epochs 10 \
     --batch-size 4 \
     --lr 1e-4 \
-    --resume ./checkpoints/checkpoint_epoch_3.pt \
+    --resume ./checkpoints/stage1_final.pt \
     --output-dir ./checkpoints \
     --wandb-project EmberNet \
     --wandb-run-name stage2_experts
 ```
+
+**Parameters explained:**
+- `--stage 2` - Train MoE experts (projector frozen, vision encoder frozen)
+- `--resume ./checkpoints/stage1_final.pt` - **REQUIRED** - Load trained projector from Stage 1
+- `--epochs 10` - More epochs needed for expert specialization
+- `--batch-size 4` - Smaller batch due to expert routing overhead
+- `--lr 1e-4` - Lower learning rate for fine-tuning experts
 
 **Training without W&B:**
 ```bash
@@ -212,25 +243,25 @@ python inference/infer.py \
 ### Quick Reference: All Commands in Order
 
 ```bash
-# 1. Install
+# 1. Install dependencies
 cd EmberNet
 pip install -r requirements.txt
 
-# 2. Authenticate
-huggingface-cli login
-wandb login
+# 2. Authenticate (HF required, W&B optional)
+huggingface-cli login   # Enter token from https://huggingface.co/settings/tokens
+wandb login             # Optional: Enter API key from https://wandb.ai/authorize
 
-# 3. Download data
+# 3. Download training data (~80GB for recommended)
 python training/prepare_data.py --recommended --output-dir ./data
 
-# 4. Train Stage 1
-python training/train.py --stage 1 --data-dir ./data --epochs 3 --batch-size 8
+# 4. Train Stage 1 - Projector alignment (3 epochs, ~6-12 hours)
+python training/train.py --stage 1 --data-dir ./data --epochs 3 --batch-size 8 --output-dir ./checkpoints
 
-# 5. Train Stage 2
-python training/train.py --stage 2 --data-dir ./data --epochs 10 --batch-size 4 --resume ./checkpoints/checkpoint_epoch_3.pt
+# 5. Train Stage 2 - Expert specialization (10 epochs, ~24-48 hours)
+python training/train.py --stage 2 --data-dir ./data --epochs 10 --batch-size 4 --resume ./checkpoints/stage1_final.pt --output-dir ./checkpoints
 
-# 6. Run inference
-python inference/infer.py --model ./checkpoints/final_model.pt --interactive
+# 6. Run interactive inference
+python inference/infer.py --model ./checkpoints/stage2_final.pt --interactive
 ```
 
 ---

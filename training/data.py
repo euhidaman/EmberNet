@@ -204,27 +204,105 @@ class EmberNetDataset(Dataset):
             dataset_stage = str(info.get("stage", ""))
             dataset_domain = info.get("domain", "")
             download_method = info.get("download_method", "datasets")
-
-            if download_method == "snapshot":
-                print(f"Skipping {key}: downloaded via snapshot mode (not normalized with datasets.save_to_disk)")
-                continue
+            save_path = info.get("save_path", "")
 
             # Match condition:
             # - If domain is 'general', we take all stage 1 datasets (for alignment)
             # - OR if domain matches specifically (for expert SFT)
+            should_load = False
             if self.domain == "general":
                 if dataset_stage == "1":
-                    datasets_to_load.append(key)
+                    should_load = True
             elif dataset_domain == self.domain:
-                datasets_to_load.append(key)
+                should_load = True
+
+            if should_load:
+                datasets_to_load.append((key, download_method, save_path))
 
         print(f"Index scan: Found {len(datasets_to_load)} datasets for domain='{self.domain}'")
 
-        for key in datasets_to_load:
-            samples = self._load_huggingface(key)
-            all_samples.extend(samples)
+        for key, method, save_path in datasets_to_load:
+            if method == "snapshot":
+                # For snapshot datasets, try to load raw files from the snapshot directory
+                print(f"Loading {key} from snapshot directory...")
+                if save_path:
+                    snapshot_dir = Path(save_path)
+                    if snapshot_dir.exists():
+                        # Try to load as directory with images and metadata
+                        snapshot_samples = self._load_snapshot_dataset(snapshot_dir, key)
+                        all_samples.extend(snapshot_samples)
+                    else:
+                        print(f"Warning: Snapshot path {save_path} not found for {key}")
+                else:
+                    print(f"Warning: No save_path in index for snapshot dataset {key}")
+            else:
+                # Load via standard HuggingFace datasets library
+                samples = self._load_huggingface(key)
+                all_samples.extend(samples)
 
         return all_samples
+
+    def _load_snapshot_dataset(self, snapshot_dir: Path, dataset_key: str) -> List[Dict[str, Any]]:
+        """
+        Load a dataset from a snapshot directory (raw HuggingFace repo layout).
+        For snapshot datasets, we look for:
+        1. Parquet files with data
+        2. Images in subdirectories
+        3. metadata.json for info
+        """
+        samples = []
+
+        # Try to find parquet files
+        parquet_files = list(snapshot_dir.glob("**/*.parquet"))
+        if parquet_files:
+            try:
+                import pandas as pd
+
+                for pq_file in parquet_files:
+                    df = pd.read_parquet(pq_file)
+                    # Convert to samples
+                    for idx, row in df.iterrows():
+                        # Try to find image path
+                        image_path = None
+                        for col in ["image", "image_path", "img", "file_name"]:
+                            if col in row and row[col]:
+                                potential_path = snapshot_dir / str(row[col])
+                                if potential_path.exists():
+                                    image_path = str(potential_path)
+                                    break
+
+                        # Try to find text/question/answer
+                        text = ""
+                        question = ""
+                        answer = ""
+                        for col in ["caption", "text", "description"]:
+                            if col in row and row[col]:
+                                text = str(row[col])
+                                break
+                        for col in ["question", "query"]:
+                            if col in row and row[col]:
+                                question = str(row[col])
+                        for col in ["answer", "response", "output"]:
+                            if col in row and row[col]:
+                                answer = str(row[col])
+
+                        if image_path:
+                            samples.append({
+                                "image_path": image_path,
+                                "question": question or "Describe this image.",
+                                "answer": answer or text or "An image.",
+                                "conversations": [],
+                            })
+
+                if samples:
+                    print(f"Loaded {len(samples)} samples from {len(parquet_files)} parquet files in {dataset_key}")
+                    return samples
+            except Exception as e:
+                print(f"Warning: Could not load parquet files from {snapshot_dir}: {e}")
+
+        # Fallback: treat as image directory
+        print(f"No parquet files found, treating {dataset_key} as image directory")
+        return self._load_directory(snapshot_dir)
 
     def _select_split(self, dataset_obj):
         """Select the best split from DatasetDict/Dataset objects."""
