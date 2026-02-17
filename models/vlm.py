@@ -146,9 +146,9 @@ class EmberNetVLM(nn.Module):
         if self._tokenizer is None:
             try:
                 from transformers import AutoTokenizer
-                # Use a small, fast tokenizer
+                # Use TinyLlama tokenizer - vocab_size=32000 matches our model
                 self._tokenizer = AutoTokenizer.from_pretrained(
-                    "microsoft/phi-2",  # Good small tokenizer
+                    "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
                     trust_remote_code=True,
                 )
                 # Add special tokens

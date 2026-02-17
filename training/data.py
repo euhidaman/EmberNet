@@ -85,7 +85,8 @@ class DataConfig:
     data_dir: str = "./data"
     image_size: int = 224
     max_length: int = 2048
-    tokenizer_name: str = "microsoft/phi-2"
+    # Use TinyLlama tokenizer - vocab_size=32000 matches our model's 32002
+    tokenizer_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
     # Dataset mixing ratios
     vision_ratio: float = 0.4
@@ -835,6 +836,8 @@ class EmberNetDataset(Dataset):
         # Ensure tokenizer has image token as special token
         IMAGE_TOKEN = "<image>"
         IMAGE_TOKEN_ID = 32001
+        VOCAB_SIZE = 32002  # Must match model's vocab_size
+
         if IMAGE_TOKEN not in self.tokenizer.get_vocab():
             self.tokenizer.add_special_tokens({
                 "additional_special_tokens": [IMAGE_TOKEN]
@@ -858,6 +861,14 @@ class EmberNetDataset(Dataset):
         tokenizer_image_id = self.tokenizer.convert_tokens_to_ids(IMAGE_TOKEN)
         if tokenizer_image_id != IMAGE_TOKEN_ID and tokenizer_image_id != self.tokenizer.unk_token_id:
             input_ids[input_ids == tokenizer_image_id] = IMAGE_TOKEN_ID
+
+        # CRITICAL: Clamp ALL token IDs to valid vocabulary range
+        # The tokenizer may have a larger vocab than our model
+        # Any token >= VOCAB_SIZE gets mapped to unk_token (0) or pad_token
+        out_of_range_mask = input_ids >= VOCAB_SIZE
+        if out_of_range_mask.any():
+            # Map out-of-range tokens to a safe token (use token ID 1 as fallback)
+            input_ids[out_of_range_mask] = 1  # Usually BOS or some valid token
 
         # Create labels (mask prompt portion)
         labels = input_ids.clone()
