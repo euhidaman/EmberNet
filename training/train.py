@@ -107,6 +107,9 @@ class TrainingConfig:
     mixed_precision: bool = True
     num_workers: int = 4
 
+    # Data limiting (for trial runs)
+    max_samples_per_dataset: Optional[int] = None  # None = use all samples
+
     # Model config override
     model_config: Optional[EmberNetConfig] = None
 
@@ -479,6 +482,7 @@ class Trainer:
                 num_workers=self.config.num_workers,
                 stage=self.config.stage,
                 use_curriculum=self.config.use_curriculum,
+                max_samples_per_dataset=self.config.max_samples_per_dataset,
             )
 
         # Calculate training steps
@@ -655,21 +659,127 @@ class Trainer:
         return total_loss / num_batches
 
 
+def run_training(args, stage: int, resume_from: Optional[str] = None):
+    """Run training for a single stage. Returns the final checkpoint path."""
+
+    # Determine device
+    if args.device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device = args.device
+
+    # =========================================================================
+    # TRIAL vs MAIN mode presets
+    # =========================================================================
+    if args.trial:
+        epochs = args.epochs if args.epochs is not None else 1
+        batch_size = args.batch_size if args.batch_size is not None else 2
+        grad_accum = args.grad_accum if args.grad_accum is not None else 1
+        max_samples = args.max_samples_per_dataset if args.max_samples_per_dataset is not None else 50
+        use_wandb = False
+        log_interval = 5
+        eval_interval = 20
+        save_interval = 50
+        output_dir = args.output_dir if args.output_dir != "./checkpoints" else "./checkpoints/trial"
+    elif args.main:
+        epochs = args.epochs if args.epochs is not None else (3 if stage == 1 else 10)
+        batch_size = args.batch_size if args.batch_size is not None else (8 if stage == 1 else 4)
+        grad_accum = args.grad_accum if args.grad_accum is not None else 4
+        max_samples = args.max_samples_per_dataset
+        use_wandb = args.wandb and not args.no_wandb
+        log_interval = 10
+        eval_interval = 500
+        save_interval = 1000
+        output_dir = args.output_dir
+    else:
+        epochs = args.epochs if args.epochs is not None else 3
+        batch_size = args.batch_size if args.batch_size is not None else 4
+        grad_accum = args.grad_accum if args.grad_accum is not None else 4
+        max_samples = args.max_samples_per_dataset
+        use_wandb = args.wandb and not args.no_wandb
+        log_interval = 10
+        eval_interval = 500
+        save_interval = 1000
+        output_dir = args.output_dir
+
+    # Create stage-specific output directory
+    stage_output_dir = f"{output_dir}/stage{stage}"
+
+    # Create config
+    config = TrainingConfig(
+        stage=stage,
+        epochs=epochs,
+        batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum,
+        output_dir=stage_output_dir,
+        data_dir=args.data_dir,
+        resume_from=resume_from,
+        device=device,
+        mixed_precision=not args.no_amp,
+        num_workers=args.num_workers,
+        use_wandb=use_wandb,
+        wandb_project=args.wandb_project,
+        wandb_run_name=f"{args.wandb_run_name or 'embernet'}_stage{stage}" if args.wandb_run_name or use_wandb else None,
+        use_ema=not args.no_ema,
+        use_curriculum=not args.no_curriculum,
+        use_expert_supervision=not args.no_expert_supervision,
+        use_adaptive_grad_clip=not args.no_adaptive_clip,
+        log_interval=log_interval,
+        eval_interval=eval_interval,
+        save_interval=save_interval,
+    )
+    config.max_samples_per_dataset = max_samples
+
+    if args.lr is not None:
+        config.learning_rate = args.lr
+
+    # Print configuration
+    mode_name = "TRIAL" if args.trial else ("MAIN" if args.main else "DEFAULT")
+    print(f"\n{'='*70}")
+    print(f"STAGE {stage} TRAINING ({mode_name} MODE)")
+    print(f"{'='*70}")
+    print(f"Epochs: {config.epochs}")
+    print(f"Batch size: {config.batch_size}")
+    print(f"Gradient accumulation: {config.gradient_accumulation_steps}")
+    print(f"Effective batch size: {config.batch_size * config.gradient_accumulation_steps}")
+    print(f"Max samples per dataset: {max_samples if max_samples else 'ALL'}")
+    print(f"Output directory: {config.output_dir}")
+    print(f"Resume from: {resume_from or 'None'}")
+    print(f"W&B logging: {config.use_wandb}")
+    print(f"{'='*70}\n")
+
+    # Create trainer and run training
+    trainer = Trainer(config)
+    trainer.train()
+
+    # Return path to final checkpoint
+    return f"{stage_output_dir}/final_model.pt"
+
+
 def main():
     """Main training entry point."""
     parser = argparse.ArgumentParser(description="Train EmberNet VLM")
 
-    # Training settings
-    parser.add_argument("--stage", type=int, default=1, choices=[1, 2],
-                        help="Training stage (1=projector, 2=expert SFT)")
-    parser.add_argument("--epochs", type=int, default=3,
-                        help="Number of training epochs")
-    parser.add_argument("--batch-size", type=int, default=4,
-                        help="Training batch size")
+    # Training mode presets
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--trial", action="store_true",
+                        help="Trial run: minimal data, 1 epoch, quick validation of pipeline")
+    mode_group.add_argument("--main", action="store_true",
+                        help="Main run: full datasets, full epochs, production training")
+
+    # Stage selection
+    parser.add_argument("--stage", type=int, default=None, choices=[1, 2],
+                        help="Training stage (1=projector, 2=expert SFT). If not specified with --trial/--main, runs both stages.")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Number of training epochs (auto-set by --trial/--main)")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Training batch size (auto-set by --trial/--main)")
     parser.add_argument("--lr", type=float, default=None,
                         help="Learning rate (auto-set based on stage)")
-    parser.add_argument("--grad-accum", type=int, default=4,
-                        help="Gradient accumulation steps")
+    parser.add_argument("--grad-accum", type=int, default=None,
+                        help="Gradient accumulation steps (auto-set by --trial/--main)")
+    parser.add_argument("--max-samples-per-dataset", type=int, default=None,
+                        help="Max samples per dataset (auto-set by --trial/--main)")
 
     # Paths
     parser.add_argument("--output-dir", type=str, default="./checkpoints",
@@ -709,39 +819,52 @@ def main():
 
     args = parser.parse_args()
 
-    # Determine device
-    if args.device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    # =========================================================================
+    # Determine which stages to run
+    # =========================================================================
+    if args.stage is not None:
+        # Specific stage requested
+        stages_to_run = [args.stage]
+        print(f"\n{'='*70}")
+        print(f"Running Stage {args.stage} only")
+        print(f"{'='*70}")
+    elif args.trial or args.main:
+        # --trial or --main without --stage runs both stages
+        stages_to_run = [1, 2]
+        mode = "TRIAL" if args.trial else "MAIN"
+        print(f"\n{'='*70}")
+        print(f"{mode} MODE: Running BOTH Stage 1 and Stage 2 sequentially")
+        print(f"{'='*70}")
     else:
-        device = args.device
+        # Default: just stage 1
+        stages_to_run = [1]
+        print(f"\n{'='*70}")
+        print(f"Running Stage 1 (use --trial or --main for full pipeline)")
+        print(f"{'='*70}")
 
-    # Create config
-    config = TrainingConfig(
-        stage=args.stage,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        gradient_accumulation_steps=args.grad_accum,
-        output_dir=args.output_dir,
-        data_dir=args.data_dir,
-        resume_from=args.resume,
-        device=device,
-        mixed_precision=not args.no_amp,
-        num_workers=args.num_workers,
-        use_wandb=args.wandb and not args.no_wandb,
-        wandb_project=args.wandb_project,
-        wandb_run_name=args.wandb_run_name,
-        use_ema=not args.no_ema,
-        use_curriculum=not args.no_curriculum,
-        use_expert_supervision=not args.no_expert_supervision,
-        use_adaptive_grad_clip=not args.no_adaptive_clip,
-    )
+    # =========================================================================
+    # Run training stages
+    # =========================================================================
+    checkpoint_path = args.resume  # Initial checkpoint (if any)
 
-    if args.lr is not None:
-        config.learning_rate = args.lr
+    for stage in stages_to_run:
+        print(f"\n{'#'*70}")
+        print(f"# STARTING STAGE {stage}")
+        print(f"{'#'*70}\n")
 
-    # Create trainer and start training
-    trainer = Trainer(config)
-    trainer.train()
+        checkpoint_path = run_training(args, stage=stage, resume_from=checkpoint_path)
+
+        print(f"\n{'#'*70}")
+        print(f"# STAGE {stage} COMPLETE - Checkpoint: {checkpoint_path}")
+        print(f"{'#'*70}\n")
+
+    # Final summary
+    print(f"\n{'='*70}")
+    print("TRAINING COMPLETE!")
+    print(f"{'='*70}")
+    print(f"Stages completed: {stages_to_run}")
+    print(f"Final checkpoint: {checkpoint_path}")
+    print(f"{'='*70}\n")
 
 
 if __name__ == "__main__":

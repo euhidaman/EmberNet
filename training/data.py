@@ -156,12 +156,14 @@ class EmberNetDataset(Dataset):
         config: Optional[DataConfig] = None,
         split: str = "train",
         domain: str = "general",
+        max_samples: Optional[int] = None,
     ):
         self.config = config or DataConfig()
         self.split = split
         self.domain = domain
         self.domain_tag = DOMAIN_TAGS.get(domain, DOMAIN_TAGS["general"])
         self.data_root = Path(self.config.data_dir)
+        self.max_samples = max_samples
 
         self.image_processor = ImageProcessor(self.config.image_size)
 
@@ -179,7 +181,13 @@ class EmberNetDataset(Dataset):
 
         # Load data
         self.samples = self._load_data(data_path)
-        print(f"Loaded {len(self.samples)} samples for {domain} ({split})")
+
+        # Limit samples if max_samples is set (for trial runs)
+        if self.max_samples is not None and len(self.samples) > self.max_samples:
+            self.samples = self.samples[:self.max_samples]
+            print(f"  [Trial] Limited to {len(self.samples)} samples for {domain} ({split})")
+        else:
+            print(f"Loaded {len(self.samples)} samples for {domain} ({split})")
 
     def _load_data(self, data_path: str) -> List[Dict[str, Any]]:
         """Load data from various sources."""
@@ -1004,6 +1012,7 @@ def create_dataloaders(
     num_workers: int = 4,
     stage: int = 1,
     use_curriculum: bool = False,
+    max_samples_per_dataset: Optional[int] = None,
 ) -> Tuple[DataLoader, Optional[DataLoader]]:
     """
     Create training and validation dataloaders.
@@ -1016,11 +1025,18 @@ def create_dataloaders(
         use_curriculum: Whether to use curriculum learning (Stage 2 only)
             If True, easier datasets (VQAv2, COCO) are weighted higher early,
             harder datasets (ChartQA, MathVista) weighted higher later.
+        max_samples_per_dataset: Maximum samples per dataset (None = use all).
+            Useful for trial runs to quickly validate the pipeline.
 
     Returns:
         train_loader, val_loader
     """
     config = data_config or DataConfig()
+
+    # Store max_samples in config for datasets to use
+    if max_samples_per_dataset is not None:
+        config.max_samples_per_dataset = max_samples_per_dataset
+        print(f"  [Trial Mode] Limiting to {max_samples_per_dataset} samples per dataset")
 
     if stage == 1:
         # Stage 1: Use general VLM data for projector alignment
@@ -1029,12 +1045,14 @@ def create_dataloaders(
             config=config,
             split="train",
             domain="general",
+            max_samples=max_samples_per_dataset,
         )
         val_dataset = EmberNetDataset(
             config.data_dir,
             config=config,
             split="validation",
             domain="general",
+            max_samples=max_samples_per_dataset,
         )
     else:
         # Stage 2: Mix domain-specific datasets
@@ -1075,6 +1093,7 @@ def create_dataloaders(
                 config=config,
                 split="train",
                 domain=domain,
+                max_samples=max_samples_per_dataset,
             )
 
         train_dataset = MixedDomainDataset(datasets, domains)
