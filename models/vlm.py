@@ -166,88 +166,54 @@ class EmberNetVLM(nn.Module):
         input_ids: torch.Tensor,
         image_embeds: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, list]:
         """
-        Merge image embeddings with text embeddings at IMAGE_TOKEN positions.
+        Merge image embeddings with text embeddings by prepending image embeddings.
 
         Args:
             input_ids: Text token IDs [batch, text_seq_len]
-            image_embeds: Image embeddings [batch, num_images * num_image_tokens, hidden]
+            image_embeds: Image embeddings [batch, num_image_tokens, hidden]
             attention_mask: Attention mask for text
 
         Returns:
             merged_embeds: Combined embeddings [batch, total_seq_len, hidden]
             merged_attention_mask: Updated attention mask
+            label_offsets: List of offsets where text labels should start for each batch item
         """
         batch_size = input_ids.shape[0]
+        num_image_tokens = image_embeds.shape[1]
 
-        # Find image token positions BEFORE embedding lookup
-        image_token_mask = (input_ids == self.config.image_token_id)
-
-        # Replace image_token_id with pad_token_id for embedding lookup
-        # (image_token_id may be outside vocab range)
+        # Replace any special image tokens with pad for embedding lookup
         safe_input_ids = input_ids.clone()
-        safe_input_ids[image_token_mask] = self.config.pad_token_id
+        safe_input_ids[safe_input_ids == self.config.image_token_id] = self.config.pad_token_id
+        # Also clamp any out-of-range token IDs
+        safe_input_ids = safe_input_ids.clamp(0, self.config.vocab_size - 1)
 
-        # Now do embedding lookup with safe IDs
+        # Embed text tokens
         text_embeds = self.decoder.embed_tokens(safe_input_ids)
 
-        if not image_token_mask.any():
-            # No image tokens, prepend image embeddings
-            merged_embeds = torch.cat([image_embeds, text_embeds], dim=1)
-            if attention_mask is not None:
-                image_mask = torch.ones(
-                    batch_size, image_embeds.shape[1],
-                    device=attention_mask.device,
-                    dtype=attention_mask.dtype
-                )
-                merged_attention_mask = torch.cat([image_mask, attention_mask], dim=1)
-            else:
-                merged_attention_mask = None
+        # Always prepend image embeddings to text embeddings
+        merged_embeds = torch.cat([image_embeds, text_embeds], dim=1)
+
+        # Update attention mask
+        if attention_mask is not None:
+            image_mask = torch.ones(
+                batch_size, num_image_tokens,
+                device=attention_mask.device,
+                dtype=attention_mask.dtype
+            )
+            merged_attention_mask = torch.cat([image_mask, attention_mask], dim=1)
         else:
-            # Replace image tokens with image embeddings
-            # For simplicity, assume one <image> token that gets expanded
-            merged_embeds_list = []
-            merged_mask_list = []
-
-            for b in range(batch_size):
-                positions = torch.where(image_token_mask[b])[0]
-                if len(positions) == 0:
-                    merged_embeds_list.append(
-                        torch.cat([image_embeds[b:b+1], text_embeds[b:b+1]], dim=1)
-                    )
-                else:
-                    # Insert image embeddings at first <image> position
-                    pos = positions[0].item()
-                    before = text_embeds[b, :pos]
-                    after = text_embeds[b, pos+1:]
-                    merged = torch.cat([
-                        before.unsqueeze(0),
-                        image_embeds[b:b+1],
-                        after.unsqueeze(0).reshape(1, -1, text_embeds.shape[-1])
-                    ], dim=1)
-                    merged_embeds_list.append(merged)
-
-            # Pad to same length
-            max_len = max(m.shape[1] for m in merged_embeds_list)
-            padded_embeds = []
-            for m in merged_embeds_list:
-                if m.shape[1] < max_len:
-                    pad = torch.zeros(
-                        1, max_len - m.shape[1], m.shape[2],
-                        device=m.device, dtype=m.dtype
-                    )
-                    m = torch.cat([m, pad], dim=1)
-                padded_embeds.append(m)
-
-            merged_embeds = torch.cat(padded_embeds, dim=0)
             merged_attention_mask = torch.ones(
                 batch_size, merged_embeds.shape[1],
                 device=input_ids.device,
                 dtype=torch.long
             )
 
-        return merged_embeds, merged_attention_mask
+        # Text labels start after image tokens
+        label_offsets = [num_image_tokens] * batch_size
+
+        return merged_embeds, merged_attention_mask, label_offsets
 
     def forward(
         self,
@@ -287,10 +253,35 @@ class EmberNetVLM(nn.Module):
             image_embeds = None
 
         # Merge image and text embeddings
+        adjusted_labels = labels
         if image_embeds is not None and input_ids is not None:
-            inputs_embeds, attention_mask = self._merge_image_text_embeds(
+            inputs_embeds, attention_mask, label_offsets = self._merge_image_text_embeds(
                 input_ids, image_embeds, attention_mask
             )
+            target_len = inputs_embeds.shape[1]
+
+            # Adjust labels to match merged sequence length
+            if labels is not None:
+                batch_size = input_ids.shape[0]
+                num_image_tokens = image_embeds.shape[1]
+
+                adjusted_labels = []
+                for b in range(batch_size):
+                    offset = label_offsets[b]
+                    # Create new labels with ignore tokens for image positions
+                    new_labels = torch.full(
+                        (target_len,), -100,
+                        dtype=labels.dtype, device=labels.device
+                    )
+                    # Copy original text labels starting after the offset
+                    text_labels = labels[b]
+                    copy_len = min(len(text_labels), target_len - offset)
+                    if copy_len > 0:
+                        new_labels[offset:offset + copy_len] = text_labels[:copy_len]
+                    adjusted_labels.append(new_labels)
+
+                adjusted_labels = torch.stack(adjusted_labels, dim=0)
+
             # Forward through decoder with embeddings
             outputs = self.decoder(
                 input_ids=None,
@@ -313,10 +304,10 @@ class EmberNetVLM(nn.Module):
 
         # Compute loss if labels provided
         loss = None
-        if labels is not None:
+        if adjusted_labels is not None:
             # Shift labels for next-token prediction
             shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
+            shift_labels = adjusted_labels[..., 1:].contiguous()
 
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
             loss = loss_fct(
