@@ -670,13 +670,28 @@ class EmberNetDataset(Dataset):
                 "answer": item["multiple_choice_answer"],
             }
 
-        # GQA format
+        # GQA format - needs to resolve imageId to Visual Genome image path
         if "question" in item and "fullAnswer" in item:
-            return {
-                "image": image,
+            # GQA uses imageId which refers to Visual Genome images
+            image_id = item.get("imageId") or item.get("image_id")
+            resolved_image = image
+
+            if image_id and base_dir:
+                # Try to find image in VG_100K folders
+                for vg_folder in ["VG_100K", "VG_100K_2", "images"]:
+                    for ext in [".jpg", ".png", ".jpeg"]:
+                        img_path = base_dir / "images" / vg_folder / f"{image_id}{ext}"
+                        if img_path.exists():
+                            resolved_image = str(img_path)
+                            break
+                    if resolved_image != image:
+                        break
+
+            return self._attach_base_dir({
+                "image": resolved_image,
                 "question": item["question"],
                 "answer": item["fullAnswer"],
-            }
+            }, base_dir)
 
         # OK-VQA / A-OKVQA format
         if "question" in item and "direct_answers" in item:

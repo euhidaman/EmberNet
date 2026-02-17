@@ -188,9 +188,11 @@ DATASETS = {
         "expert": "Projector (not experts)",
         "download_images_from_urls": True,
         "image_url_field": "image_url",
+        "allow_missing_images": True,
         "size_gb": 12.0,
         "priority": "optional",
         "samples": "3.3M",
+        "note": "Many URLs are expired - partial download expected (~70% success rate)"
     },
 
     # =========================================================================
@@ -349,9 +351,9 @@ DATASETS = {
         "priority": "recommended",
         "samples": "1.1M",
         "expert": "Expert 5: spatial_reasoning",
-        "download_images_from_urls": True,
-        "image_url_field": "imageId",
-        "note": "Images need to be downloaded from URLs in dataset"
+        "requires_coco_images": True,
+        "coco_splits": ["gqa"],
+        "note": "Images are from Visual Genome dataset - downloaded automatically"
     },
     # NOTE: Visual Genome doesn't exist as standalone in this format
     # "visual_genome": {
@@ -446,19 +448,21 @@ DATASETS = {
         "priority": "recommended",
         "samples": "107K",
     },
-    "vsr": {
-        "hf_name": "cambridgeltl/vsr_random",
-        "config": "default",
-        "description": "Visual Spatial Reasoning dataset",
-        "stage": 2,
-        "domain": "spatial_reasoning",
-        "expert": "Expert 5: spatial_reasoning",
-        "download_images_from_urls": True,
-        "image_url_field": "image_url",
-        "size_gb": 0.5,
-        "priority": "optional",
-        "samples": "10K",
-    },
+    # NOTE: VSR has completely broken image URLs (0% download success)
+    # Commented out - use other spatial reasoning datasets instead
+    # "vsr": {
+    #     "hf_name": "cambridgeltl/vsr_random",
+    #     "config": "default",
+    #     "description": "Visual Spatial Reasoning dataset",
+    #     "stage": 2,
+    #     "domain": "spatial_reasoning",
+    #     "expert": "Expert 5: spatial_reasoning",
+    #     "download_images_from_urls": True,
+    #     "image_url_field": "image_url",
+    #     "size_gb": 0.5,
+    #     "priority": "optional",
+    #     "samples": "10K",
+    # },
     # NOTE: VCR is not available on HuggingFace Hub; requires manual download.
     # "visual_commonsense": {
     #     "hf_name": "visual_commonsense",
@@ -755,18 +759,25 @@ def _snapshot_download_dataset(
     }
 
 
-def _download_image_from_url(url: str, save_path: Path, timeout: int = 30) -> bool:
+def _download_image_from_url(url: str, save_path: Path, timeout: int = 30, retries: int = 3) -> bool:
     """Download a single image from URL with retry logic."""
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(save_path, 'wb') as f:
-                f.write(response.read())
-        return True
-    except (urllib.error.URLError, urllib.error.HTTPError, Exception) as e:
-        return False
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+    }
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(save_path, 'wb') as f:
+                    f.write(response.read())
+            return True
+        except (urllib.error.URLError, urllib.error.HTTPError, Exception):
+            if attempt < retries - 1:
+                time.sleep(1)
+            continue
+    return False
 
 
 def _download_images_from_dataset(
@@ -830,37 +841,68 @@ def _download_images_from_dataset(
 
 
 def _download_coco_images(save_path: Path, splits: List[str] = None) -> bool:
-    """Download COCO images needed for datasets like GQA."""
+    """Download COCO or Visual Genome images needed for datasets like GQA, VQAv2."""
     if splits is None:
         splits = ["train2017", "val2017"]
     
     images_dir = save_path / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
     
-    print(f"  Downloading COCO images for splits: {splits}")
-    
+    print(f"  Downloading images for splits: {splits}")
+
     for split in splits:
-        zip_url = f"http://images.cocodataset.org/zips/{split}.zip"
-        zip_path = save_path / f"{split}.zip"
-        
-        if (images_dir / split).exists():
-            print(f"    {split} already exists, skipping")
-            continue
-        
-        try:
-            print(f"    Downloading {split}.zip...")
-            urllib.request.urlretrieve(zip_url, zip_path)
-            
-            print(f"    Extracting {split}.zip...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(images_dir)
-            
-            zip_path.unlink()
-            print(f"    ✓ {split} downloaded and extracted")
-        except Exception as e:
-            print(f"    ✗ Failed to download {split}: {e}")
-            return False
-    
+        # Check if this is a Visual Genome split (GQA uses VG images)
+        if split.startswith("vg_") or split == "gqa":
+            # Visual Genome images (used by GQA)
+            # GQA uses images from Visual Genome dataset
+            vg_urls = [
+                "https://cs.stanford.edu/people/rak248/VG_100K_2/images.zip",
+                "https://cs.stanford.edu/people/rak248/VG_100K_2/images2.zip",
+            ]
+            for i, vg_url in enumerate(vg_urls):
+                zip_name = f"vg_images_{i+1}.zip"
+                zip_path = save_path / zip_name
+                target_dir = images_dir / f"VG_100K_{i+1 if i else ''}"
+
+                if target_dir.exists() and any(target_dir.iterdir()):
+                    print(f"    VG images part {i+1} already exists, skipping")
+                    continue
+
+                try:
+                    print(f"    Downloading Visual Genome images part {i+1}...")
+                    urllib.request.urlretrieve(vg_url, zip_path)
+                    print(f"    Extracting VG images part {i+1}...")
+                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                        zip_ref.extractall(images_dir)
+                    zip_path.unlink()
+                    print(f"    ✓ VG images part {i+1} downloaded")
+                except Exception as e:
+                    print(f"    ✗ Failed to download VG images: {e}")
+                    # Continue anyway, some images may work
+            return True
+        else:
+            # COCO images
+            zip_url = f"http://images.cocodataset.org/zips/{split}.zip"
+            zip_path = save_path / f"{split}.zip"
+
+            if (images_dir / split).exists():
+                print(f"    {split} already exists, skipping")
+                continue
+
+            try:
+                print(f"    Downloading {split}.zip...")
+                urllib.request.urlretrieve(zip_url, zip_path)
+
+                print(f"    Extracting {split}.zip...")
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(images_dir)
+
+                zip_path.unlink()
+                print(f"    ✓ {split} downloaded and extracted")
+            except Exception as e:
+                print(f"    ✗ Failed to download {split}: {e}")
+                return False
+
     return True
 
 
@@ -1047,16 +1089,17 @@ def download_dataset(
                     snapshot_meta["images_downloaded"] = downloaded_count
                     snapshot_meta["images_failed"] = failed_count
 
-        # Download COCO images if needed (for datasets like GQA or LLaVA)
+        # Download COCO/VG images if needed (for datasets like GQA or VQAv2)
         if info.get("requires_coco_images", False):
-            print(f"\n  Dataset requires COCO images - downloading...")
-            coco_success = _download_coco_images(save_path)
+            coco_splits = info.get("coco_splits", ["train2017", "val2017"])
+            print(f"\n  Dataset requires external images - downloading...")
+            coco_success = _download_coco_images(save_path, splits=coco_splits)
             if coco_success:
                 image_validation_passed = True
-                print(f"  ✓ COCO images downloaded")
+                print(f"  ✓ Images downloaded")
                 snapshot_meta["coco_images_downloaded"] = True
             else:
-                print(f"  ✗ Failed to download COCO images")
+                print(f"  ✗ Failed to download images")
                 snapshot_meta["coco_images_downloaded"] = False
 
         download_time = time.time() - start_time
