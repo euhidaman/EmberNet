@@ -289,12 +289,10 @@ class Trainer:
         """Load model from checkpoint."""
         print(f"Loading checkpoint from {checkpoint_path}")
 
-        # Add TrainingConfig to safe globals for PyTorch 2.6+
-        if hasattr(torch.serialization, 'add_safe_globals'):
-            torch.serialization.add_safe_globals([TrainingConfig, EmberNetConfig])
-
         try:
-            # Try loading with weights_only=True (default in PyTorch 2.6)
+            # PyTorch 2.6+ changed weights_only default to True
+            # We need weights_only=False to load config and other non-tensor data
+            checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
             checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
         except Exception:
             # Fallback to weights_only=False if it fails (needed for custom classes in checkpoints)
@@ -656,10 +654,10 @@ class Trainer:
         num_batches = 0
 
         for batch in val_loader:
-            pixel_values = batch["pixel_values"].to self.device)
-            input_ids = batch["input_ids"].to self.device)
-            attention_mask = batch["attention_mask"].to self.device)
-            labels = batch["labels"].to self.device)
+            pixel_values = batch["pixel_values"].to(self.device)
+            input_ids = batch["input_ids"].to(self.device)
+            attention_mask = batch["attention_mask"].to(self.device)
+            labels = batch["labels"].to(self.device)
 
             outputs = self.model(
                 pixel_values=pixel_values,

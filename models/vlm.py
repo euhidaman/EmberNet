@@ -309,16 +309,46 @@ class EmberNetVLM(nn.Module):
         # Compute loss if labels provided
         loss = None
         if adjusted_labels is not None:
+            # Debug: print shapes
+            if logits.shape[0] != adjusted_labels.shape[0] or logits.shape[1] != adjusted_labels.shape[1]:
+                print(f"DEBUG: Shape mismatch before alignment:")
+                print(f"  logits: {logits.shape}")
+                print(f"  adjusted_labels: {adjusted_labels.shape}")
+                if input_ids is not None:
+                    print(f"  input_ids: {input_ids.shape}")
+                if inputs_embeds is not None:
+                    print(f"  inputs_embeds: {inputs_embeds.shape}")
+                if image_embeds is not None:
+                    print(f"  image_embeds: {image_embeds.shape}")
+
+            # Ensure batch sizes match
+            if logits.shape[0] != adjusted_labels.shape[0]:
+                raise ValueError(
+                    f"Batch size mismatch: logits {logits.shape[0]} vs labels {adjusted_labels.shape[0]}"
+                )
+
             # Ensure sequence lengths match before shifting
-            # This handles cases where decoder might return different length or labels weren't updated
             if logits.shape[1] != adjusted_labels.shape[1]:
                 min_len = min(logits.shape[1], adjusted_labels.shape[1])
+                print(f"  Trimming to min_len={min_len}")
                 logits = logits[:, :min_len, :]
                 adjusted_labels = adjusted_labels[:, :min_len]
 
             # Shift labels for next-token prediction
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = adjusted_labels[..., 1:].contiguous()
+
+            # Verify shapes match after shifting
+            batch_size, seq_len = shift_labels.shape
+            expected_logits_shape = (batch_size, seq_len, shift_logits.shape[-1])
+            if shift_logits.shape != expected_logits_shape:
+                print(f"DEBUG: Shape mismatch after shifting:")
+                print(f"  shift_logits: {shift_logits.shape}")
+                print(f"  shift_labels: {shift_labels.shape}")
+                print(f"  expected: {expected_logits_shape}")
+                raise ValueError(
+                    f"Shape mismatch after shifting: logits {shift_logits.shape} vs expected {expected_logits_shape}"
+                )
 
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
             loss = loss_fct(
