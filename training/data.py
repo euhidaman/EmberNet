@@ -62,6 +62,22 @@ DOMAIN_TAGS = {
     "general": "[DOMAIN: General]",
 }
 
+# Domain to expert index mapping (aligns with BitNetMoEConfig.expert_domains)
+DOMAIN_TO_EXPERT = {
+    "vision_ocr": 0,        # Expert 0: Text reading, document OCR
+    "vision_diagram": 1,    # Expert 1: Diagrams, infographics
+    "code_math_chart": 2,   # Expert 2: Charts, graphs, plots
+    "code_math_formula": 3, # Expert 3: Math equations, formulas
+    "spatial_scene": 4,     # Expert 4: Scene understanding
+    "spatial_reasoning": 5, # Expert 5: Spatial relationships
+    "agentic_knowledge": 6, # Expert 6: Knowledge-based reasoning
+    "agentic_reasoning": 7, # Expert 7: Multi-step reasoning
+    "general": 0,           # Default to expert 0
+    "robotics_action": 4,   # Map to spatial_scene
+    "robotics_spatial": 5,  # Map to spatial_reasoning
+    "agentic_tool": 6,      # Map to agentic_knowledge
+}
+
 
 @dataclass
 class DataConfig:
@@ -904,12 +920,16 @@ class EmberNetDataset(Dataset):
         # Tokenize
         input_ids, attention_mask, labels = self._tokenize(prompt, target)
 
+        # Get expert target for expert supervision
+        expert_target = torch.tensor(DOMAIN_TO_EXPERT.get(self.domain, 0), dtype=torch.long)
+
         return {
             "pixel_values": pixel_values,
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": labels,
             "domain": self.domain,
+            "expert_target": expert_target,
         }
 
 
@@ -966,12 +986,16 @@ class MixedDomainDataset(Dataset):
 
 def collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     """Collate batch of samples."""
-    return {
+    result = {
         "pixel_values": torch.stack([b["pixel_values"] for b in batch]),
         "input_ids": torch.stack([b["input_ids"] for b in batch]),
         "attention_mask": torch.stack([b["attention_mask"] for b in batch]),
         "labels": torch.stack([b["labels"] for b in batch]),
     }
+    # Include expert_targets if present (for expert supervision in Stage 2)
+    if "expert_target" in batch[0]:
+        result["expert_targets"] = torch.stack([b["expert_target"] for b in batch])
+    return result
 
 
 def create_dataloaders(
@@ -979,6 +1003,7 @@ def create_dataloaders(
     batch_size: int = 4,
     num_workers: int = 4,
     stage: int = 1,
+    use_curriculum: bool = False,
 ) -> Tuple[DataLoader, Optional[DataLoader]]:
     """
     Create training and validation dataloaders.
@@ -988,6 +1013,9 @@ def create_dataloaders(
         batch_size: Batch size for training
         num_workers: Number of data loading workers
         stage: Training stage (1=projector alignment, 2=expert SFT)
+        use_curriculum: Whether to use curriculum learning (Stage 2 only)
+            If True, easier datasets (VQAv2, COCO) are weighted higher early,
+            harder datasets (ChartQA, MathVista) weighted higher later.
 
     Returns:
         train_loader, val_loader
@@ -1010,17 +1038,35 @@ def create_dataloaders(
         )
     else:
         # Stage 2: Mix domain-specific datasets
-        domains = {
-            "vision_ocr": config.vision_ratio / 2,
-            "vision_diagram": config.vision_ratio / 2,
-            "code_math_chart": config.code_math_ratio / 2,
-            "code_math_formula": config.code_math_ratio / 2,
-            "spatial_scene": config.robotics_ratio / 2,
-            "spatial_reasoning": config.robotics_ratio / 2,
-            "agentic_knowledge": config.agentic_ratio / 2,
-            "agentic_reasoning": config.agentic_ratio / 2,
-            "general": config.general_ratio,
-        }
+        # Curriculum: start with easier domains, gradually add harder ones
+        if use_curriculum:
+            # Curriculum learning: prioritize easier datasets first
+            # Easy: spatial_scene, general (VQAv2, COCO-like)
+            # Medium: vision_ocr, spatial_reasoning (TextVQA, GQA)
+            # Hard: code_math_chart, code_math_formula, agentic (ChartQA, MathVista, ScienceQA)
+            domains = {
+                "spatial_scene": 0.25,       # Easy - VQAv2
+                "general": 0.20,             # Easy - general captions
+                "vision_ocr": 0.15,          # Medium - TextVQA
+                "spatial_reasoning": 0.15,   # Medium - GQA
+                "vision_diagram": 0.05,      # Medium - AI2D
+                "code_math_chart": 0.08,     # Hard - ChartQA
+                "code_math_formula": 0.05,   # Hard - MathVista
+                "agentic_knowledge": 0.04,   # Hard - OK-VQA
+                "agentic_reasoning": 0.03,   # Hard - ScienceQA
+            }
+        else:
+            domains = {
+                "vision_ocr": config.vision_ratio / 2,
+                "vision_diagram": config.vision_ratio / 2,
+                "code_math_chart": config.code_math_ratio / 2,
+                "code_math_formula": config.code_math_ratio / 2,
+                "spatial_scene": config.robotics_ratio / 2,
+                "spatial_reasoning": config.robotics_ratio / 2,
+                "agentic_knowledge": config.agentic_ratio / 2,
+                "agentic_reasoning": config.agentic_ratio / 2,
+                "general": config.general_ratio,
+            }
 
         datasets = {}
         for domain in domains:

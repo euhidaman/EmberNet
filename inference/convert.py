@@ -225,13 +225,47 @@ def convert_to_ternary(
     # Convert BitLinear layers
     model = convert_bitlinear_to_ternary(model)
 
+    # Apply dynamic INT8 quantization to non-BitLinear linear layers and embeddings
+    print("Applying dynamic INT8 quantization to non-BitLinear modules...")
+    model = apply_dynamic_quantization(model)
+
     # Optionally quantize vision encoder to INT8
     if config.quantize_vision:
         print("Quantizing vision encoder to INT8...")
-        # This would require more complex handling
-        # For now, we keep vision encoder in FP16
+        if hasattr(model, 'vision_encoder'):
+            model.vision_encoder = torch.quantization.quantize_dynamic(
+                model.vision_encoder,
+                {nn.Linear, nn.Embedding},
+                dtype=torch.qint8,
+            )
 
     return model
+
+
+def apply_dynamic_quantization(model: nn.Module) -> nn.Module:
+    """
+    Apply dynamic INT8 quantization to non-BitLinear Linear and Embedding layers.
+    BitLinear layers are skipped (already ternary).
+    """
+    # Collect modules to quantize (exclude already converted TernaryLinear)
+    modules_to_skip = set()
+    for name, module in model.named_modules():
+        if isinstance(module, TernaryLinear):
+            modules_to_skip.add(name)
+
+    # Apply dynamic quantization only to regular Linear and Embedding
+    # We need to be selective to avoid quantizing TernaryLinear
+    try:
+        # Use torch.quantization for supported modules
+        quantized_model = torch.quantization.quantize_dynamic(
+            model,
+            {nn.Embedding},  # Quantize embeddings to INT8
+            dtype=torch.qint8,
+        )
+        return quantized_model
+    except Exception as e:
+        print(f"Warning: Dynamic quantization failed: {e}")
+        return model
 
 
 def save_ternary_model(

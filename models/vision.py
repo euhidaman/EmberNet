@@ -181,6 +181,80 @@ class VisionProjector(nn.Module):
         return x
 
 
+class CrossModalProjector(nn.Module):
+    """
+    Enhanced projector with cross-attention for better vision-language alignment.
+    Uses BitLinear for efficiency while adding semantic richness.
+    """
+
+    def __init__(
+        self,
+        vision_dim: int,
+        lm_dim: int,
+        num_query_tokens: int = 64,
+        num_cross_attn_layers: int = 2,
+        num_heads: int = 8,
+    ):
+        super().__init__()
+        self.num_query_tokens = num_query_tokens
+
+        # Learnable query embeddings (Q-Former style)
+        self.query_tokens = nn.Parameter(
+            torch.randn(1, num_query_tokens, lm_dim) * 0.02
+        )
+
+        # Project vision features to LM dimension using BitLinear
+        self.vision_proj = BitLinear(vision_dim, lm_dim)
+
+        # Cross-attention stack
+        self.cross_attn_layers = nn.ModuleList([
+            nn.MultiheadAttention(embed_dim=lm_dim, num_heads=num_heads, batch_first=True)
+            for _ in range(num_cross_attn_layers)
+        ])
+
+        # Feed-forward with BitLinear
+        self.ffn = nn.Sequential(
+            BitLinear(lm_dim, lm_dim * 4),
+            nn.GELU(),
+            BitLinear(lm_dim * 4, lm_dim),
+        )
+
+        # LayerNorms
+        self.ln_q = nn.LayerNorm(lm_dim)
+        self.ln_ff = nn.LayerNorm(lm_dim)
+
+    def forward(self, vision_features: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            vision_features: [B, N_vision, vision_dim]
+
+        Returns:
+            aligned_features: [B, num_query_tokens, lm_dim]
+        """
+        B = vision_features.shape[0]
+
+        # Project vision features into LM space
+        vision_proj = self.vision_proj(vision_features)  # [B, N, lm_dim]
+
+        # Expand query tokens
+        queries = self.query_tokens.expand(B, -1, -1)  # [B, Q, lm_dim]
+
+        # Apply stacked cross-attention
+        for cross_attn in self.cross_attn_layers:
+            attn_out, _ = cross_attn(
+                query=queries,
+                key=vision_proj,
+                value=vision_proj,
+            )
+            queries = self.ln_q(queries + attn_out)
+
+        # Feed-forward
+        ffn_out = self.ffn(queries)
+        output = self.ln_ff(queries + ffn_out)
+
+        return output
+
+
 class VisionEncoder(nn.Module):
     """
     Complete vision encoder with SigLIP backbone and token compression.
@@ -204,6 +278,7 @@ class VisionEncoder(nn.Module):
         shuffle_factor: int = 2,  # 2x2 gives 49 tokens from 196
         freeze_encoder: bool = True,
         use_pooling: bool = True,
+        use_cross_modal_projector: bool = True,
     ):
         super().__init__()
 
@@ -212,6 +287,7 @@ class VisionEncoder(nn.Module):
         self.num_output_tokens = num_output_tokens
         self.use_pixel_shuffle = use_pixel_shuffle
         self.use_pooling = use_pooling
+        self.use_cross_modal_projector = use_cross_modal_projector
 
         # Load SigLIP vision encoder
         if HAS_TRANSFORMERS:
@@ -247,8 +323,15 @@ class VisionEncoder(nn.Module):
         else:
             self.pooler = None
 
-        # Projector to LM dimension
-        self.projector = VisionProjector(vision_dim, lm_hidden_size)
+        # Projector: use cross-modal or simple projector
+        if use_cross_modal_projector:
+            self.projector = CrossModalProjector(
+                vision_dim=vision_dim,
+                lm_dim=lm_hidden_size,
+                num_query_tokens=num_output_tokens,
+            )
+        else:
+            self.projector = VisionProjector(vision_dim, lm_hidden_size)
 
         # Freeze encoder if requested
         if freeze_encoder and self.encoder is not None:
@@ -368,6 +451,7 @@ def create_vision_encoder(
     lm_hidden_size: int = 768,
     num_output_tokens: int = 64,
     freeze_encoder: bool = True,
+    use_cross_modal_projector: bool = True,
 ) -> VisionEncoder:
     """Create a vision encoder with default settings."""
     return VisionEncoder(
@@ -375,5 +459,6 @@ def create_vision_encoder(
         lm_hidden_size=lm_hidden_size,
         num_output_tokens=num_output_tokens,
         freeze_encoder=freeze_encoder,
+        use_cross_modal_projector=use_cross_modal_projector,
     )
 

@@ -24,7 +24,7 @@ QUANTIZATION:
 
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import torch
 import torch.nn as nn
@@ -217,6 +217,7 @@ def apply_rotary_pos_emb(
 class BitNetAttention(nn.Module):
     """
     Multi-head attention with BitLinear and Grouped Query Attention (GQA).
+    Supports KV-cache for efficient generation.
     """
 
     def __init__(self, config: BitNetMoEConfig):
@@ -241,7 +242,9 @@ class BitNetAttention(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         batch_size, seq_len, _ = hidden_states.shape
 
         # Project Q, K, V
@@ -254,20 +257,40 @@ class BitNetAttention(nn.Module):
         k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
+        # Determine position offset for rotary embeddings when using cache
+        kv_seq_len = seq_len
+        if past_key_value is not None:
+            kv_seq_len += past_key_value[0].shape[2]
+
         # Apply rotary embeddings
-        cos, sin = self.rotary_emb(hidden_states, seq_len)
+        cos, sin = self.rotary_emb(hidden_states, kv_seq_len)
+        if past_key_value is not None:
+            # Only apply to the new positions
+            cos = cos[kv_seq_len - seq_len:]
+            sin = sin[kv_seq_len - seq_len:]
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
+
+        # Concatenate with past KV cache
+        if past_key_value is not None:
+            k = torch.cat([past_key_value[0], k], dim=2)
+            v = torch.cat([past_key_value[1], v], dim=2)
+
+        # Store KV for future use
+        present_key_value = (k, v) if use_cache else None
+        kv_seq_len = k.shape[2]
 
         # Expand KV for GQA
         if self.num_kv_groups > 1:
-            k = k.unsqueeze(2).expand(-1, -1, self.num_kv_groups, -1, -1)
-            k = k.reshape(batch_size, self.num_heads, seq_len, self.head_dim)
-            v = v.unsqueeze(2).expand(-1, -1, self.num_kv_groups, -1, -1)
-            v = v.reshape(batch_size, self.num_heads, seq_len, self.head_dim)
+            k_expanded = k.unsqueeze(2).expand(-1, -1, self.num_kv_groups, -1, -1)
+            k_expanded = k_expanded.reshape(batch_size, self.num_heads, kv_seq_len, self.head_dim)
+            v_expanded = v.unsqueeze(2).expand(-1, -1, self.num_kv_groups, -1, -1)
+            v_expanded = v_expanded.reshape(batch_size, self.num_heads, kv_seq_len, self.head_dim)
+        else:
+            k_expanded, v_expanded = k, v
 
         # Scaled dot-product attention
         scale = 1.0 / math.sqrt(self.head_dim)
-        attn_weights = torch.matmul(q, k.transpose(-2, -1)) * scale
+        attn_weights = torch.matmul(q, k_expanded.transpose(-2, -1)) * scale
 
         # Apply causal mask
         if attention_mask is not None:
@@ -276,14 +299,14 @@ class BitNetAttention(nn.Module):
         attn_weights = F.softmax(attn_weights, dim=-1)
 
         # Apply attention to values
-        attn_output = torch.matmul(attn_weights, v)
+        attn_output = torch.matmul(attn_weights, v_expanded)
 
         # Reshape and project output
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(batch_size, seq_len, self.hidden_size)
         output = self.o_proj(attn_output)
 
-        return output
+        return output, present_key_value
 
 
 class BitNetExpert(nn.Module):
@@ -302,9 +325,8 @@ class BitNetExpert(nn.Module):
 
 class BitNetMoELayer(nn.Module):
     """
-    Mixture-of-Experts layer with BitLinear experts.
-
-    Uses top-k routing with optional shared expert for common knowledge.
+    Mixture-of-Experts layer with improved routing, expert dropout,
+    and richer auxiliary losses for better specialization.
     """
 
     def __init__(self, config: BitNetMoEConfig):
@@ -314,8 +336,10 @@ class BitNetMoELayer(nn.Module):
         self.num_experts_per_tok = config.num_experts_per_tok
         self.use_shared_expert = config.use_shared_expert
 
-        # Router (stays in full precision)
-        self.router = nn.Linear(config.hidden_size, config.num_experts, bias=False)
+        # Router with small-initialization for stability
+        self.router = nn.Linear(config.hidden_size, config.num_experts, bias=True)
+        nn.init.zeros_(self.router.bias)
+        nn.init.normal_(self.router.weight, std=0.01)
 
         # Domain experts
         self.experts = nn.ModuleList([
@@ -326,6 +350,12 @@ class BitNetMoELayer(nn.Module):
         # Optional shared expert
         if self.use_shared_expert:
             self.shared_expert = BitNetExpert(config.hidden_size, config.intermediate_size)
+
+        # Expert dropout probability
+        self.expert_dropout = 0.1
+
+        # Track expert usage statistics
+        self.register_buffer("expert_usage", torch.zeros(config.num_experts))
 
     def forward(
         self,
@@ -344,36 +374,56 @@ class BitNetMoELayer(nn.Module):
         # Compute router logits
         router_logits = self.router(hidden_flat)
 
+        # Expert dropout (mask some experts per batch during training)
+        if self.training and self.expert_dropout > 0.0:
+            expert_mask = torch.bernoulli(
+                torch.full(
+                    (1, self.num_experts),
+                    1.0 - self.expert_dropout,
+                    device=router_logits.device,
+                )
+            )
+            router_logits = router_logits * expert_mask + (1 - expert_mask) * (-1e9)
+
+        # Gumbel-Softmax routing during training for better gradient flow
+        if self.training:
+            gumbel_noise = -torch.log(-torch.log(torch.rand_like(router_logits) + 1e-8) + 1e-8)
+            logits_with_noise = router_logits + gumbel_noise
+            routing_weights = F.softmax(logits_with_noise / 0.5, dim=-1)  # temperature=0.5
+        else:
+            routing_weights = F.softmax(router_logits, dim=-1)
+
         # Top-k routing
-        routing_weights = F.softmax(router_logits, dim=-1)
         top_k_weights, top_k_indices = torch.topk(
             routing_weights, self.num_experts_per_tok, dim=-1
         )
+        top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-8)
 
-        # Normalize weights
-        top_k_weights = top_k_weights / top_k_weights.sum(dim=-1, keepdim=True)
-
-        # Compute expert outputs
+        # Initialize output
         final_output = torch.zeros_like(hidden_flat)
 
+        # Track expert usage
+        if self.training:
+            for i in range(self.num_experts):
+                selected = (top_k_indices == i).any(dim=-1).float().sum()
+                self.expert_usage[i] = 0.99 * self.expert_usage[i] + 0.01 * selected
+
+        # Compute per-expert outputs
         for expert_idx in range(self.num_experts):
-            # Find tokens routed to this expert
             expert_mask = (top_k_indices == expert_idx).any(dim=-1)
             if not expert_mask.any():
                 continue
 
-            # Get tokens for this expert
             expert_input = hidden_flat[expert_mask]
             expert_output = self.experts[expert_idx](expert_input)
 
-            # Get weights for this expert
+            # Aggregate weights for this expert
             weight_mask = (top_k_indices == expert_idx).float()
             weights = (weight_mask * top_k_weights).sum(dim=-1)[expert_mask]
 
-            # Weighted sum
             final_output[expert_mask] += expert_output * weights.unsqueeze(-1)
 
-        # Add shared expert output
+        # Shared expert contribution
         if self.use_shared_expert:
             shared_output = self.shared_expert(hidden_flat)
             final_output = final_output + shared_output
@@ -400,11 +450,16 @@ class BitNetMoEBlock(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         # Self-attention with residual
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.attention(hidden_states, attention_mask, position_ids)
+        hidden_states, present_key_value = self.attention(
+            hidden_states, attention_mask, position_ids,
+            past_key_value=past_key_value, use_cache=use_cache
+        )
         hidden_states = residual + hidden_states
 
         # MoE FFN with residual
@@ -413,7 +468,7 @@ class BitNetMoEBlock(nn.Module):
         hidden_states, router_logits = self.moe(hidden_states)
         hidden_states = residual + hidden_states
 
-        return hidden_states, router_logits
+        return hidden_states, router_logits, present_key_value
 
 
 class BitNetMoEDecoder(nn.Module):
@@ -466,6 +521,8 @@ class BitNetMoEDecoder(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
+        past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
+        use_cache: bool = False,
         return_router_logits: bool = False,
     ) -> Tuple[torch.Tensor, ...]:
         """
@@ -475,10 +532,13 @@ class BitNetMoEDecoder(nn.Module):
             input_ids: Token IDs [batch_size, seq_len]
             attention_mask: Optional attention mask
             inputs_embeds: Optional pre-computed embeddings (for VLM integration)
+            past_key_values: Optional KV cache from previous forward passes
+            use_cache: Whether to return KV cache for generation
             return_router_logits: Whether to return router logits for aux loss
 
         Returns:
             logits: Output logits [batch_size, seq_len, vocab_size]
+            past_key_values: (optional) KV cache for each layer
             router_logits: (optional) List of router logits from each layer
         """
         if inputs_embeds is None:
@@ -488,37 +548,58 @@ class BitNetMoEDecoder(nn.Module):
 
         batch_size, seq_len, _ = hidden_states.shape
 
-        # Create causal mask
-        causal_mask = self._make_causal_mask(seq_len, hidden_states.device, hidden_states.dtype)
+        # Calculate past sequence length for proper masking
+        past_length = 0
+        if past_key_values is not None and past_key_values[0] is not None:
+            past_length = past_key_values[0][0].shape[2]
+
+        # Create causal mask (accounting for past)
+        total_len = seq_len + past_length
+        causal_mask = self._make_causal_mask(total_len, hidden_states.device, hidden_states.dtype)
+        # Only use the last seq_len rows for the current sequence
+        causal_mask = causal_mask[:, :, -seq_len:, :]
 
         # Apply attention mask if provided
         if attention_mask is not None:
             # Expand attention mask
             extended_mask = attention_mask.unsqueeze(1).unsqueeze(2)
             extended_mask = (1.0 - extended_mask.float()) * float('-inf')
-            causal_mask = causal_mask + extended_mask
+            causal_mask = causal_mask + extended_mask[:, :, :, -total_len:]
 
         all_router_logits = []
+        present_key_values = [] if use_cache else None
 
         # Forward through layers
-        for layer in self.layers:
-            hidden_states, router_logits = layer(hidden_states, causal_mask)
+        for i, layer in enumerate(self.layers):
+            past_kv = past_key_values[i] if past_key_values is not None else None
+            hidden_states, router_logits, present_kv = layer(
+                hidden_states, causal_mask,
+                past_key_value=past_kv, use_cache=use_cache
+            )
             if return_router_logits:
                 all_router_logits.append(router_logits)
+            if use_cache:
+                present_key_values.append(present_kv)
 
         # Output projection
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)
 
+        # Build return tuple
+        outputs = (logits,)
+        if use_cache:
+            outputs = outputs + (present_key_values,)
         if return_router_logits:
-            return logits, all_router_logits
-        return logits,
+            outputs = outputs + (all_router_logits,)
+
+        return outputs
 
     def compute_router_aux_loss(self, router_logits_list: list) -> torch.Tensor:
         """
-        Compute auxiliary loss to encourage load balancing across experts.
-
-        Uses the simplified load balancing loss from Switch Transformer.
+        Compute auxiliary loss for router with multiple components:
+        - Load balancing: encourage uniform expert usage
+        - Router z-loss: prevent router logits from growing too large
+        - Entropy regularization: encourage confident routing
         """
         total_loss = 0.0
         num_layers = len(router_logits_list)
@@ -527,17 +608,27 @@ class BitNetMoEDecoder(nn.Module):
             # router_logits: [batch * seq_len, num_experts]
             routing_weights = F.softmax(router_logits, dim=-1)
 
-            # Fraction of tokens routed to each expert
-            tokens_per_expert = routing_weights.mean(dim=0)
+            # Load balancing: encourage uniform expert usage
+            tokens_per_expert = routing_weights.mean(dim=0)  # [E]
+            uniform = torch.full_like(tokens_per_expert, 1.0 / self.config.num_experts)
+            load_balance_loss = F.kl_div(
+                (tokens_per_expert + 1e-8).log(), uniform, reduction="batchmean"
+            )
 
-            # Average routing probability per expert
-            routing_prob = routing_weights.mean(dim=0)
+            # Router z-loss: prevent logits from growing too large
+            z_loss = torch.logsumexp(router_logits, dim=-1).mean()
 
-            # Load balancing loss
-            loss = (tokens_per_expert * routing_prob).sum() * self.config.num_experts
-            total_loss += loss
+            # Entropy regularization: encourage confident routing
+            entropy = -(routing_weights * (routing_weights + 1e-8).log()).sum(dim=-1).mean()
 
-        return total_loss / num_layers
+            layer_loss = (
+                load_balance_loss
+                + 0.01 * z_loss
+                + 0.001 * entropy
+            )
+            total_loss += layer_loss
+
+        return total_loss / max(1, num_layers)
 
     def get_num_params(self, trainable_only: bool = False) -> int:
         """Count parameters in the model."""

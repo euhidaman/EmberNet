@@ -341,6 +341,7 @@ class EmberNetVLM(nn.Module):
         top_p: Optional[float] = None,
         top_k: Optional[int] = None,
         do_sample: bool = True,
+        use_cache: bool = True,
     ) -> str:
         """
         Generate response for a single image and prompt.
@@ -353,6 +354,7 @@ class EmberNetVLM(nn.Module):
             top_p: Nucleus sampling probability
             top_k: Top-k sampling
             do_sample: Whether to use sampling (vs greedy)
+            use_cache: Whether to use KV-cache for faster generation
 
         Returns:
             Generated text response
@@ -392,17 +394,21 @@ class EmberNetVLM(nn.Module):
             input_ids, image_embeds
         )
 
-        # Generate tokens autoregressively
+        # Generate tokens autoregressively with KV-cache
         generated_ids = []
-        current_embeds = inputs_embeds
+        past_key_values = None
 
-        for _ in range(max_new_tokens):
-            # Forward pass
-            outputs = self.decoder(
-                inputs_embeds=current_embeds,
-                attention_mask=attention_mask,
-            )
-            logits = outputs[0]
+        # First forward pass with full context
+        outputs = self.decoder(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            use_cache=use_cache,
+        )
+        logits = outputs[0]
+        if use_cache:
+            past_key_values = outputs[1]
+
+        for step in range(max_new_tokens):
             next_token_logits = logits[:, -1, :]
 
             # Apply temperature
@@ -445,13 +451,35 @@ class EmberNetVLM(nn.Module):
             if next_token.item() == self.config.eos_token_id:
                 break
 
-            # Update embeddings for next iteration
-            next_embed = self.decoder.embed_tokens(next_token)
-            current_embeds = torch.cat([current_embeds, next_embed], dim=1)
-            attention_mask = torch.cat([
-                attention_mask,
-                torch.ones(1, 1, device=device, dtype=attention_mask.dtype)
-            ], dim=1)
+            # Next forward pass - only process the new token using cache
+            if use_cache and past_key_values is not None:
+                next_embed = self.decoder.embed_tokens(next_token)
+                new_attention_mask = torch.cat([
+                    attention_mask,
+                    torch.ones(1, 1, device=device, dtype=attention_mask.dtype)
+                ], dim=1)
+                outputs = self.decoder(
+                    inputs_embeds=next_embed,
+                    attention_mask=new_attention_mask,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                )
+                logits = outputs[0]
+                past_key_values = outputs[1]
+                attention_mask = new_attention_mask
+            else:
+                # No cache - recompute everything (slower)
+                next_embed = self.decoder.embed_tokens(next_token)
+                inputs_embeds = torch.cat([inputs_embeds, next_embed], dim=1)
+                attention_mask = torch.cat([
+                    attention_mask,
+                    torch.ones(1, 1, device=device, dtype=attention_mask.dtype)
+                ], dim=1)
+                outputs = self.decoder(
+                    inputs_embeds=inputs_embeds,
+                    attention_mask=attention_mask,
+                )
+                logits = outputs[0]
 
         # Decode generated tokens
         if self.tokenizer is not None:

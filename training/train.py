@@ -79,6 +79,24 @@ class TrainingConfig:
     train_router: bool = False  # Enable for stage 2
     train_experts: bool = False  # Enable for stage 2
 
+    # Curriculum learning (Stage 2 only)
+    use_curriculum: bool = True
+
+    # EMA (exponential moving average of model weights)
+    use_ema: bool = True
+    ema_decay: float = 0.999
+
+    # Adaptive gradient clipping
+    use_adaptive_grad_clip: bool = True
+    grad_clip_percentile: float = 0.95
+
+    # Token masking (future use)
+    token_masking_prob: float = 0.0
+
+    # Expert supervision (Stage 2)
+    use_expert_supervision: bool = True
+    expert_supervision_weight: float = 0.1
+
     # Logging
     log_interval: int = 10
     eval_interval: int = 500
@@ -127,6 +145,15 @@ class Trainer:
             self._load_checkpoint(config.resume_from)
 
         self.model = self.model.to(self.device)
+
+        # EMA setup
+        self.ema_model = None
+        if config.use_ema:
+            from copy import deepcopy
+            self.ema_model = deepcopy(self.model)
+            for p in self.ema_model.parameters():
+                p.requires_grad = False
+            print("✓ EMA model initialized")
 
         # Apply parameter freezing based on stage
         self._setup_parameter_freezing()
@@ -313,6 +340,24 @@ class Trainer:
             )
             loss = outputs["loss"]
 
+        # Optional expert supervision (Stage 2 only)
+        if (
+            self.config.stage == 2
+            and self.config.use_expert_supervision
+            and "expert_targets" in batch
+            and outputs.get("router_logits", None) is not None
+        ):
+            router_logits_list = outputs["router_logits"]
+            router_logits_last = router_logits_list[-1]
+            expert_targets = batch["expert_targets"].to(router_logits_last.device)
+            seq_len = input_ids.shape[1]
+            expanded_targets = expert_targets.unsqueeze(1).expand(-1, seq_len).reshape(-1)
+
+            expert_supervision_loss = torch.nn.functional.cross_entropy(
+                router_logits_last, expanded_targets, reduction="mean"
+            )
+            loss = loss + self.config.expert_supervision_weight * expert_supervision_loss
+
         # Scale loss for gradient accumulation
         loss = loss / self.config.gradient_accumulation_steps
 
@@ -331,11 +376,21 @@ class Trainer:
         if self.scaler is not None:
             self.scaler.unscale_(self.optimizer)
 
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(
-            self.model.parameters(),
-            self.config.max_grad_norm
-        )
+        # Adaptive or fixed gradient clipping
+        if self.config.use_adaptive_grad_clip:
+            grads = []
+            for p in self.model.parameters():
+                if p.grad is not None:
+                    grads.append(p.grad.detach().abs().view(-1))
+            if grads:
+                all_grads = torch.cat(grads)
+                clip_val = torch.quantile(all_grads, self.config.grad_clip_percentile)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_val.item())
+        else:
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                self.config.max_grad_norm
+            )
 
         if self.scaler is not None:
             self.scaler.step(self.optimizer)
@@ -348,6 +403,19 @@ class Trainer:
         # Scheduler step
         if self.scheduler is not None and self.global_step >= self.config.warmup_steps:
             self.scheduler.step()
+
+        # EMA update
+        self._update_ema()
+
+    def _update_ema(self):
+        """Update EMA model weights."""
+        if self.ema_model is None:
+            return
+        with torch.no_grad():
+            for ema_param, param in zip(self.ema_model.parameters(), self.model.parameters()):
+                ema_param.data.mul_(self.config.ema_decay).add_(
+                    param.data, alpha=1.0 - self.config.ema_decay
+                )
 
     def _warmup_lr(self):
         """Linear warmup for learning rate."""
@@ -410,6 +478,7 @@ class Trainer:
                 batch_size=self.config.batch_size,
                 num_workers=self.config.num_workers,
                 stage=self.config.stage,
+                use_curriculum=self.config.use_curriculum,
             )
 
         # Calculate training steps
@@ -618,6 +687,16 @@ def main():
     parser.add_argument("--num-workers", type=int, default=4,
                         help="Number of data loading workers")
 
+    # New training features
+    parser.add_argument("--no-ema", action="store_true",
+                        help="Disable EMA model")
+    parser.add_argument("--no-curriculum", action="store_true",
+                        help="Disable curriculum learning")
+    parser.add_argument("--no-expert-supervision", action="store_true",
+                        help="Disable expert supervision loss")
+    parser.add_argument("--no-adaptive-clip", action="store_true",
+                        help="Disable adaptive gradient clipping")
+
     # Experiment tracking
     parser.add_argument("--wandb", action="store_true", default=True,
                         help="Use Weights & Biases for logging (default: True)")
@@ -651,6 +730,10 @@ def main():
         use_wandb=args.wandb and not args.no_wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
+        use_ema=not args.no_ema,
+        use_curriculum=not args.no_curriculum,
+        use_expert_supervision=not args.no_expert_supervision,
+        use_adaptive_grad_clip=not args.no_adaptive_clip,
     )
 
     if args.lr is not None:
