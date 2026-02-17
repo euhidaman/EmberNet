@@ -58,7 +58,7 @@ class EmberNetConfig:
     freeze_vision: bool = True
 
     # Language model settings
-    vocab_size: int = 32000
+    vocab_size: int = 32002  # 32000 base + special tokens (IMAGE_TOKEN_ID=32001)
     hidden_size: int = 768
     intermediate_size: int = 2048
     num_layers: int = 16
@@ -180,10 +180,17 @@ class EmberNetVLM(nn.Module):
             merged_attention_mask: Updated attention mask
         """
         batch_size = input_ids.shape[0]
-        text_embeds = self.decoder.embed_tokens(input_ids)
 
-        # Find image token positions
+        # Find image token positions BEFORE embedding lookup
         image_token_mask = (input_ids == self.config.image_token_id)
+
+        # Replace image_token_id with pad_token_id for embedding lookup
+        # (image_token_id may be outside vocab range)
+        safe_input_ids = input_ids.clone()
+        safe_input_ids[image_token_mask] = self.config.pad_token_id
+
+        # Now do embedding lookup with safe IDs
+        text_embeds = self.decoder.embed_tokens(safe_input_ids)
 
         if not image_token_mask.any():
             # No image tokens, prepend image embeddings

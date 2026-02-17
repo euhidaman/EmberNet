@@ -34,7 +34,7 @@ import torch.nn.functional as F
 @dataclass
 class BitNetMoEConfig:
     """Configuration for BitNet MoE Decoder."""
-    vocab_size: int = 32000
+    vocab_size: int = 32002  # 32000 base + special tokens (IMAGE_TOKEN_ID=32001)
     hidden_size: int = 768
     intermediate_size: int = 2048
     num_layers: int = 16
@@ -639,7 +639,7 @@ class BitNetMoEDecoder(nn.Module):
 
 # Utility function to create model
 def create_bitnet_moe_decoder(
-    vocab_size: int = 32000,
+    vocab_size: int = 32002,
     hidden_size: int = 768,
     num_layers: int = 16,
     num_experts: int = 8,

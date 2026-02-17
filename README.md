@@ -130,72 +130,135 @@ The **download_manifest.json** tracks:
 
 #### Step 4: Train the Model
 
-**Stage 1: Projector Alignment (3 epochs, ~6-12 hours on GPU)**
+EmberNet uses a **two-stage training pipeline**. Use `--trial` for quick validation or `--main` for full training.
 
-Trains the vision-to-language projector to connect SigLIP visual features with the language model.
+---
 
-```bash
-python training/train.py \
-    --stage 1 \
-    --data-dir ./data \
-    --epochs 3 \
-    --batch-size 8 \
-    --lr 1e-3 \
-    --output-dir ./checkpoints \
-    --wandb-project EmberNet \
-    --wandb-run-name stage1_projector
-```
-
-**Parameters explained:**
-- `--stage 1` - Train vision projector only (vision encoder frozen, language model frozen)
-- `--data-dir ./data` - Where datasets were downloaded (contains download_manifest.json)
-- `--epochs 3` - Number of training passes through Stage 1 datasets
-- `--batch-size 8` - Images per GPU batch (reduce if OOM)
-- `--lr 1e-3` - Learning rate (higher for projector training from scratch)
-- `--output-dir ./checkpoints` - Where to save model checkpoints
-- `--wandb-project EmberNet` - W&B project name (optional, omit if no W&B)
-
-**Stage 2: Expert Specialization (10 epochs, ~24-48 hours on GPU)**
-
-Trains domain-specific experts on specialized datasets.
+**🚀 Quick Start: Single-Command Training**
 
 ```bash
-python training/train.py \
-    --stage 2 \
-    --data-dir ./data \
-    --epochs 10 \
-    --batch-size 4 \
-    --lr 1e-4 \
-    --resume ./checkpoints/stage1_final.pt \
-    --output-dir ./checkpoints \
-    --wandb-project EmberNet \
-    --wandb-run-name stage2_experts
+# Trial Run - Quick pipeline validation (minutes, not hours)
+python training/train.py --trial --data-dir ./data
+
+# Main Run - Full production training (hours/days)
+python training/train.py --main --data-dir ./data
 ```
 
-**Parameters explained:**
-- `--stage 2` - Train MoE experts (projector frozen, vision encoder frozen)
-- `--resume ./checkpoints/stage1_final.pt` - **REQUIRED** - Load trained projector from Stage 1
-- `--epochs 10` - More epochs needed for expert specialization
-- `--batch-size 4` - Smaller batch due to expert routing overhead
-- `--lr 1e-4` - Lower learning rate for fine-tuning experts
+Both commands automatically run **Stage 1 → Stage 2** sequentially.
 
-**Training without W&B:**
+---
+
+**Trial Mode (`--trial`)**
+
+Validates the entire pipeline with minimal data:
+
 ```bash
-# Disable Weights & Biases logging
-python training/train.py --stage 1 --data-dir ./data --epochs 3 --batch-size 8 --no-wandb
+python training/train.py --trial --data-dir ./data
 ```
 
-**Adjust for your hardware:**
+| Setting | Value |
+|---------|-------|
+| Samples per dataset | 50 |
+| Epochs per stage | 1 |
+| Batch size | 2 |
+| Gradient accumulation | 1 |
+| W&B logging | Disabled |
+| Output | `./checkpoints/trial/stage{1,2}/` |
+
+Use this to verify everything works before committing to full training.
+
+---
+
+**Main Mode (`--main`)**
+
+Full production training with all data:
+
 ```bash
-# If you get OOM (Out of Memory) errors:
-python training/train.py --stage 1 --data-dir ./data --batch-size 2 --grad-accum 16
-
-# Force CPU training (slower):
-python training/train.py --stage 1 --data-dir ./data --device cpu
-
-# Disable mixed precision (if issues):
-python training/train.py --stage 1 --data-dir ./data --no-amp
+python training/train.py --main --data-dir ./data
 ```
+
+| Setting | Stage 1 | Stage 2 |
+|---------|---------|---------|
+| Samples | ALL | ALL |
+| Epochs | 3 | 10 |
+| Batch size | 8 | 4 |
+| Gradient accumulation | 4 | 4 |
+| W&B logging | Enabled | Enabled |
+| Output | `./checkpoints/stage1/` | `./checkpoints/stage2/` |
+
+---
+
+**Run a Specific Stage Only**
+
+```bash
+# Stage 1 only (projector alignment)
+python training/train.py --trial --stage 1 --data-dir ./data
+
+# Stage 2 only (expert specialization) - requires Stage 1 checkpoint
+python training/train.py --trial --stage 2 --data-dir ./data \
+    --resume ./checkpoints/trial/stage1/final_model.pt
+```
+
+---
+
+**Training Options**
+
+```bash
+# Custom epochs and batch size
+python training/train.py --main --data-dir ./data --epochs 5 --batch-size 4
+
+# Limit samples per dataset (useful for debugging)
+python training/train.py --main --data-dir ./data --max-samples-per-dataset 1000
+
+# Disable specific features
+python training/train.py --main --data-dir ./data \
+    --no-wandb \          # Disable W&B logging
+    --no-ema \            # Disable EMA
+    --no-curriculum \     # Disable curriculum learning
+    --no-adaptive-clip    # Disable adaptive gradient clipping
+
+# Hardware adjustments
+python training/train.py --main --data-dir ./data \
+    --device cpu \        # Force CPU (slower)
+    --no-amp \            # Disable mixed precision
+    --num-workers 2       # Reduce data loading workers
+```
+
+---
+
+**Output Structure**
+
+After training completes:
+
+```
+checkpoints/
+├── trial/                    # Trial mode outputs
+│   ├── stage1/
+│   │   ├── final_model.pt    # Stage 1 checkpoint
+│   │   └── checkpoint_epoch_1.pt
+│   └── stage2/
+│       ├── final_model.pt    # Stage 2 checkpoint (final model)
+│       └── checkpoint_epoch_1.pt
+│
+├── stage1/                   # Main mode outputs
+│   ├── final_model.pt
+│   ├── best_model.pt
+│   └── checkpoint_epoch_*.pt
+│
+└── stage2/
+    ├── final_model.pt        # ← Use this for inference
+    ├── best_model.pt
+    └── checkpoint_epoch_*.pt
+```
+
+---
+
+**What Each Stage Does**
+
+| Stage | Purpose | What Trains | What's Frozen |
+|-------|---------|-------------|---------------|
+| **Stage 1** | Vision-Language Alignment | CrossModal Projector, Pooler, Compressor | Vision Encoder, LM Decoder |
+| **Stage 2** | Expert Specialization | MoE Router, Domain Experts | Vision Encoder, Projector, Embeddings |
 
 ---
 
@@ -205,7 +268,7 @@ Convert to optimized ternary format for deployment:
 
 ```bash
 python inference/convert.py \
-    ./checkpoints/final_model.pt \
+    ./checkpoints/stage2/final_model.pt \
     ./embernet_optimized.pt
 ```
 
@@ -218,7 +281,7 @@ This packs ternary weights to 2-bit representation, reducing model size to <500M
 **Interactive Mode:**
 ```bash
 python inference/infer.py \
-    --model ./checkpoints/final_model.pt \
+    --model ./checkpoints/stage2/final_model.pt \
     --interactive
 ```
 
@@ -233,7 +296,7 @@ python inference/infer.py \
 **Single Query:**
 ```bash
 python inference/infer.py \
-    --model ./checkpoints/final_model.pt \
+    --model ./checkpoints/stage2/final_model.pt \
     --image photo.jpg \
     --prompt "What's in this image?"
 ```
@@ -251,17 +314,18 @@ pip install -r requirements.txt
 huggingface-cli login   # Enter token from https://huggingface.co/settings/tokens
 wandb login             # Optional: Enter API key from https://wandb.ai/authorize
 
-# 3. Download training data (~80GB for recommended)
-python training/prepare_data.py --recommended --output-dir ./data
+# 3. Download training data
+python training/prepare_data.py --recommended --output-dir ./data   # ~70GB
+# OR: python training/prepare_data.py --all --output-dir ./data     # ~100GB (best quality)
+# OR: python training/prepare_data.py --minimal --output-dir ./data # ~10GB (testing only)
 
-# 4. Train Stage 1 - Projector alignment (3 epochs, ~6-12 hours)
-python training/train.py --stage 1 --data-dir ./data --epochs 3 --batch-size 8 --output-dir ./checkpoints
+# 4. Train the model (SINGLE COMMAND - runs Stage 1 → Stage 2 automatically)
+python training/train.py --trial --data-dir ./data   # Quick test (~minutes)
+# OR:
+python training/train.py --main --data-dir ./data    # Full training (~hours/days)
 
-# 5. Train Stage 2 - Expert specialization (10 epochs, ~24-48 hours)
-python training/train.py --stage 2 --data-dir ./data --epochs 10 --batch-size 4 --resume ./checkpoints/stage1_final.pt --output-dir ./checkpoints
-
-# 6. Run interactive inference
-python inference/infer.py --model ./checkpoints/stage2_final.pt --interactive
+# 5. Run interactive inference
+python inference/infer.py --model ./checkpoints/stage2/final_model.pt --interactive
 ```
 
 ---

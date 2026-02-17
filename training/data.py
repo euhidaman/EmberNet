@@ -832,6 +832,14 @@ class EmberNetDataset(Dataset):
             labels = input_ids.clone()
             return input_ids, attention_mask, labels
 
+        # Ensure tokenizer has image token as special token
+        IMAGE_TOKEN = "<image>"
+        IMAGE_TOKEN_ID = 32001
+        if IMAGE_TOKEN not in self.tokenizer.get_vocab():
+            self.tokenizer.add_special_tokens({
+                "additional_special_tokens": [IMAGE_TOKEN]
+            })
+
         # Tokenize full sequence
         full_text = prompt + target
         encoding = self.tokenizer(
@@ -844,6 +852,12 @@ class EmberNetDataset(Dataset):
 
         input_ids = encoding["input_ids"].squeeze(0)
         attention_mask = encoding["attention_mask"].squeeze(0)
+
+        # Map the tokenizer's image token ID to our expected IMAGE_TOKEN_ID
+        # The tokenizer assigns its own ID, we need to use 32001 consistently
+        tokenizer_image_id = self.tokenizer.convert_tokens_to_ids(IMAGE_TOKEN)
+        if tokenizer_image_id != IMAGE_TOKEN_ID and tokenizer_image_id != self.tokenizer.unk_token_id:
+            input_ids[input_ids == tokenizer_image_id] = IMAGE_TOKEN_ID
 
         # Create labels (mask prompt portion)
         labels = input_ids.clone()
