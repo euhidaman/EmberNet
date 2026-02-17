@@ -171,7 +171,11 @@ class Trainer:
         # Mixed precision
         self.scaler = None
         if config.mixed_precision and self.device.type == "cuda":
-            self.scaler = torch.cuda.amp.GradScaler()
+            # Use newer API for GradScaler if available
+            try:
+                self.scaler = torch.amp.GradScaler('cuda')
+            except (TypeError, AttributeError):
+                self.scaler = torch.cuda.amp.GradScaler()
 
         # Weights & Biases initialization
         self.use_wandb = config.use_wandb and HAS_WANDB
@@ -284,7 +288,17 @@ class Trainer:
     def _load_checkpoint(self, checkpoint_path: str):
         """Load model from checkpoint."""
         print(f"Loading checkpoint from {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+        # Add TrainingConfig to safe globals for PyTorch 2.6+
+        if hasattr(torch.serialization, 'add_safe_globals'):
+            torch.serialization.add_safe_globals([TrainingConfig, EmberNetConfig])
+
+        try:
+            # Try loading with weights_only=True (default in PyTorch 2.6)
+            checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        except Exception:
+            # Fallback to weights_only=False if it fails (needed for custom classes in checkpoints)
+            checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
         if "model_state_dict" in checkpoint:
             self.model.load_state_dict(checkpoint["model_state_dict"])
@@ -326,7 +340,8 @@ class Trainer:
 
         # Forward pass
         if self.scaler is not None:
-            with torch.cuda.amp.autocast():
+            # Use newer autocast API
+            with torch.amp.autocast('cuda'):
                 outputs = self.model(
                     pixel_values=pixel_values,
                     input_ids=input_ids,
@@ -641,10 +656,10 @@ class Trainer:
         num_batches = 0
 
         for batch in val_loader:
-            pixel_values = batch["pixel_values"].to(self.device)
-            input_ids = batch["input_ids"].to(self.device)
-            attention_mask = batch["attention_mask"].to(self.device)
-            labels = batch["labels"].to(self.device)
+            pixel_values = batch["pixel_values"].to self.device)
+            input_ids = batch["input_ids"].to self.device)
+            attention_mask = batch["attention_mask"].to self.device)
+            labels = batch["labels"].to self.device)
 
             outputs = self.model(
                 pixel_values=pixel_values,

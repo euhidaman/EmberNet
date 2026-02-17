@@ -499,6 +499,16 @@ class EmberNetDataset(Dataset):
         base_dir: Optional[Path] = None,
     ) -> Optional[Dict[str, Any]]:
         """Parse an item from various dataset formats."""
+        # Ensure item is a dictionary
+        if isinstance(item, str):
+            # If item is just a string, treat it as conceptual captions formatted text
+            item = {"caption": item, "text": item}
+        elif not hasattr(item, "get"):
+            # Fallback for non-dictionary items
+            try:
+                item = dict(item)
+            except (TypeError, ValueError):
+                return None
 
         # Get image - handle different field names
         image = (

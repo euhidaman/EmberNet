@@ -262,25 +262,29 @@ class EmberNetVLM(nn.Module):
 
             # Adjust labels to match merged sequence length
             if labels is not None:
-                batch_size = input_ids.shape[0]
-                num_image_tokens = image_embeds.shape[1]
+                # Ensure labels is a tensor
+                labels_tensor = labels
+                if not isinstance(labels_tensor, torch.Tensor):
+                    labels_tensor = torch.tensor(labels_tensor, device=inputs_embeds.device)
 
-                adjusted_labels = []
+                batch_size = labels_tensor.shape[0]
+
+                new_adjusted_labels = []
                 for b in range(batch_size):
-                    offset = label_offsets[b]
+                    offset = label_offsets[b] if b < len(label_offsets) else label_offsets[0]
                     # Create new labels with ignore tokens for image positions
-                    new_labels = torch.full(
+                    row_labels = torch.full(
                         (target_len,), -100,
-                        dtype=labels.dtype, device=labels.device
+                        dtype=labels_tensor.dtype, device=labels_tensor.device
                     )
                     # Copy original text labels starting after the offset
-                    text_labels = labels[b]
+                    text_labels = labels_tensor[b]
                     copy_len = min(len(text_labels), target_len - offset)
                     if copy_len > 0:
-                        new_labels[offset:offset + copy_len] = text_labels[:copy_len]
-                    adjusted_labels.append(new_labels)
+                        row_labels[offset:offset + copy_len] = text_labels[:copy_len]
+                    new_adjusted_labels.append(row_labels)
 
-                adjusted_labels = torch.stack(adjusted_labels, dim=0)
+                adjusted_labels = torch.stack(new_adjusted_labels, dim=0)
 
             # Forward through decoder with embeddings
             outputs = self.decoder(
@@ -305,6 +309,13 @@ class EmberNetVLM(nn.Module):
         # Compute loss if labels provided
         loss = None
         if adjusted_labels is not None:
+            # Ensure sequence lengths match before shifting
+            # This handles cases where decoder might return different length or labels weren't updated
+            if logits.shape[1] != adjusted_labels.shape[1]:
+                min_len = min(logits.shape[1], adjusted_labels.shape[1])
+                logits = logits[:, :min_len, :]
+                adjusted_labels = adjusted_labels[:, :min_len]
+
             # Shift labels for next-token prediction
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = adjusted_labels[..., 1:].contiguous()
