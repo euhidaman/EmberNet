@@ -503,12 +503,17 @@ class EmberNetDataset(Dataset):
         if isinstance(item, str):
             # If item is just a string, treat it as conceptual captions formatted text
             item = {"caption": item, "text": item}
-        elif not hasattr(item, "get"):
+        elif not isinstance(item, dict) and not hasattr(item, "get"):
             # Fallback for non-dictionary items
             try:
                 item = dict(item)
             except (TypeError, ValueError):
                 return None
+
+        # Now item should be a dict-like object
+        if not hasattr(item, "get"):
+            # Still not dict-like, skip it
+            return None
 
         # Get image - handle different field names
         image = (

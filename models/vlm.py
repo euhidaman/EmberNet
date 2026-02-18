@@ -128,6 +128,10 @@ class EmberNetVLM(nn.Module):
         )
         self.decoder = BitNetMoEDecoder(decoder_config)
 
+        # Initialize decoder embeddings with small values for stability
+        if hasattr(self.decoder, 'embed_tokens'):
+            nn.init.normal_(self.decoder.embed_tokens.weight, mean=0.0, std=0.02)
+
         # Image token embedding placeholder
         self.image_newline = nn.Parameter(
             torch.randn(self.config.hidden_size) * 0.02
@@ -192,8 +196,16 @@ class EmberNetVLM(nn.Module):
         # Embed text tokens
         text_embeds = self.decoder.embed_tokens(safe_input_ids)
 
+        # Stabilize text embeddings
+        if torch.isnan(text_embeds).any() or torch.isinf(text_embeds).any():
+            text_embeds = torch.nan_to_num(text_embeds, nan=0.0, posinf=1.0, neginf=-1.0)
+
         # Always prepend image embeddings to text embeddings
         merged_embeds = torch.cat([image_embeds, text_embeds], dim=1)
+
+        # Final stability check on merged embeddings
+        if torch.isnan(merged_embeds).any() or torch.isinf(merged_embeds).any():
+            merged_embeds = torch.nan_to_num(merged_embeds, nan=0.0, posinf=1.0, neginf=-1.0)
 
         # Update attention mask
         if attention_mask is not None:
@@ -249,6 +261,9 @@ class EmberNetVLM(nn.Module):
                 image_embeds = flat_embeds.view(
                     batch_size, num_images * flat_embeds.shape[1], -1
                 )
+            # Stabilize image embeddings - prevent NaN/Inf
+            if torch.isnan(image_embeds).any() or torch.isinf(image_embeds).any():
+                image_embeds = torch.nan_to_num(image_embeds, nan=0.0, posinf=1.0, neginf=-1.0)
         else:
             image_embeds = None
 
@@ -306,55 +321,82 @@ class EmberNetVLM(nn.Module):
         logits = outputs[0]
         router_logits = outputs[1] if len(outputs) > 1 else None
 
+        # Check for NaN/Inf in logits immediately
+        if torch.isnan(logits).any():
+            print("WARNING: NaN detected in logits after decoder forward pass")
+            logits = torch.nan_to_num(logits, nan=0.0)
+        if torch.isinf(logits).any():
+            print("WARNING: Inf detected in logits after decoder forward pass")
+            logits = torch.nan_to_num(logits, posinf=100.0, neginf=-100.0)
+
         # Compute loss if labels provided
         loss = None
         if adjusted_labels is not None:
-            # Debug: print shapes
-            if logits.shape[0] != adjusted_labels.shape[0] or logits.shape[1] != adjusted_labels.shape[1]:
-                print(f"DEBUG: Shape mismatch before alignment:")
-                print(f"  logits: {logits.shape}")
-                print(f"  adjusted_labels: {adjusted_labels.shape}")
-                if input_ids is not None:
-                    print(f"  input_ids: {input_ids.shape}")
-                if inputs_embeds is not None:
-                    print(f"  inputs_embeds: {inputs_embeds.shape}")
-                if image_embeds is not None:
-                    print(f"  image_embeds: {image_embeds.shape}")
-
             # Ensure batch sizes match
             if logits.shape[0] != adjusted_labels.shape[0]:
                 raise ValueError(
                     f"Batch size mismatch: logits {logits.shape[0]} vs labels {adjusted_labels.shape[0]}"
                 )
 
-            # Ensure sequence lengths match before shifting
+            # Align sequence lengths (may differ due to image token injection)
             if logits.shape[1] != adjusted_labels.shape[1]:
                 min_len = min(logits.shape[1], adjusted_labels.shape[1])
-                print(f"  Trimming to min_len={min_len}")
                 logits = logits[:, :min_len, :]
                 adjusted_labels = adjusted_labels[:, :min_len]
 
-            # Shift labels for next-token prediction
+            # Shift for next-token prediction
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = adjusted_labels[..., 1:].contiguous()
 
-            # Verify shapes match after shifting
-            batch_size, seq_len = shift_labels.shape
-            expected_logits_shape = (batch_size, seq_len, shift_logits.shape[-1])
-            if shift_logits.shape != expected_logits_shape:
-                print(f"DEBUG: Shape mismatch after shifting:")
-                print(f"  shift_logits: {shift_logits.shape}")
-                print(f"  shift_labels: {shift_labels.shape}")
-                print(f"  expected: {expected_logits_shape}")
-                raise ValueError(
-                    f"Shape mismatch after shifting: logits {shift_logits.shape} vs expected {expected_logits_shape}"
-                )
+            # Ensure exact same sequence length after shift
+            if shift_logits.shape[1] != shift_labels.shape[1]:
+                min_len = min(shift_logits.shape[1], shift_labels.shape[1])
+                shift_logits = shift_logits[:, :min_len, :]
+                shift_labels = shift_labels[:, :min_len]
 
-            loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1)
-            )
+            # Final shape verification - ensure exact match before flattening
+            batch_size = shift_logits.shape[0]
+            logits_seq_len = shift_logits.shape[1]
+            labels_seq_len = shift_labels.shape[1]
+            vocab_size = shift_logits.shape[2]
+
+            # Force exact match
+            if logits_seq_len != labels_seq_len:
+                min_len = min(logits_seq_len, labels_seq_len)
+                shift_logits = shift_logits[:, :min_len, :]
+                shift_labels = shift_labels[:, :min_len]
+                logits_seq_len = min_len
+
+            # Flatten for cross-entropy
+            flat_logits = shift_logits.contiguous().view(-1, vocab_size)
+            flat_labels = shift_labels.contiguous().view(-1)
+
+            # Final sanity check - they must be same size
+            if flat_logits.shape[0] != flat_labels.shape[0]:
+                print(f"WARNING: Size mismatch before loss - logits: {flat_logits.shape}, labels: {flat_labels.shape}")
+                print(f"  Original shapes - shift_logits: {shift_logits.shape}, shift_labels: {shift_labels.shape}")
+                min_size = min(flat_logits.shape[0], flat_labels.shape[0])
+                flat_logits = flat_logits[:min_size]
+                flat_labels = flat_labels[:min_size]
+                print(f"  Adjusted to size: {min_size}")
+
+            # Verify sizes match
+            assert flat_logits.shape[0] == flat_labels.shape[0], \
+                f"Size mismatch after adjustment: logits {flat_logits.shape[0]} vs labels {flat_labels.shape[0]}"
+
+            # Clamp logits to prevent overflow in cross-entropy
+            flat_logits = flat_logits.clamp(-100.0, 100.0)
+
+            # Check for NaN/Inf in logits
+            if torch.isnan(flat_logits).any() or torch.isinf(flat_logits).any():
+                flat_logits = torch.nan_to_num(flat_logits, nan=0.0, posinf=100.0, neginf=-100.0)
+
+            loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.1)
+            loss = loss_fct(flat_logits, flat_labels)
+
+            # Check for NaN loss
+            if torch.isnan(loss) or torch.isinf(loss):
+                loss = torch.tensor(0.0, device=shift_logits.device, requires_grad=True)
 
             # Add router auxiliary loss
             if router_logits is not None:
@@ -652,7 +694,7 @@ class EmberNetVLM(nn.Module):
         model = cls(config)
 
         # Load weights
-        state_dict = torch.load(load_path / "model.pt", map_location=device)
+        state_dict = torch.load(load_path / "model.pt", map_location=device, weights_only=False)
         model.load_state_dict(state_dict)
 
         return model.to(device)

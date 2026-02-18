@@ -143,8 +143,8 @@ class BitLinear(nn.Module):
         nn.init.xavier_uniform_(self.weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Compute scaling factor (absmean)
-        weight_scale = self.weight.abs().mean()
+        # Compute scaling factor (absmean) with numerical stability
+        weight_scale = self.weight.abs().mean().clamp(min=1e-5, max=1e3)
 
         # Quantize weights with STE
         if self.training:
@@ -504,6 +504,14 @@ class BitNetMoEDecoder(nn.Module):
         for module in self.modules():
             if isinstance(module, nn.Embedding):
                 nn.init.normal_(module.weight, std=0.02)
+            elif isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, std=0.02)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, BitLinear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
     def _make_causal_mask(
         self,

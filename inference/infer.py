@@ -103,7 +103,7 @@ class EmberVLM:
 
         if model_path is not None and Path(model_path).exists():
             print(f"Loading model from {model_path}...")
-            checkpoint = torch.load(model_path, map_location="cpu")
+            checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
 
             if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
                 config = EmberNetConfig()

@@ -68,9 +68,9 @@ class TrainingConfig:
     epochs: int = 3
     batch_size: int = 4
     gradient_accumulation_steps: int = 4
-    learning_rate: float = 1e-3  # Higher for stage 1
+    learning_rate: float = 1e-4  # Lower for BitNet stability
     weight_decay: float = 0.01
-    max_grad_norm: float = 1.0
+    max_grad_norm: float = 0.5  # Tighter clipping for stability
     warmup_steps: int = 100
 
     # Stage-specific settings
@@ -116,7 +116,7 @@ class TrainingConfig:
     def __post_init__(self):
         # Adjust settings based on stage
         if self.stage == 1:
-            self.learning_rate = 1e-3
+            self.learning_rate = 5e-5  # Very low LR for stability with random decoder
             self.freeze_lm_layers = True
             self.train_router = False
             self.train_experts = False
@@ -289,14 +289,19 @@ class Trainer:
         """Load model from checkpoint."""
         print(f"Loading checkpoint from {checkpoint_path}")
 
+        # PyTorch 2.6+ changed weights_only default to True
+        # We need weights_only=False for checkpoints with config objects
+        # Add safe_globals to allow TrainingConfig
         try:
-            # PyTorch 2.6+ changed weights_only default to True
-            # We need weights_only=False to load config and other non-tensor data
             checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-            checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-        except Exception:
-            # Fallback to weights_only=False if it fails (needed for custom classes in checkpoints)
-            checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        except Exception as e:
+            print(f"Error loading checkpoint with weights_only=False: {e}")
+            # Fallback: try with weights_only=True if checkpoint is simple
+            try:
+                checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+            except Exception as e2:
+                print(f"Error loading checkpoint with weights_only=True: {e2}")
+                raise e
 
         if "model_state_dict" in checkpoint:
             self.model.load_state_dict(checkpoint["model_state_dict"])
@@ -313,7 +318,8 @@ class Trainer:
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "global_step": self.global_step,
-            "config": self.config,
+            "stage": self.config.stage,
+            "learning_rate": self.config.learning_rate,
         }
 
         save_path = output_dir / filename
@@ -355,6 +361,17 @@ class Trainer:
                 labels=labels,
             )
             loss = outputs["loss"]
+
+        # Check for None, NaN/Inf loss
+        if loss is None:
+            print(f"WARNING: loss is None, skipping batch")
+            self.optimizer.zero_grad()
+            return {"loss": 0.0, "skipped": True}
+
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"WARNING: NaN/Inf loss detected, skipping batch")
+            self.optimizer.zero_grad()
+            return {"loss": 0.0, "skipped": True}
 
         # Optional expert supervision (Stage 2 only)
         if (
@@ -556,6 +573,11 @@ class Trainer:
 
                 # Training step
                 metrics = self._train_step(batch)
+
+                # Skip if batch was invalid (NaN/Inf)
+                if metrics.get("skipped", False):
+                    continue
+
                 epoch_loss += metrics["loss"]
                 epoch_steps += 1
 
