@@ -62,8 +62,11 @@ class PixelShuffleCompressor(nn.Module):
         # After shuffle, we have shuffle_factor^2 times more channels
         expanded_dim = input_dim * (shuffle_factor ** 2)
 
-        # Project back down
+        # Project back down with small initialization for stability
         self.proj = nn.Linear(expanded_dim, output_dim)
+        # Initialize with very small weights to prevent gradient explosion
+        nn.init.normal_(self.proj.weight, mean=0.0, std=0.001)
+        nn.init.zeros_(self.proj.bias)
 
     def forward(self, x: torch.Tensor, spatial_size: Tuple[int, int]) -> torch.Tensor:
         """
@@ -107,8 +110,15 @@ class PixelShuffleCompressor(nn.Module):
         new_H, new_W = H // self.shuffle_factor, W // self.shuffle_factor
         x = x.view(batch_size, new_H * new_W, -1)
 
-        # Project to output dimension
+        # Project to output dimension with gradient stability
         x = self.proj(x)
+
+        # Clamp output to prevent gradient explosion
+        x = torch.clamp(x, -10.0, 10.0)
+
+        # NaN protection
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            x = torch.nan_to_num(x, nan=0.0, posinf=10.0, neginf=-10.0)
 
         return x
 
@@ -174,10 +184,19 @@ class VisionProjector(nn.Module):
         self.norm = nn.LayerNorm(lm_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Input stability check
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            x = torch.nan_to_num(x, nan=0.0, posinf=10.0, neginf=-10.0)
+
         x = self.fc1(x)
         x = self.act(x)
         x = self.fc2(x)
         x = self.norm(x)
+
+        # Output stability check
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            x = torch.nan_to_num(x, nan=0.0, posinf=10.0, neginf=-10.0)
+
         return x
 
 
