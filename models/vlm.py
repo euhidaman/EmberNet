@@ -128,13 +128,13 @@ class EmberNetVLM(nn.Module):
         )
         self.decoder = BitNetMoEDecoder(decoder_config)
 
-        # Initialize decoder embeddings with small values for stability
+        # Initialize decoder embeddings with very small values for stability
         if hasattr(self.decoder, 'embed_tokens'):
-            nn.init.normal_(self.decoder.embed_tokens.weight, mean=0.0, std=0.02)
+            nn.init.normal_(self.decoder.embed_tokens.weight, mean=0.0, std=0.001)
 
         # Image token embedding placeholder
         self.image_newline = nn.Parameter(
-            torch.randn(self.config.hidden_size) * 0.02
+            torch.randn(self.config.hidden_size) * 0.001
         )
 
         # Initialize decoder weights for stability
@@ -152,23 +152,21 @@ class EmberNetVLM(nn.Module):
         from .bitnet_moe import BitLinear, RMSNorm
 
         for name, module in self.decoder.named_modules():
-            # Skip BitLinear - it has its own initialization
             if isinstance(module, BitLinear):
                 continue
-            # Skip RMSNorm - it has its own initialization
             if isinstance(module, RMSNorm):
                 continue
 
             if isinstance(module, nn.Linear):
                 if module.weight is not None and module.weight.dim() >= 2:
-                    nn.init.normal_(module.weight, mean=0.0, std=0.01)
+                    nn.init.normal_(module.weight, mean=0.0, std=0.001)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.LayerNorm):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
             if isinstance(module, nn.Embedding):
-                nn.init.normal_(module.weight, mean=0.0, std=0.02)
+                nn.init.normal_(module.weight, mean=0.0, std=0.001)
         print("✓ Decoder initialized with small weights for stability")
 
     @property
@@ -222,6 +220,10 @@ class EmberNetVLM(nn.Module):
 
         # Embed text tokens
         text_embeds = self.decoder.embed_tokens(safe_input_ids)
+        text_embeds = text_embeds.clamp(-10.0, 10.0)
+
+        # Clamp image embeddings
+        image_embeds = image_embeds.clamp(-10.0, 10.0)
 
         # Always prepend image embeddings to text embeddings
         merged_embeds = torch.cat([image_embeds, text_embeds], dim=1)
@@ -273,12 +275,18 @@ class EmberNetVLM(nn.Module):
             if pixel_values.dim() == 4:
                 # Single image per sample: [B, 3, H, W]
                 image_embeds = self.vision_encoder(pixel_values)
+                # Scale down vision features to prevent gradient explosion
+                image_embeds = image_embeds * 0.1
             else:
                 # Multiple images: [B, N, 3, H, W]
                 batch_size, num_images = pixel_values.shape[:2]
                 flat_images = pixel_values.view(-1, *pixel_values.shape[2:])
                 flat_embeds = self.vision_encoder(flat_images)
+                # Scale down vision features
+                flat_embeds = flat_embeds * 0.1
                 image_embeds = flat_embeds.view(
+                    batch_size, num_images * flat_embeds.shape[1], -1
+                )
                     batch_size, num_images * flat_embeds.shape[1], -1
                 )
         else:
@@ -338,8 +346,7 @@ class EmberNetVLM(nn.Module):
         logits = outputs[0]
         router_logits = outputs[1] if len(outputs) > 1 else None
 
-        # Clamp logits to reasonable range to prevent extreme values while preserving gradients
-        logits = torch.clamp(logits, min=-100.0, max=100.0)
+        logits = torch.clamp(logits, min=-50.0, max=50.0)
 
         # Compute loss if labels provided
         loss = None
@@ -396,10 +403,9 @@ class EmberNetVLM(nn.Module):
             assert flat_logits.shape[0] == flat_labels.shape[0], \
                 f"Size mismatch after adjustment: logits {flat_logits.shape[0]} vs labels {flat_labels.shape[0]}"
 
-            # Clamp logits to prevent overflow in cross-entropy
-            flat_logits = flat_logits.clamp(-100.0, 100.0)
+            flat_logits = flat_logits.clamp(-50.0, 50.0)
 
-            loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.1)
+            loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.0)
             loss = loss_fct(flat_logits, flat_labels)
 
             # Check for NaN loss - fail fast if it occurs (indicates upstream problem)

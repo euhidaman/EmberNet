@@ -77,7 +77,7 @@ class BitNetMoEConfig:
 class RMSNorm(nn.Module):
     """Root Mean Square Layer Normalization (Microsoft BitNet)."""
 
-    def __init__(self, hidden_size: int, eps: float = 1e-6):
+    def __init__(self, hidden_size: int, eps: float = 1e-5):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.eps = eps
@@ -85,8 +85,11 @@ class RMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         dtype = x.dtype
         x = x.float()
+        x = x.clamp(-100.0, 100.0)
         variance = x.pow(2).mean(-1, keepdim=True)
+        variance = variance.clamp(min=self.eps)
         x = x * torch.rsqrt(variance + self.eps)
+        x = x.clamp(-10.0, 10.0)
         return (self.weight * x).to(dtype)
 
 
@@ -97,7 +100,9 @@ def activation_quant(x: torch.Tensor) -> torch.Tensor:
     """
     dtype = x.dtype
     x = x.float()
-    scale = 127.0 / x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
+    x = x.clamp(-50.0, 50.0)
+    max_val = x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-4)
+    scale = 127.0 / max_val
     y = (x * scale).round().clamp_(-128, 127) / scale
     return y.to(dtype)
 
@@ -109,7 +114,7 @@ def weight_quant(w: torch.Tensor) -> torch.Tensor:
     """
     dtype = w.dtype
     w = w.float()
-    scale = w.abs().mean()
+    scale = w.abs().mean().clamp(min=1e-8)
     e = w.mean()
     u = (w - e).sign() * scale
     return u.to(dtype)

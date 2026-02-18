@@ -66,9 +66,9 @@ class PixelShuffleCompressor(nn.Module):
         # Use RMSNorm with default weight=1.0 (Microsoft BitNet pattern)
         self.pre_norm = RMSNorm(expanded_dim, eps=1e-5)
 
-        # Project back down with small initialization
+        # Project back down with very small initialization
         self.proj = nn.Linear(expanded_dim, output_dim)
-        nn.init.normal_(self.proj.weight, mean=0.0, std=0.02 / math.sqrt(expanded_dim))
+        nn.init.normal_(self.proj.weight, mean=0.0, std=0.001 / math.sqrt(expanded_dim))
         nn.init.zeros_(self.proj.bias)
 
         # Post-projection normalization
@@ -85,6 +85,8 @@ class PixelShuffleCompressor(nn.Module):
         """
         batch_size, num_tokens, hidden_dim = x.shape
         H, W = spatial_size
+
+        x = x.clamp(-10.0, 10.0)
 
         # Reshape to spatial grid
         x = x.view(batch_size, H, W, hidden_dim)
@@ -116,15 +118,14 @@ class PixelShuffleCompressor(nn.Module):
         new_H, new_W = H // self.shuffle_factor, W // self.shuffle_factor
         x = x.view(batch_size, new_H * new_W, -1)
 
-        # Normalize BEFORE projection
+        x = x.clamp(-10.0, 10.0)
         x = self.pre_norm(x)
 
-        # Project to output dimension
         x = self.proj(x)
 
-        # Post-normalization
-        x = self.post_norm(x)
+        x = x.clamp(-10.0, 10.0)
 
+        x = self.post_norm(x)
 
         return x
 
@@ -137,7 +138,7 @@ class AdaptivePooler(nn.Module):
         self.num_output_tokens = num_output_tokens
 
         # Learnable query tokens for pooling
-        self.queries = nn.Parameter(torch.randn(1, num_output_tokens, hidden_dim) * 0.02)
+        self.queries = nn.Parameter(torch.randn(1, num_output_tokens, hidden_dim) * 0.001)
 
         # Simple cross-attention for pooling
         self.attn = nn.MultiheadAttention(
@@ -158,12 +159,16 @@ class AdaptivePooler(nn.Module):
             Pooled tokens [batch, num_output_tokens, hidden_dim]
         """
         batch_size = x.shape[0]
+
+        x = x.clamp(-10.0, 10.0)
+
         queries = self.queries.expand(batch_size, -1, -1)
 
-        # Cross-attention: queries attend to visual tokens
         pooled, _ = self.attn(queries, x, x)
-        pooled = self.norm(pooled + queries)
 
+        pooled = pooled.clamp(-10.0, 10.0)
+
+        pooled = self.norm(queries + pooled * 0.1)
 
         return pooled
 
@@ -191,9 +196,13 @@ class VisionProjector(nn.Module):
         self.norm = RMSNorm(lm_dim, eps=1e-5)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.clamp(-10.0, 10.0)
         x = self.fc1(x)
+        x = x.clamp(-10.0, 10.0)
         x = self.act(x)
+        x = x.clamp(-10.0, 10.0)
         x = self.fc2(x)
+        x = x.clamp(-10.0, 10.0)
         x = self.norm(x)
 
         return x
@@ -218,7 +227,7 @@ class CrossModalProjector(nn.Module):
 
         # Learnable query embeddings (Q-Former style)
         self.query_tokens = nn.Parameter(
-            torch.randn(1, num_query_tokens, lm_dim) * 0.02
+            torch.randn(1, num_query_tokens, lm_dim) * 0.001
         )
 
         # Project vision features to LM dimension using BitLinear
@@ -251,24 +260,24 @@ class CrossModalProjector(nn.Module):
         """
         B = vision_features.shape[0]
 
-        # Project vision features into LM space
-        vision_proj = self.vision_proj(vision_features)  # [B, N, lm_dim]
+        vision_features = vision_features.clamp(-10.0, 10.0)
+        vision_proj = self.vision_proj(vision_features)
+        vision_proj = vision_proj.clamp(-10.0, 10.0)
 
-        # Expand query tokens
-        queries = self.query_tokens.expand(B, -1, -1)  # [B, Q, lm_dim]
+        queries = self.query_tokens.expand(B, -1, -1)
 
-        # Apply stacked cross-attention
         for cross_attn in self.cross_attn_layers:
             attn_out, _ = cross_attn(
                 query=queries,
                 key=vision_proj,
                 value=vision_proj,
             )
-            queries = self.ln_q(queries + attn_out)
+            attn_out = attn_out.clamp(-10.0, 10.0)
+            queries = self.ln_q(queries + attn_out * 0.1)
 
-        # Feed-forward
         ffn_out = self.ffn(queries)
-        output = self.ln_ff(queries + ffn_out)
+        ffn_out = ffn_out.clamp(-10.0, 10.0)
+        output = self.ln_ff(queries + ffn_out * 0.1)
 
         return output
 
@@ -414,6 +423,9 @@ class VisionEncoder(nn.Module):
         # Get visual features
         hidden_states = self.get_image_features(pixel_values)
 
+        # Clamp SigLIP output
+        hidden_states = hidden_states.clamp(-10.0, 10.0)
+
         # Apply pixel shuffle compression
         if self.compressor is not None:
             hidden_states = self.compressor(
@@ -428,6 +440,8 @@ class VisionEncoder(nn.Module):
         # Project to LM dimension
         hidden_states = self.projector(hidden_states)
 
+        # Final clamp and normalization
+        hidden_states = hidden_states.clamp(-10.0, 10.0)
 
         return hidden_states
 
