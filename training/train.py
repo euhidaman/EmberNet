@@ -23,11 +23,13 @@ USAGE:
 import sys
 import time
 import argparse
+import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple, Iterator
 
 import torch
+import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
@@ -46,6 +48,165 @@ from models import EmberNetVLM
 from models.vlm import EmberNetConfig
 from training.data import DataConfig, create_dataloaders
 
+
+# =============================================================================
+# BitNet b1.58 Training Stability Classes (Based on Microsoft Research)
+# =============================================================================
+
+class BitNetStableOptimizer:
+    """
+    Specialized optimizer for BitNet b1.58 ternary quantization.
+    Implements Microsoft's two-phase LR schedule and FP32 gradient handling.
+    """
+    def __init__(
+        self,
+        parameters: Iterator[nn.Parameter],
+        lr: float = 6e-4,
+        phase1_steps: Optional[int] = None,
+        phase2_lr_factor: float = 0.1,
+        warmup_steps: int = 2000,
+        weight_decay: float = 0.1,
+        grad_clip: float = 1.0,
+        betas: Tuple[float, float] = (0.9, 0.95),
+        eps: float = 1e-8
+    ):
+        self.param_groups = [{'params': list(parameters)}]
+        self.lr = lr
+        self.phase1_steps = phase1_steps
+        self.phase2_lr_factor = phase2_lr_factor
+        self.warmup_steps = warmup_steps
+        self.weight_decay = weight_decay
+        self.grad_clip = grad_clip
+        self.betas = betas
+        self.eps = eps
+
+        self.state = {}
+        for param in self.param_groups[0]['params']:
+            self.state[param] = {
+                'step': 0,
+                'exp_avg': torch.zeros_like(param.data, dtype=torch.float32),
+                'exp_avg_sq': torch.zeros_like(param.data, dtype=torch.float32)
+            }
+        self.global_step = 0
+
+    def _get_lr(self, step: int) -> float:
+        if step < self.warmup_steps:
+            return self.lr * (step / max(1, self.warmup_steps))
+        if self.phase1_steps is None or step < self.phase1_steps:
+            return self.lr
+        return self.lr * self.phase2_lr_factor
+
+    def zero_grad(self):
+        for param in self.param_groups[0]['params']:
+            if param.grad is not None:
+                param.grad.detach_()
+                param.grad.zero_()
+
+    def step(self):
+        self.global_step += 1
+        current_lr = self._get_lr(self.global_step)
+
+        for param in self.param_groups[0]['params']:
+            if param.grad is None:
+                continue
+            if not torch.isfinite(param.grad).all():
+                continue
+
+            grad = param.grad.data
+            state = self.state[param]
+
+            if self.grad_clip > 0:
+                grad_norm = grad.norm()
+                if grad_norm > self.grad_clip:
+                    grad = grad * (self.grad_clip / (grad_norm + 1e-6))
+
+            grad = grad.to(torch.float32)
+            state['step'] += 1
+            exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+            beta1, beta2 = self.betas
+
+            exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+            exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+
+            bias_correction1 = 1 - beta1 ** state['step']
+            bias_correction2 = 1 - beta2 ** state['step']
+            step_size = current_lr / bias_correction1
+            bias_correction2_sqrt = math.sqrt(bias_correction2)
+
+            denom = (exp_avg_sq.sqrt() / bias_correction2_sqrt).add_(self.eps)
+            update = exp_avg / denom
+
+            if self.weight_decay > 0:
+                update.add_(param.data.to(torch.float32), alpha=self.weight_decay)
+
+            param.data.add_(update.to(param.dtype), alpha=-step_size)
+
+
+class BitNetGradientScaler:
+    """Custom gradient scaler for BitNet b1.58 to prevent underflow."""
+    def __init__(self, init_scale: float = 2**10):
+        self.scale = init_scale
+        self.growth_factor = 2.0
+        self.backoff_factor = 0.5
+        self.growth_interval = 2000
+        self._growth_tracker = 0
+
+    def scale_loss(self, loss: torch.Tensor) -> torch.Tensor:
+        return loss * self.scale
+
+    def unscale_gradients(self, optimizer):
+        for param_group in optimizer.param_groups:
+            for param in param_group['params']:
+                if param.grad is not None:
+                    param.grad.div_(self.scale)
+
+    def update(self, found_inf: bool):
+        if found_inf:
+            self.scale *= self.backoff_factor
+            self._growth_tracker = 0
+        else:
+            self._growth_tracker += 1
+            if self._growth_tracker >= self.growth_interval:
+                self.scale *= self.growth_factor
+                self._growth_tracker = 0
+
+
+def check_gradients_finite(model: nn.Module) -> Tuple[bool, Optional[str]]:
+    """Check if all gradients are finite."""
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            if not torch.isfinite(param.grad).all():
+                return False, name
+    return True, None
+
+
+def emergency_gradient_fix(model: nn.Module):
+    """Emergency gradient clipping if NaN detected."""
+    for param in model.parameters():
+        if param.grad is not None:
+            param.grad = torch.where(
+                torch.isfinite(param.grad),
+                param.grad,
+                torch.zeros_like(param.grad)
+            )
+            param.grad.clamp_(-0.1, 0.1)
+
+
+def initialize_bitnet_weights(model: nn.Module):
+    """Proper initialization for BitNet b1.58 ternary weights."""
+    for name, module in model.named_modules():
+        if hasattr(module, 'weight') and module.weight is not None:
+            if module.weight.dim() >= 2:
+                fan_in = module.weight.size(1)
+                std = math.sqrt(2.0 / fan_in) * 0.5
+                nn.init.normal_(module.weight, mean=0.0, std=std)
+        if hasattr(module, 'bias') and module.bias is not None:
+            nn.init.zeros_(module.bias)
+
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
 
 @dataclass
 class TrainingConfig:
@@ -113,22 +274,29 @@ class TrainingConfig:
     # Model config override
     model_config: Optional[EmberNetConfig] = None
 
+    # BitNet-specific settings
+    use_bitnet_optimizer: bool = True  # Use BitNet stable optimizer
+    bitnet_phase1_ratio: float = 0.6  # 60% of training in phase 1
+    bitnet_phase2_lr_factor: float = 0.1  # Drop LR by 10x in phase 2
+
     def __post_init__(self):
-        # Adjust settings based on stage
+        # Adjust settings based on stage - using BitNet methodology
         if self.stage == 1:
-            self.learning_rate = 5e-6  # Very low LR for BitNet stability
-            self.warmup_steps = 200  # Increased warmup
+            # BitNet needs HIGHER initial LR, then drops sharply
+            self.learning_rate = 6e-4  # Higher LR for BitNet (Microsoft's approach)
+            self.warmup_steps = 100  # Shorter warmup
             self.freeze_lm_layers = True
             self.train_router = False
             self.train_experts = False
-            self.max_grad_norm = 0.1  # Very tight gradient clipping
+            self.max_grad_norm = 1.0  # BitNet uses 1.0 clipping
+            self.use_adaptive_grad_clip = False  # Disable adaptive, use fixed
         elif self.stage == 2:
-            self.learning_rate = 1e-5  # Reduced for stability
+            self.learning_rate = 3e-4  # Still higher for BitNet
             self.warmup_steps = 100
             self.freeze_lm_layers = False
             self.train_router = True
             self.train_experts = True
-            self.max_grad_norm = 0.3
+            self.max_grad_norm = 1.0
 
 
 class Trainer:
@@ -150,6 +318,11 @@ class Trainer:
         # Resume from checkpoint if specified
         if config.resume_from:
             self._load_checkpoint(config.resume_from)
+        else:
+            # Apply BitNet-specific weight initialization for fresh training
+            print("Applying BitNet weight initialization...")
+            initialize_bitnet_weights(self.model)
+            print("✓ BitNet weights initialized")
 
         self.model = self.model.to(self.device)
 
@@ -168,14 +341,20 @@ class Trainer:
         # Print model summary
         self.model.print_model_summary()
 
-        # Initialize optimizer and scheduler
+        # Initialize optimizer - use BitNet stable optimizer if enabled
+        self.use_bitnet_optimizer = config.use_bitnet_optimizer
         self.optimizer = self._create_optimizer()
         self.scheduler = None  # Created after dataloader is ready
 
-        # Mixed precision
+        # BitNet gradient scaler (replaces standard AMP scaler)
+        self.bitnet_scaler = None
         self.scaler = None
-        if config.mixed_precision and self.device.type == "cuda":
-            # Use newer API for GradScaler if available
+        if config.use_bitnet_optimizer:
+            # Use BitNet-specific gradient scaler
+            self.bitnet_scaler = BitNetGradientScaler(init_scale=1024)
+            print("✓ BitNet gradient scaler initialized")
+        elif config.mixed_precision and self.device.type == "cuda":
+            # Use standard AMP scaler
             try:
                 self.scaler = torch.amp.GradScaler('cuda')
             except (TypeError, AttributeError):
@@ -194,6 +373,7 @@ class Trainer:
                     "batch_size": config.batch_size,
                     "learning_rate": config.learning_rate,
                     "gradient_accumulation_steps": config.gradient_accumulation_steps,
+                    "use_bitnet_optimizer": config.use_bitnet_optimizer,
                     "model_config": {
                         "hidden_size": model_config.hidden_size,
                         "num_layers": model_config.num_layers,
@@ -260,26 +440,42 @@ class Trainer:
         print(f"  Total parameters: {total:,}")
         print(f"  Trainable ratio: {trainable/total*100:.2f}%\n")
 
-    def _create_optimizer(self) -> AdamW:
-        """Create optimizer with weight decay."""
-        # Separate parameters for weight decay
-        decay_params = []
-        no_decay_params = []
+    def _create_optimizer(self):
+        """Create optimizer - uses BitNetStableOptimizer if enabled."""
+        # Collect trainable parameters
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
 
-        for name, param in self.model.named_parameters():
-            if not param.requires_grad:
-                continue
-            if "norm" in name or "bias" in name:
-                no_decay_params.append(param)
-            else:
-                decay_params.append(param)
+        if self.config.use_bitnet_optimizer:
+            # Use BitNet-specific optimizer with two-phase LR schedule
+            print(f"Using BitNetStableOptimizer with LR={self.config.learning_rate}")
+            return BitNetStableOptimizer(
+                iter(trainable_params),
+                lr=self.config.learning_rate,
+                phase1_steps=None,  # Set later when we know total steps
+                phase2_lr_factor=self.config.bitnet_phase2_lr_factor,
+                warmup_steps=self.config.warmup_steps,
+                weight_decay=self.config.weight_decay,
+                grad_clip=self.config.max_grad_norm,
+            )
+        else:
+            # Use standard AdamW
+            decay_params = []
+            no_decay_params = []
 
-        optimizer_groups = [
-            {"params": decay_params, "weight_decay": self.config.weight_decay},
-            {"params": no_decay_params, "weight_decay": 0.0},
-        ]
+            for name, param in self.model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if "norm" in name or "bias" in name:
+                    no_decay_params.append(param)
+                else:
+                    decay_params.append(param)
 
-        return AdamW(optimizer_groups, lr=self.config.learning_rate)
+            optimizer_groups = [
+                {"params": decay_params, "weight_decay": self.config.weight_decay},
+                {"params": no_decay_params, "weight_decay": 0.0},
+            ]
+
+            return AdamW(optimizer_groups, lr=self.config.learning_rate)
 
     def _create_scheduler(self, num_training_steps: int):
         """Create cosine annealing scheduler with warmup."""
@@ -339,7 +535,7 @@ class Trainer:
         self,
         batch: Dict[str, torch.Tensor],
     ) -> Dict[str, float]:
-        """Training step with enhanced NaN detection and recovery."""
+        """Training step with BitNet-specific gradient handling."""
         # Move batch to device
         pixel_values = batch["pixel_values"].to(self.device)
         input_ids = batch["input_ids"].to(self.device)
@@ -347,48 +543,30 @@ class Trainer:
         labels = batch["labels"].to(self.device)
 
         # Forward pass
-        if self.scaler is not None:
-            # Use newer autocast API
-            with torch.amp.autocast('cuda'):
-                outputs = self.model(
-                    pixel_values=pixel_values,
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels,
-                )
-                loss = outputs["loss"]
+        outputs = self.model(
+            pixel_values=pixel_values,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
+        loss = outputs["loss"]
 
-                # Check logits for NaN before loss computation
-                if "logits" in outputs and outputs["logits"] is not None:
-                    logits = outputs["logits"]
-                    if torch.isnan(logits).any() or torch.isinf(logits).any():
-                        print("WARNING: NaN/Inf in logits, skipping batch")
-                        self.optimizer.zero_grad()
-                        return {"loss": 0.0, "skipped": True}
-        else:
-            outputs = self.model(
-                pixel_values=pixel_values,
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-            )
-            loss = outputs["loss"]
-
-            if "logits" in outputs and outputs["logits"] is not None:
-                logits = outputs["logits"]
-                if torch.isnan(logits).any() or torch.isinf(logits).any():
-                    print("WARNING: NaN/Inf in logits, skipping batch")
-                    self.optimizer.zero_grad()
-                    return {"loss": 0.0, "skipped": True}
+        # Check logits for NaN
+        if "logits" in outputs and outputs["logits"] is not None:
+            logits = outputs["logits"]
+            if torch.isnan(logits).any() or torch.isinf(logits).any():
+                print("WARNING: NaN/Inf in logits, skipping batch")
+                self.optimizer.zero_grad()
+                return {"loss": 0.0, "skipped": True}
 
         # Check for None, NaN/Inf loss
         if loss is None:
-            print(f"WARNING: loss is None, skipping batch")
+            print("WARNING: loss is None, skipping batch")
             self.optimizer.zero_grad()
             return {"loss": 0.0, "skipped": True}
 
         if torch.isnan(loss) or torch.isinf(loss):
-            print(f"WARNING: NaN/Inf loss detected, skipping batch")
+            print("WARNING: NaN/Inf loss detected, skipping batch")
             self.optimizer.zero_grad()
             return {"loss": 0.0, "skipped": True}
 
@@ -400,53 +578,48 @@ class Trainer:
             and outputs.get("router_logits", None) is not None
         ):
             router_logits_list = outputs["router_logits"]
-            router_logits_last = router_logits_list[-1]  # [batch * router_seq_len, num_experts]
+            router_logits_last = router_logits_list[-1]
             expert_targets = batch["expert_targets"].to(router_logits_last.device)
 
-            # FIX: Use the actual router logits shape, not input_ids length
-            # router_logits_last is already flattened to [batch * seq_len, num_experts]
             total_tokens = router_logits_last.shape[0]
             batch_size = expert_targets.shape[0]
             router_seq_len = total_tokens // batch_size
 
-            # Reshape router logits to [batch * seq, num_experts]
             router_logits_flat = router_logits_last.reshape(-1, router_logits_last.shape[-1])
-
-            # Expand targets to match router logits shape
             expanded_targets = expert_targets.unsqueeze(1).expand(-1, router_seq_len).reshape(-1)
 
-            # Verify shapes match before computing loss
             if router_logits_flat.shape[0] == expanded_targets.shape[0]:
                 expert_supervision_loss = torch.nn.functional.cross_entropy(
                     router_logits_flat, expanded_targets, reduction="mean"
                 )
                 loss = loss + self.config.expert_supervision_weight * expert_supervision_loss
-            else:
-                print(f"WARNING: Shape mismatch in expert supervision - "
-                      f"router logits {router_logits_flat.shape[0]} != targets {expanded_targets.shape[0]}, skipping")
 
         # Scale loss for gradient accumulation
         loss = loss / self.config.gradient_accumulation_steps
 
-        # Backward pass
-        if self.scaler is not None:
+        # Backward pass with BitNet gradient scaling
+        if self.bitnet_scaler is not None:
+            # Use BitNet gradient scaler
+            scaled_loss = self.bitnet_scaler.scale_loss(loss)
+            scaled_loss.backward()
+            self.bitnet_scaler.unscale_gradients(self.optimizer)
+        elif self.scaler is not None:
+            # Use standard AMP scaler
             self.scaler.scale(loss).backward()
         else:
             loss.backward()
 
-        # Check gradients for NaN/Inf
-        has_nan_grad = False
-        for name, param in self.model.named_parameters():
-            if param.grad is not None:
-                if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                    print(f"WARNING: NaN/Inf gradient in {name}")
-                    has_nan_grad = True
-                    break
+        # Check gradients for NaN/Inf and apply emergency fix if needed
+        is_finite, bad_param = check_gradients_finite(self.model)
+        if not is_finite:
+            print(f"WARNING: NaN/Inf gradient in {bad_param}, applying emergency fix")
+            emergency_gradient_fix(self.model)
+            if self.bitnet_scaler is not None:
+                self.bitnet_scaler.update(found_inf=True)
+            return {"loss": loss.item() * self.config.gradient_accumulation_steps, "skipped": False, "grad_fixed": True}
 
-        if has_nan_grad:
-            print("Detected NaN gradients, skipping optimizer step")
-            self.optimizer.zero_grad()
-            return {"loss": 0.0, "skipped": True}
+        if self.bitnet_scaler is not None:
+            self.bitnet_scaler.update(found_inf=False)
 
         return {
             "loss": loss.item() * self.config.gradient_accumulation_steps,
@@ -454,36 +627,42 @@ class Trainer:
 
     def _optimizer_step(self):
         """Perform optimizer step with gradient clipping."""
-        if self.scaler is not None:
-            self.scaler.unscale_(self.optimizer)
-
-        # Adaptive or fixed gradient clipping
-        if self.config.use_adaptive_grad_clip:
-            grads = []
-            for p in self.model.parameters():
-                if p.grad is not None:
-                    grads.append(p.grad.detach().abs().view(-1))
-            if grads:
-                all_grads = torch.cat(grads)
-                clip_val = torch.quantile(all_grads, self.config.grad_clip_percentile)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_val.item())
-        else:
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                self.config.max_grad_norm
-            )
-
-        if self.scaler is not None:
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
+        if self.use_bitnet_optimizer:
+            # BitNet optimizer handles its own gradient clipping internally
             self.optimizer.step()
+            self.optimizer.zero_grad()
+        else:
+            # Standard optimizer flow
+            if self.scaler is not None:
+                self.scaler.unscale_(self.optimizer)
 
-        self.optimizer.zero_grad()
+            # Adaptive or fixed gradient clipping
+            if self.config.use_adaptive_grad_clip:
+                grads = []
+                for p in self.model.parameters():
+                    if p.grad is not None:
+                        grads.append(p.grad.detach().abs().view(-1))
+                if grads:
+                    all_grads = torch.cat(grads)
+                    clip_val = torch.quantile(all_grads, self.config.grad_clip_percentile)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_val.item())
+            else:
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.max_grad_norm
+                )
 
-        # Scheduler step
-        if self.scheduler is not None and self.global_step >= self.config.warmup_steps:
-            self.scheduler.step()
+            if self.scaler is not None:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
+
+            self.optimizer.zero_grad()
+
+            # Scheduler step (only for non-BitNet optimizer)
+            if self.scheduler is not None and self.global_step >= self.config.warmup_steps:
+                self.scheduler.step()
 
         # EMA update
         self._update_ema()
@@ -499,9 +678,12 @@ class Trainer:
                 )
 
     def _warmup_lr(self):
-        """Linear warmup for learning rate."""
+        """Linear warmup for learning rate (skipped for BitNet optimizer)."""
+        if self.use_bitnet_optimizer:
+            # BitNet optimizer handles its own warmup internally
+            return
         if self.global_step < self.config.warmup_steps:
-            warmup_factor = self.global_step / self.config.warmup_steps
+            warmup_factor = self.global_step / max(1, self.config.warmup_steps)
             for param_group in self.optimizer.param_groups:
                 param_group["lr"] = self.config.learning_rate * warmup_factor
 
@@ -567,8 +749,14 @@ class Trainer:
         steps_per_epoch = len(train_loader)
         total_steps = steps_per_epoch * self.config.epochs
 
-        # Create scheduler
-        self._create_scheduler(total_steps)
+        # Set phase1_steps for BitNet optimizer (60% of total training)
+        if self.use_bitnet_optimizer and hasattr(self.optimizer, 'phase1_steps'):
+            self.optimizer.phase1_steps = int(total_steps * self.config.bitnet_phase1_ratio)
+            print(f"✓ BitNet optimizer phase1_steps set to {self.optimizer.phase1_steps}")
+
+        # Create scheduler (only for non-BitNet optimizer)
+        if not self.use_bitnet_optimizer:
+            self._create_scheduler(total_steps)
 
         # Calculate token statistics
         token_stats = self._calculate_token_statistics(train_loader)
@@ -583,6 +771,10 @@ class Trainer:
         print(f"Gradient accumulation: {self.config.gradient_accumulation_steps}")
         print(f"Effective batch size: {self.config.batch_size * self.config.gradient_accumulation_steps}")
         print(f"Learning rate: {self.config.learning_rate}")
+        print(f"Using BitNet optimizer: {self.use_bitnet_optimizer}")
+        if self.use_bitnet_optimizer:
+            print(f"BitNet phase1 steps: {self.optimizer.phase1_steps}")
+            print(f"BitNet phase2 LR factor: {self.config.bitnet_phase2_lr_factor}")
         print(f"Device: {self.device}")
 
         # Print token statistics
@@ -641,7 +833,11 @@ class Trainer:
                     # Logging
                     if self.global_step % self.config.log_interval == 0:
                         avg_loss = epoch_loss / epoch_steps
-                        lr = self.optimizer.param_groups[0]["lr"]
+                        # Get LR from BitNet optimizer or standard optimizer
+                        if self.use_bitnet_optimizer:
+                            lr = self.optimizer._get_lr(self.optimizer.global_step)
+                        else:
+                            lr = self.optimizer.param_groups[0]["lr"]
                         elapsed = time.time() - start_time
 
                         print(
