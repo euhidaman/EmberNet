@@ -24,6 +24,7 @@ DESIGN NOTES:
 """
 
 from typing import Optional, Tuple
+import math
 
 import torch
 import torch.nn as nn
@@ -62,11 +63,18 @@ class PixelShuffleCompressor(nn.Module):
         # After shuffle, we have shuffle_factor^2 times more channels
         expanded_dim = input_dim * (shuffle_factor ** 2)
 
-        # Project back down with small initialization for stability
+        # Add LayerNorm BEFORE projection for gradient stability
+        self.pre_norm = nn.LayerNorm(expanded_dim)
+
+        # Project back down
         self.proj = nn.Linear(expanded_dim, output_dim)
-        # Initialize with very small weights to prevent gradient explosion
-        nn.init.normal_(self.proj.weight, mean=0.0, std=0.001)
+
+        # Small initialization for stability
+        nn.init.normal_(self.proj.weight, mean=0.0, std=0.02 / math.sqrt(expanded_dim))
         nn.init.zeros_(self.proj.bias)
+
+        # Post-projection normalization
+        self.post_norm = nn.LayerNorm(output_dim)
 
     def forward(self, x: torch.Tensor, spatial_size: Tuple[int, int]) -> torch.Tensor:
         """
@@ -110,15 +118,15 @@ class PixelShuffleCompressor(nn.Module):
         new_H, new_W = H // self.shuffle_factor, W // self.shuffle_factor
         x = x.view(batch_size, new_H * new_W, -1)
 
-        # Project to output dimension with gradient stability
+        # Normalize BEFORE projection (critical for gradient stability)
+        x = self.pre_norm(x)
+
+        # Project to output dimension
         x = self.proj(x)
 
-        # Clamp output to prevent gradient explosion
-        x = torch.clamp(x, -10.0, 10.0)
+        # Post-normalization for stable output distribution
+        x = self.post_norm(x)
 
-        # NaN protection
-        if torch.isnan(x).any() or torch.isinf(x).any():
-            x = torch.nan_to_num(x, nan=0.0, posinf=10.0, neginf=-10.0)
 
         return x
 
@@ -357,6 +365,19 @@ class VisionEncoder(nn.Module):
             for param in self.encoder.parameters():
                 param.requires_grad = False
 
+        # Initialize trainable components
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights for trainable components."""
+        # Initialize pooler attention
+        if self.pooler is not None:
+            for name, param in self.pooler.named_parameters():
+                if 'weight' in name and param.dim() >= 2:
+                    nn.init.xavier_uniform_(param, gain=0.1)
+                elif 'bias' in name:
+                    nn.init.zeros_(param)
+
     def get_image_features(
         self,
         pixel_values: torch.Tensor
@@ -402,6 +423,10 @@ class VisionEncoder(nn.Module):
         # Get visual features
         hidden_states = self.get_image_features(pixel_values)
 
+        # Stability check after SigLIP encoder
+        if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
+            hidden_states = torch.nan_to_num(hidden_states, nan=0.0, posinf=1.0, neginf=-1.0)
+
         # Apply pixel shuffle compression
         if self.compressor is not None:
             hidden_states = self.compressor(
@@ -415,6 +440,10 @@ class VisionEncoder(nn.Module):
 
         # Project to LM dimension
         hidden_states = self.projector(hidden_states)
+
+        # Final stability check
+        if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
+            hidden_states = torch.nan_to_num(hidden_states, nan=0.0, posinf=1.0, neginf=-1.0)
 
         return hidden_states
 

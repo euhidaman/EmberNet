@@ -149,14 +149,22 @@ class EmberNetVLM(nn.Module):
 
     def _initialize_decoder(self):
         """Initialize decoder with small weights to prevent NaN during Stage 1."""
+        from .bitnet_moe import BitLinear, RMSNorm
+
         for name, module in self.decoder.named_modules():
-            if isinstance(module, nn.Linear) or hasattr(module, 'weight'):
-                if hasattr(module, 'weight') and module.weight is not None:
-                    if module.weight.dim() >= 2:
-                        nn.init.normal_(module.weight, mean=0.0, std=0.01)
-                if hasattr(module, 'bias') and module.bias is not None:
+            # Skip BitLinear - it has its own initialization
+            if isinstance(module, BitLinear):
+                continue
+            # Skip RMSNorm - it has its own initialization
+            if isinstance(module, RMSNorm):
+                continue
+
+            if isinstance(module, nn.Linear):
+                if module.weight is not None and module.weight.dim() >= 2:
+                    nn.init.normal_(module.weight, mean=0.0, std=0.01)
+                if module.bias is not None:
                     nn.init.zeros_(module.bias)
-            if isinstance(module, nn.LayerNorm):
+            elif isinstance(module, nn.LayerNorm):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
             if isinstance(module, nn.Embedding):

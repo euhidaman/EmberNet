@@ -116,19 +116,19 @@ class TrainingConfig:
     def __post_init__(self):
         # Adjust settings based on stage
         if self.stage == 1:
-            self.learning_rate = 1e-5  # Reduced from 5e-5 for stability
+            self.learning_rate = 5e-6  # Very low LR for BitNet stability
             self.warmup_steps = 200  # Increased warmup
             self.freeze_lm_layers = True
             self.train_router = False
             self.train_experts = False
-            self.max_grad_norm = 0.3  # Tightened from 0.5
+            self.max_grad_norm = 0.1  # Very tight gradient clipping
         elif self.stage == 2:
-            self.learning_rate = 5e-5
+            self.learning_rate = 1e-5  # Reduced for stability
             self.warmup_steps = 100
             self.freeze_lm_layers = False
             self.train_router = True
             self.train_experts = True
-            self.max_grad_norm = 0.5
+            self.max_grad_norm = 0.3
 
 
 class Trainer:
@@ -769,14 +769,17 @@ def run_training(args, stage: int, resume_from: Optional[str] = None):
     # =========================================================================
     if args.trial:
         epochs = args.epochs if args.epochs is not None else 1
-        batch_size = args.batch_size if args.batch_size is not None else 2
-        grad_accum = args.grad_accum if args.grad_accum is not None else 1
+        batch_size = args.batch_size if args.batch_size is not None else 1
+        grad_accum = args.grad_accum if args.grad_accum is not None else 4
         max_samples = args.max_samples_per_dataset if args.max_samples_per_dataset is not None else 50
         use_wandb = False
         log_interval = 5
         eval_interval = 20
         save_interval = 50
         output_dir = args.output_dir if args.output_dir != "./checkpoints" else "./checkpoints/trial"
+        # Disable AMP in trial mode for stability unless explicitly enabled
+        if not hasattr(args, '_amp_explicitly_set'):
+            args.no_amp = True
     elif args.main:
         epochs = args.epochs if args.epochs is not None else (3 if stage == 1 else 10)
         batch_size = args.batch_size if args.batch_size is not None else (8 if stage == 1 else 4)

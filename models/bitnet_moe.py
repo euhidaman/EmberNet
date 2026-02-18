@@ -119,7 +119,7 @@ class STEQuantize(torch.autograd.Function):
 class BitLinear(nn.Module):
     """
     BitNet b1.58 linear layer with ternary weights {-1, 0, +1}.
-    Implements proper activation scaling and weight quantization for stability.
+    Based on official BitNet implementation with absmax activation quantization.
     """
 
     def __init__(self, in_features: int, out_features: int, bias: bool = False, eps: float = 1e-5):
@@ -128,57 +128,64 @@ class BitLinear(nn.Module):
         self.out_features = out_features
         self.eps = eps
 
-        # Initialize weight with proper scaling
-        self.weight = nn.Parameter(torch.randn(out_features, in_features))
-        nn.init.kaiming_normal_(self.weight, mode='fan_in', nonlinearity='linear')
-
-        # Learnable scaling factors
-        self.gamma = nn.Parameter(torch.ones(1))
-        self.beta = nn.Parameter(torch.zeros(1))
-
+        # Weight stored in full precision for training
+        self.weight = nn.Parameter(torch.empty(out_features, in_features))
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_features))
         else:
             self.register_parameter('bias', None)
 
-    def activation_quant(self, x: torch.Tensor):
-        """Quantize activations with RMSNorm-style scaling."""
-        scale = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
-        x_scaled = x / (scale + self.eps)
-        x_scaled = torch.clamp(x_scaled, -10.0, 10.0)
-        return x_scaled, scale
+        # Initialize weights with small values for stability
+        self._init_weights()
 
-    def weight_quant(self, weight: torch.Tensor):
-        """Quantize weights to ternary {-1, 0, +1}."""
-        alpha = torch.mean(torch.abs(weight))
-        threshold = alpha * 0.5
-        weight_q = torch.sign(weight) * (torch.abs(weight) > threshold).float()
-        weight_q = weight_q * alpha
-        return weight_q
+    def _init_weights(self):
+        # Use small initialization similar to official BitNet
+        std = 0.02 / math.sqrt(self.in_features)
+        nn.init.normal_(self.weight, mean=0.0, std=std)
+
+    def activation_quant(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Absmax activation quantization (from official BitNet).
+        Quantizes to int8 range and back for gradient stability.
+        """
+        # Compute per-row absmax scale (clamp to avoid division by zero)
+        scale = 127.0 / x.abs().max(dim=-1, keepdim=True).values.clamp_(min=self.eps)
+        # Quantize: scale -> round -> clamp -> unscale
+        x_quant = (x * scale).round().clamp(-128, 127) / scale
+        return x_quant
+
+    def weight_quant(self, weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Ternary weight quantization {-1, 0, +1} with scaling.
+        Returns quantized weights and the scale factor.
+        """
+        # Compute mean absolute value for scaling
+        scale = weight.abs().mean().clamp(min=self.eps)
+        # Ternary quantization with threshold
+        threshold = 0.5 * scale
+        weight_q = torch.sign(weight) * (weight.abs() > threshold).float()
+        return weight_q, scale
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Quantize activations
-        x_quant, scale = self.activation_quant(x)
+        # Quantize activations using absmax (stable gradient flow)
+        x_quant = self.activation_quant(x)
 
-        # Quantize weights
+        # Quantize weights with STE during training
         if self.training:
             weight_q = STEQuantize.apply(self.weight)
-            alpha = torch.mean(torch.abs(self.weight))
-            weight_q = weight_q * alpha
+            scale = self.weight.abs().mean().clamp(min=self.eps)
         else:
-            weight_q = self.weight_quant(self.weight)
+            weight_q, scale = self.weight_quant(self.weight)
 
-        # Linear transformation
-        output = F.linear(x_quant, weight_q, self.bias)
-
-        # Rescale output
-        output = output * scale * self.gamma + self.beta
-        output = torch.clamp(output, -1e4, 1e4)
+        # Linear transformation with scaled quantized weights
+        output = F.linear(x_quant, weight_q * scale, self.bias)
 
         return output
 
     def get_quantized_weight(self) -> torch.Tensor:
         """Return the quantized ternary weights for inference."""
+        weight_q, scale = self.weight_quant(self.weight)
+        return weight_q * scale
         return self.weight_quant(self.weight)
 
 
