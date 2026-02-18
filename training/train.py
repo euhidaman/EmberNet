@@ -110,16 +110,9 @@ class BitNetStableOptimizer:
             if param.grad is None:
                 continue
 
-            # Check for NaN/Inf gradients - clamp to safe range instead of zeroing
+            # Skip update if gradient is not finite (will be caught elsewhere)
             if not torch.isfinite(param.grad).all():
-                # Replace NaN/Inf with clamped finite values
-                grad_finite = torch.where(
-                    torch.isfinite(param.grad),
-                    param.grad,
-                    torch.zeros_like(param.grad)
-                )
-                # Clamp to prevent extreme updates
-                param.grad = torch.clamp(grad_finite, min=-10.0, max=10.0)
+                continue
 
             grad = param.grad.data
             state = self.state[param]

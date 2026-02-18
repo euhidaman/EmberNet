@@ -83,16 +83,11 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Input stabilization - replace NaN/Inf with zeros
-        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
-
+        dtype = x.dtype
+        x = x.float()
         variance = x.pow(2).mean(-1, keepdim=True)
-        # Use rsqrt with clamped variance to prevent NaN
-        x = x * torch.rsqrt(variance.clamp_(min=self.eps))
-
-        # Output stabilization - replace NaN/Inf with zeros
-        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
-        return self.weight * x
+        x = x * torch.rsqrt(variance + self.eps)
+        return (self.weight * x).to(dtype)
 
 
 def activation_quant(x: torch.Tensor) -> torch.Tensor:
@@ -100,18 +95,11 @@ def activation_quant(x: torch.Tensor) -> torch.Tensor:
     Per-token activation quantization to 8-bit (Microsoft BitNet official).
     Clamps min to 1e-5 to prevent division by zero/tiny values.
     """
-    # Get max absolute value per token, clamped to prevent division by tiny values
-    max_val = x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
-    scale = 127.0 / max_val
-
-    # Quantize: multiply, round, clamp, then dequantize
+    dtype = x.dtype
+    x = x.float()
+    scale = 127.0 / x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
     y = (x * scale).round().clamp_(-128, 127) / scale
-
-    # Safety check - if input was all zeros or very small, return input unchanged
-    # This prevents NaN from 0/0 in edge cases
-    y = torch.where(torch.isfinite(y), y, x)
-
-    return y
+    return y.to(dtype)
 
 
 def weight_quant(w: torch.Tensor) -> torch.Tensor:
@@ -119,17 +107,12 @@ def weight_quant(w: torch.Tensor) -> torch.Tensor:
     Ternary weight quantization (Microsoft BitNet official).
     Uses mean for centering and scaling - no division by scale.
     """
-    # Calculate scale and mean
-    scale = w.abs().mean().clamp_(min=1e-8)  # Prevent zero scale
+    dtype = w.dtype
+    w = w.float()
+    scale = w.abs().mean()
     e = w.mean()
-
-    # Ternary quantization: sign of (w - mean) * scale
     u = (w - e).sign() * scale
-
-    # Safety check - if weights are corrupted, return input unchanged
-    u = torch.where(torch.isfinite(u), u, w)
-
-    return u
+    return u.to(dtype)
 
 
 class BitLinear(nn.Module):

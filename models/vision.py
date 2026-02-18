@@ -63,19 +63,16 @@ class PixelShuffleCompressor(nn.Module):
         # After shuffle, we have shuffle_factor^2 times more channels
         expanded_dim = input_dim * (shuffle_factor ** 2)
 
-        # Use RMSNorm instead of LayerNorm for gradient stability (Microsoft BitNet approach)
+        # Use RMSNorm with default weight=1.0 (Microsoft BitNet pattern)
         self.pre_norm = RMSNorm(expanded_dim, eps=1e-5)
-        # Initialize norm weights conservatively for stability
-        nn.init.constant_(self.pre_norm.weight, 0.1)
 
-        # Project back down with very small initialization
+        # Project back down with small initialization
         self.proj = nn.Linear(expanded_dim, output_dim)
-        nn.init.normal_(self.proj.weight, mean=0.0, std=0.01 / math.sqrt(expanded_dim))
+        nn.init.normal_(self.proj.weight, mean=0.0, std=0.02 / math.sqrt(expanded_dim))
         nn.init.zeros_(self.proj.bias)
 
-        # Post-projection normalization using RMSNorm
+        # Post-projection normalization
         self.post_norm = RMSNorm(output_dim, eps=1e-5)
-        nn.init.constant_(self.post_norm.weight, 0.1)
 
     def forward(self, x: torch.Tensor, spatial_size: Tuple[int, int]) -> torch.Tensor:
         """
@@ -88,10 +85,6 @@ class PixelShuffleCompressor(nn.Module):
         """
         batch_size, num_tokens, hidden_dim = x.shape
         H, W = spatial_size
-
-        # Input stabilization - replace NaN/Inf and clamp to reasonable range
-        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
-        x = torch.clamp(x, min=-10.0, max=10.0)
 
         # Reshape to spatial grid
         x = x.view(batch_size, H, W, hidden_dim)
@@ -123,17 +116,15 @@ class PixelShuffleCompressor(nn.Module):
         new_H, new_W = H // self.shuffle_factor, W // self.shuffle_factor
         x = x.view(batch_size, new_H * new_W, -1)
 
-        # Normalize BEFORE projection (critical for gradient stability)
+        # Normalize BEFORE projection
         x = self.pre_norm(x)
 
         # Project to output dimension
         x = self.proj(x)
 
-        # Post-normalization for stable output distribution
+        # Post-normalization
         x = self.post_norm(x)
 
-        # Final output stabilization
-        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
 
         return x
 
@@ -166,9 +157,6 @@ class AdaptivePooler(nn.Module):
         Returns:
             Pooled tokens [batch, num_output_tokens, hidden_dim]
         """
-        # Input stabilization
-        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
-
         batch_size = x.shape[0]
         queries = self.queries.expand(batch_size, -1, -1)
 
@@ -176,8 +164,6 @@ class AdaptivePooler(nn.Module):
         pooled, _ = self.attn(queries, x, x)
         pooled = self.norm(pooled + queries)
 
-        # Output stabilization
-        pooled = torch.where(torch.isfinite(pooled), pooled, torch.zeros_like(pooled))
 
         return pooled
 
@@ -205,17 +191,10 @@ class VisionProjector(nn.Module):
         self.norm = RMSNorm(lm_dim, eps=1e-5)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Input stability - replace NaN/Inf and clamp
-        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
-        x = torch.clamp(x, min=-10.0, max=10.0)
-
         x = self.fc1(x)
         x = self.act(x)
         x = self.fc2(x)
         x = self.norm(x)
-
-        # Output stability - replace any remaining NaN/Inf
-        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
 
         return x
 
@@ -435,9 +414,6 @@ class VisionEncoder(nn.Module):
         # Get visual features
         hidden_states = self.get_image_features(pixel_values)
 
-        # Stability - clamp instead of nan_to_num to preserve gradients
-        hidden_states = torch.clamp(hidden_states, min=-10.0, max=10.0)
-
         # Apply pixel shuffle compression
         if self.compressor is not None:
             hidden_states = self.compressor(
@@ -452,8 +428,6 @@ class VisionEncoder(nn.Module):
         # Project to LM dimension
         hidden_states = self.projector(hidden_states)
 
-        # Final stability - clamp to prevent extreme values
-        hidden_states = torch.clamp(hidden_states, min=-10.0, max=10.0)
 
         return hidden_states
 

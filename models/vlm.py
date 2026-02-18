@@ -223,14 +223,9 @@ class EmberNetVLM(nn.Module):
         # Embed text tokens
         text_embeds = self.decoder.embed_tokens(safe_input_ids)
 
-        # Stabilize text embeddings with clamp to preserve gradients
-        text_embeds = torch.clamp(text_embeds, min=-10.0, max=10.0)
-
         # Always prepend image embeddings to text embeddings
         merged_embeds = torch.cat([image_embeds, text_embeds], dim=1)
 
-        # Final stability - clamp to prevent extreme values
-        merged_embeds = torch.clamp(merged_embeds, min=-10.0, max=10.0)
 
         # Update attention mask
         if attention_mask is not None:
@@ -286,8 +281,6 @@ class EmberNetVLM(nn.Module):
                 image_embeds = flat_embeds.view(
                     batch_size, num_images * flat_embeds.shape[1], -1
                 )
-            # Stabilize image embeddings with clamp to preserve gradients
-            image_embeds = torch.clamp(image_embeds, min=-10.0, max=10.0)
         else:
             image_embeds = None
 
