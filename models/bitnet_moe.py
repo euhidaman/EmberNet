@@ -83,7 +83,10 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Handle NaN/Inf in input
+        x = torch.nan_to_num(x, nan=0.0, posinf=1e3, neginf=-1e3)
         variance = x.pow(2).mean(-1, keepdim=True)
+        variance = variance.clamp(min=self.eps)
         x = x * torch.rsqrt(variance + self.eps)
         return self.weight * x
 
@@ -115,52 +118,68 @@ class STEQuantize(torch.autograd.Function):
 
 class BitLinear(nn.Module):
     """
-    Linear layer with BitNet b1.58 ternary quantization.
-
-    Weights are stored in FP16 during training but quantized to {-1, 0, +1}
-    during forward pass. Gradients flow through via straight-through estimator.
+    BitNet b1.58 linear layer with ternary weights {-1, 0, +1}.
+    Implements proper activation scaling and weight quantization for stability.
     """
 
-    def __init__(self, in_features: int, out_features: int, bias: bool = False):
+    def __init__(self, in_features: int, out_features: int, bias: bool = False, eps: float = 1e-5):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
+        self.eps = eps
 
-        # Weight stored in full precision for training
-        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+        # Initialize weight with proper scaling
+        self.weight = nn.Parameter(torch.randn(out_features, in_features))
+        nn.init.kaiming_normal_(self.weight, mode='fan_in', nonlinearity='linear')
+
+        # Learnable scaling factors
+        self.gamma = nn.Parameter(torch.ones(1))
+        self.beta = nn.Parameter(torch.zeros(1))
+
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_features))
         else:
             self.register_parameter('bias', None)
 
-        # Scaling factor for quantized weights
-        self.register_buffer('weight_scale', torch.tensor(1.0))
+    def activation_quant(self, x: torch.Tensor):
+        """Quantize activations with RMSNorm-style scaling."""
+        scale = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
+        x_scaled = x / (scale + self.eps)
+        x_scaled = torch.clamp(x_scaled, -10.0, 10.0)
+        return x_scaled, scale
 
-        self._init_weights()
-
-    def _init_weights(self):
-        # Xavier uniform initialization
-        nn.init.xavier_uniform_(self.weight)
+    def weight_quant(self, weight: torch.Tensor):
+        """Quantize weights to ternary {-1, 0, +1}."""
+        alpha = torch.mean(torch.abs(weight))
+        threshold = alpha * 0.5
+        weight_q = torch.sign(weight) * (torch.abs(weight) > threshold).float()
+        weight_q = weight_q * alpha
+        return weight_q
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Compute scaling factor (absmean) with numerical stability
-        weight_scale = self.weight.abs().mean().clamp(min=1e-5, max=1e3)
+        # Quantize activations
+        x_quant, scale = self.activation_quant(x)
 
-        # Quantize weights with STE
+        # Quantize weights
         if self.training:
-            quantized_weight = STEQuantize.apply(self.weight)
+            weight_q = STEQuantize.apply(self.weight)
+            alpha = torch.mean(torch.abs(self.weight))
+            weight_q = weight_q * alpha
         else:
-            quantized_weight = ternary_quantize(self.weight)
+            weight_q = self.weight_quant(self.weight)
 
-        # Scale output to compensate for quantization
-        output = F.linear(x, quantized_weight, self.bias)
-        output = output * weight_scale
+        # Linear transformation
+        output = F.linear(x_quant, weight_q, self.bias)
+
+        # Rescale output
+        output = output * scale * self.gamma + self.beta
+        output = torch.clamp(output, -1e4, 1e4)
 
         return output
 
     def get_quantized_weight(self) -> torch.Tensor:
         """Return the quantized ternary weights for inference."""
-        return ternary_quantize(self.weight)
+        return self.weight_quant(self.weight)
 
 
 class RotaryEmbedding(nn.Module):
@@ -319,8 +338,16 @@ class BitNetExpert(nn.Module):
         self.down_proj = BitLinear(intermediate_size, hidden_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # SwiGLU activation
-        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+        # SwiGLU activation with stability
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        # Clamp before activation to prevent overflow
+        gate = gate.clamp(-20, 20)
+        hidden = F.silu(gate) * up
+        # Clamp hidden states
+        hidden = hidden.clamp(-1e3, 1e3)
+        output = self.down_proj(hidden)
+        return output
 
 
 class BitNetMoELayer(nn.Module):
@@ -387,9 +414,11 @@ class BitNetMoELayer(nn.Module):
 
         # Gumbel-Softmax routing during training for better gradient flow
         if self.training:
-            gumbel_noise = -torch.log(-torch.log(torch.rand_like(router_logits) + 1e-8) + 1e-8)
-            logits_with_noise = router_logits + gumbel_noise
-            routing_weights = F.softmax(logits_with_noise / 0.5, dim=-1)  # temperature=0.5
+            # Use stable Gumbel noise computation
+            u = torch.rand_like(router_logits).clamp(1e-6, 1.0 - 1e-6)
+            gumbel_noise = -torch.log(-torch.log(u))
+            logits_with_noise = router_logits + gumbel_noise * 0.1  # Reduced noise scale
+            routing_weights = F.softmax(logits_with_noise, dim=-1)
         else:
             routing_weights = F.softmax(router_logits, dim=-1)
 
@@ -428,6 +457,9 @@ class BitNetMoELayer(nn.Module):
             shared_output = self.shared_expert(hidden_flat)
             final_output = final_output + shared_output
 
+        # Clamp output to prevent NaN/Inf propagation
+        final_output = final_output.clamp(-1e4, 1e4)
+
         output = final_output.view(batch_size, seq_len, hidden_dim)
 
         return output, router_logits
@@ -453,20 +485,36 @@ class BitNetMoEBlock(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        # Self-attention with residual
+        # Pre-LN for attention
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states, present_key_value = self.attention(
+
+        # Self-attention
+        attn_output, present_key_value = self.attention(
             hidden_states, attention_mask, position_ids,
             past_key_value=past_key_value, use_cache=use_cache
         )
-        hidden_states = residual + hidden_states
 
-        # MoE FFN with residual
+        # NaN check and recovery
+        if torch.isnan(attn_output).any():
+            print("WARNING: NaN in attention output, using zero")
+            attn_output = torch.zeros_like(attn_output)
+
+        hidden_states = residual + attn_output
+
+        # Pre-LN for MoE FFN
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states, router_logits = self.moe(hidden_states)
-        hidden_states = residual + hidden_states
+
+        # MoE FFN forward
+        ffn_output, router_logits = self.moe(hidden_states)
+
+        # NaN check and recovery
+        if torch.isnan(ffn_output).any():
+            print("WARNING: NaN in FFN output, using zero")
+            ffn_output = torch.zeros_like(ffn_output)
+
+        hidden_states = residual + ffn_output
 
         return hidden_states, router_logits, present_key_value
 

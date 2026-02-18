@@ -116,15 +116,19 @@ class TrainingConfig:
     def __post_init__(self):
         # Adjust settings based on stage
         if self.stage == 1:
-            self.learning_rate = 5e-5  # Very low LR for stability with random decoder
+            self.learning_rate = 1e-5  # Reduced from 5e-5 for stability
+            self.warmup_steps = 200  # Increased warmup
             self.freeze_lm_layers = True
             self.train_router = False
             self.train_experts = False
+            self.max_grad_norm = 0.3  # Tightened from 0.5
         elif self.stage == 2:
-            self.learning_rate = 1e-4
+            self.learning_rate = 5e-5
+            self.warmup_steps = 100
             self.freeze_lm_layers = False
             self.train_router = True
             self.train_experts = True
+            self.max_grad_norm = 0.5
 
 
 class Trainer:
@@ -335,7 +339,7 @@ class Trainer:
         self,
         batch: Dict[str, torch.Tensor],
     ) -> Dict[str, float]:
-        """Single training step."""
+        """Training step with enhanced NaN detection and recovery."""
         # Move batch to device
         pixel_values = batch["pixel_values"].to(self.device)
         input_ids = batch["input_ids"].to(self.device)
@@ -353,6 +357,14 @@ class Trainer:
                     labels=labels,
                 )
                 loss = outputs["loss"]
+
+                # Check logits for NaN before loss computation
+                if "logits" in outputs and outputs["logits"] is not None:
+                    logits = outputs["logits"]
+                    if torch.isnan(logits).any() or torch.isinf(logits).any():
+                        print("WARNING: NaN/Inf in logits, skipping batch")
+                        self.optimizer.zero_grad()
+                        return {"loss": 0.0, "skipped": True}
         else:
             outputs = self.model(
                 pixel_values=pixel_values,
@@ -361,6 +373,13 @@ class Trainer:
                 labels=labels,
             )
             loss = outputs["loss"]
+
+            if "logits" in outputs and outputs["logits"] is not None:
+                logits = outputs["logits"]
+                if torch.isnan(logits).any() or torch.isinf(logits).any():
+                    print("WARNING: NaN/Inf in logits, skipping batch")
+                    self.optimizer.zero_grad()
+                    return {"loss": 0.0, "skipped": True}
 
         # Check for None, NaN/Inf loss
         if loss is None:
@@ -399,6 +418,20 @@ class Trainer:
             self.scaler.scale(loss).backward()
         else:
             loss.backward()
+
+        # Check gradients for NaN/Inf
+        has_nan_grad = False
+        for name, param in self.model.named_parameters():
+            if param.grad is not None:
+                if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                    print(f"WARNING: NaN/Inf gradient in {name}")
+                    has_nan_grad = True
+                    break
+
+        if has_nan_grad:
+            print("Detected NaN gradients, skipping optimizer step")
+            self.optimizer.zero_grad()
+            return {"loss": 0.0, "skipped": True}
 
         return {
             "loss": loss.item() * self.config.gradient_accumulation_steps,
@@ -576,6 +609,10 @@ class Trainer:
 
                 # Skip if batch was invalid (NaN/Inf)
                 if metrics.get("skipped", False):
+                    # Still count as a step for accumulation purposes
+                    if (step + 1) % self.config.gradient_accumulation_steps == 0:
+                        self.optimizer.zero_grad()
+                        self.global_step += 1
                     continue
 
                 epoch_loss += metrics["loss"]
@@ -642,9 +679,18 @@ class Trainer:
                     if self.global_step % self.config.save_interval == 0:
                         self._save_checkpoint(f"checkpoint_step_{self.global_step}.pt")
 
-            # End of epoch
+            # End of epoch - handle case where all batches were skipped
+            if epoch_steps == 0:
+                print(f"\n{'='*70}")
+                print(f"ERROR: Epoch {epoch+1} - ALL batches produced NaN/Inf!")
+                print(f"Model stability issue detected.")
+                print(f"{'='*70}\n")
+                self._save_checkpoint(f"emergency_epoch_{epoch+1}.pt")
+                raise RuntimeError("Training failed: All batches produced NaN/Inf losses")
+
             epoch_avg_loss = epoch_loss / epoch_steps
-            print(f"\nEpoch {epoch+1} Complete | Average Loss: {epoch_avg_loss:.4f}\n")
+            print(f"\nEpoch {epoch+1} Complete | Average Loss: {epoch_avg_loss:.4f}")
+            print(f"  Valid batches: {epoch_steps} / {len(train_loader)}\n")
 
             # Log epoch metrics to wandb
             if self.use_wandb:

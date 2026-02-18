@@ -137,12 +137,31 @@ class EmberNetVLM(nn.Module):
             torch.randn(self.config.hidden_size) * 0.02
         )
 
+        # Initialize decoder weights for stability
+        self._initialize_decoder()
+
         # Conversation history for multi-turn
         self._conversation_history: List[Dict] = []
         self._cached_image_embeds: Optional[torch.Tensor] = None
 
         # Tokenizer (loaded lazily)
         self._tokenizer = None
+
+    def _initialize_decoder(self):
+        """Initialize decoder with small weights to prevent NaN during Stage 1."""
+        for name, module in self.decoder.named_modules():
+            if isinstance(module, nn.Linear) or hasattr(module, 'weight'):
+                if hasattr(module, 'weight') and module.weight is not None:
+                    if module.weight.dim() >= 2:
+                        nn.init.normal_(module.weight, mean=0.0, std=0.01)
+                if hasattr(module, 'bias') and module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            if isinstance(module, nn.LayerNorm):
+                nn.init.ones_(module.weight)
+                nn.init.zeros_(module.bias)
+            if isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        print("✓ Decoder initialized with small weights for stability")
 
     @property
     def tokenizer(self):
