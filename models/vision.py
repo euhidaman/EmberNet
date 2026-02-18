@@ -37,8 +37,8 @@ except ImportError:
     HAS_TRANSFORMERS = False
 
 
-# Import BitLinear for the projector
-from .bitnet_moe import BitLinear
+# Import BitLinear and RMSNorm for the projector
+from .bitnet_moe import BitLinear, RMSNorm
 
 
 class PixelShuffleCompressor(nn.Module):
@@ -63,18 +63,19 @@ class PixelShuffleCompressor(nn.Module):
         # After shuffle, we have shuffle_factor^2 times more channels
         expanded_dim = input_dim * (shuffle_factor ** 2)
 
-        # Add LayerNorm BEFORE projection for gradient stability
-        self.pre_norm = nn.LayerNorm(expanded_dim)
+        # Use RMSNorm instead of LayerNorm for gradient stability (Microsoft BitNet approach)
+        self.pre_norm = RMSNorm(expanded_dim, eps=1e-5)
+        # Initialize norm weights conservatively for stability
+        nn.init.constant_(self.pre_norm.weight, 0.1)
 
-        # Project back down
+        # Project back down with very small initialization
         self.proj = nn.Linear(expanded_dim, output_dim)
-
-        # Small initialization for stability
-        nn.init.normal_(self.proj.weight, mean=0.0, std=0.02 / math.sqrt(expanded_dim))
+        nn.init.normal_(self.proj.weight, mean=0.0, std=0.01 / math.sqrt(expanded_dim))
         nn.init.zeros_(self.proj.bias)
 
-        # Post-projection normalization
-        self.post_norm = nn.LayerNorm(output_dim)
+        # Post-projection normalization using RMSNorm
+        self.post_norm = RMSNorm(output_dim, eps=1e-5)
+        nn.init.constant_(self.post_norm.weight, 0.1)
 
     def forward(self, x: torch.Tensor, spatial_size: Tuple[int, int]) -> torch.Tensor:
         """
@@ -87,6 +88,10 @@ class PixelShuffleCompressor(nn.Module):
         """
         batch_size, num_tokens, hidden_dim = x.shape
         H, W = spatial_size
+
+        # Input stabilization - replace NaN/Inf and clamp to reasonable range
+        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
+        x = torch.clamp(x, min=-10.0, max=10.0)
 
         # Reshape to spatial grid
         x = x.view(batch_size, H, W, hidden_dim)
@@ -127,6 +132,8 @@ class PixelShuffleCompressor(nn.Module):
         # Post-normalization for stable output distribution
         x = self.post_norm(x)
 
+        # Final output stabilization
+        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
 
         return x
 
@@ -147,7 +154,7 @@ class AdaptivePooler(nn.Module):
             num_heads=8,
             batch_first=True
         )
-        self.norm = nn.LayerNorm(hidden_dim)
+        self.norm = RMSNorm(hidden_dim, eps=1e-5)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -159,12 +166,18 @@ class AdaptivePooler(nn.Module):
         Returns:
             Pooled tokens [batch, num_output_tokens, hidden_dim]
         """
+        # Input stabilization
+        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
+
         batch_size = x.shape[0]
         queries = self.queries.expand(batch_size, -1, -1)
 
         # Cross-attention: queries attend to visual tokens
         pooled, _ = self.attn(queries, x, x)
         pooled = self.norm(pooled + queries)
+
+        # Output stabilization
+        pooled = torch.where(torch.isfinite(pooled), pooled, torch.zeros_like(pooled))
 
         return pooled
 
@@ -173,7 +186,7 @@ class VisionProjector(nn.Module):
     """
     Project vision embeddings to language model dimension.
 
-    Uses BitLinear layers for efficiency.
+    Uses BitLinear layers for efficiency and RMSNorm for stability.
     """
 
     def __init__(
@@ -189,21 +202,20 @@ class VisionProjector(nn.Module):
         self.fc1 = BitLinear(vision_dim, hidden_dim)
         self.act = nn.GELU()
         self.fc2 = BitLinear(hidden_dim, lm_dim)
-        self.norm = nn.LayerNorm(lm_dim)
+        self.norm = RMSNorm(lm_dim, eps=1e-5)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Input stability check
-        if torch.isnan(x).any() or torch.isinf(x).any():
-            x = torch.nan_to_num(x, nan=0.0, posinf=10.0, neginf=-10.0)
+        # Input stability - replace NaN/Inf and clamp
+        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
+        x = torch.clamp(x, min=-10.0, max=10.0)
 
         x = self.fc1(x)
         x = self.act(x)
         x = self.fc2(x)
         x = self.norm(x)
 
-        # Output stability check
-        if torch.isnan(x).any() or torch.isinf(x).any():
-            x = torch.nan_to_num(x, nan=0.0, posinf=10.0, neginf=-10.0)
+        # Output stability - replace any remaining NaN/Inf
+        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
 
         return x
 
@@ -246,9 +258,9 @@ class CrossModalProjector(nn.Module):
             BitLinear(lm_dim * 4, lm_dim),
         )
 
-        # LayerNorms
-        self.ln_q = nn.LayerNorm(lm_dim)
-        self.ln_ff = nn.LayerNorm(lm_dim)
+        # RMSNorms for gradient stability
+        self.ln_q = RMSNorm(lm_dim, eps=1e-5)
+        self.ln_ff = RMSNorm(lm_dim, eps=1e-5)
 
     def forward(self, vision_features: torch.Tensor) -> torch.Tensor:
         """
@@ -423,9 +435,8 @@ class VisionEncoder(nn.Module):
         # Get visual features
         hidden_states = self.get_image_features(pixel_values)
 
-        # Stability check after SigLIP encoder
-        if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
-            hidden_states = torch.nan_to_num(hidden_states, nan=0.0, posinf=1.0, neginf=-1.0)
+        # Stability - clamp instead of nan_to_num to preserve gradients
+        hidden_states = torch.clamp(hidden_states, min=-10.0, max=10.0)
 
         # Apply pixel shuffle compression
         if self.compressor is not None:
@@ -441,9 +452,8 @@ class VisionEncoder(nn.Module):
         # Project to LM dimension
         hidden_states = self.projector(hidden_states)
 
-        # Final stability check
-        if torch.isnan(hidden_states).any() or torch.isinf(hidden_states).any():
-            hidden_states = torch.nan_to_num(hidden_states, nan=0.0, posinf=1.0, neginf=-1.0)
+        # Final stability - clamp to prevent extreme values
+        hidden_states = torch.clamp(hidden_states, min=-10.0, max=10.0)
 
         return hidden_states
 

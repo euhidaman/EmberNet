@@ -110,14 +110,16 @@ class BitNetStableOptimizer:
             if param.grad is None:
                 continue
 
-            # Check for NaN/Inf gradients - clamp instead of skipping
+            # Check for NaN/Inf gradients - clamp to safe range instead of zeroing
             if not torch.isfinite(param.grad).all():
-                # Replace NaN/Inf with zeros to prevent corruption
-                param.grad = torch.where(
+                # Replace NaN/Inf with clamped finite values
+                grad_finite = torch.where(
                     torch.isfinite(param.grad),
                     param.grad,
                     torch.zeros_like(param.grad)
                 )
+                # Clamp to prevent extreme updates
+                param.grad = torch.clamp(grad_finite, min=-10.0, max=10.0)
 
             grad = param.grad.data
             state = self.state[param]
@@ -315,8 +317,8 @@ class TrainingConfig:
     def __post_init__(self):
         # Adjust settings based on stage - using BitNet methodology
         if self.stage == 1:
-            # BitNet needs HIGHER initial LR, then drops sharply
-            self.learning_rate = 6e-4  # Higher LR for BitNet (Microsoft's approach)
+            # Lower LR for vision encoder components (they're not BitNet quantized)
+            self.learning_rate = 1e-4  # Conservative LR for vision projector/compressor
             self.warmup_steps = 100  # Shorter warmup
             self.freeze_lm_layers = True
             self.train_router = False
@@ -324,7 +326,8 @@ class TrainingConfig:
             self.max_grad_norm = 1.0  # BitNet uses 1.0 clipping
             self.use_adaptive_grad_clip = False  # Disable adaptive, use fixed
         elif self.stage == 2:
-            self.learning_rate = 3e-4  # Still higher for BitNet
+            # BitNet decoder can handle higher LR
+            self.learning_rate = 3e-4  # Higher for BitNet decoder
             self.warmup_steps = 100
             self.freeze_lm_layers = False
             self.train_router = True

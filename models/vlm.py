@@ -223,16 +223,14 @@ class EmberNetVLM(nn.Module):
         # Embed text tokens
         text_embeds = self.decoder.embed_tokens(safe_input_ids)
 
-        # Stabilize text embeddings
-        if torch.isnan(text_embeds).any() or torch.isinf(text_embeds).any():
-            text_embeds = torch.nan_to_num(text_embeds, nan=0.0, posinf=1.0, neginf=-1.0)
+        # Stabilize text embeddings with clamp to preserve gradients
+        text_embeds = torch.clamp(text_embeds, min=-10.0, max=10.0)
 
         # Always prepend image embeddings to text embeddings
         merged_embeds = torch.cat([image_embeds, text_embeds], dim=1)
 
-        # Final stability check on merged embeddings
-        if torch.isnan(merged_embeds).any() or torch.isinf(merged_embeds).any():
-            merged_embeds = torch.nan_to_num(merged_embeds, nan=0.0, posinf=1.0, neginf=-1.0)
+        # Final stability - clamp to prevent extreme values
+        merged_embeds = torch.clamp(merged_embeds, min=-10.0, max=10.0)
 
         # Update attention mask
         if attention_mask is not None:
@@ -288,9 +286,8 @@ class EmberNetVLM(nn.Module):
                 image_embeds = flat_embeds.view(
                     batch_size, num_images * flat_embeds.shape[1], -1
                 )
-            # Stabilize image embeddings - prevent NaN/Inf
-            if torch.isnan(image_embeds).any() or torch.isinf(image_embeds).any():
-                image_embeds = torch.nan_to_num(image_embeds, nan=0.0, posinf=1.0, neginf=-1.0)
+            # Stabilize image embeddings with clamp to preserve gradients
+            image_embeds = torch.clamp(image_embeds, min=-10.0, max=10.0)
         else:
             image_embeds = None
 
@@ -348,13 +345,8 @@ class EmberNetVLM(nn.Module):
         logits = outputs[0]
         router_logits = outputs[1] if len(outputs) > 1 else None
 
-        # Check for NaN/Inf in logits immediately
-        if torch.isnan(logits).any():
-            print("WARNING: NaN detected in logits after decoder forward pass")
-            logits = torch.nan_to_num(logits, nan=0.0)
-        if torch.isinf(logits).any():
-            print("WARNING: Inf detected in logits after decoder forward pass")
-            logits = torch.nan_to_num(logits, posinf=100.0, neginf=-100.0)
+        # Clamp logits to reasonable range to prevent extreme values while preserving gradients
+        logits = torch.clamp(logits, min=-100.0, max=100.0)
 
         # Compute loss if labels provided
         loss = None
@@ -414,16 +406,12 @@ class EmberNetVLM(nn.Module):
             # Clamp logits to prevent overflow in cross-entropy
             flat_logits = flat_logits.clamp(-100.0, 100.0)
 
-            # Check for NaN/Inf in logits
-            if torch.isnan(flat_logits).any() or torch.isinf(flat_logits).any():
-                flat_logits = torch.nan_to_num(flat_logits, nan=0.0, posinf=100.0, neginf=-100.0)
-
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.1)
             loss = loss_fct(flat_logits, flat_labels)
 
-            # Check for NaN loss
+            # Check for NaN loss - fail fast if it occurs (indicates upstream problem)
             if torch.isnan(loss) or torch.isinf(loss):
-                loss = torch.tensor(0.0, device=shift_logits.device, requires_grad=True)
+                raise ValueError("NaN/Inf loss detected - indicates upstream numerical instability")
 
             # Add router auxiliary loss
             if router_logits is not None:

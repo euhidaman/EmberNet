@@ -83,9 +83,15 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Input stabilization - replace NaN/Inf with zeros
+        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
+
         variance = x.pow(2).mean(-1, keepdim=True)
         # Use rsqrt with clamped variance to prevent NaN
         x = x * torch.rsqrt(variance.clamp_(min=self.eps))
+
+        # Output stabilization - replace NaN/Inf with zeros
+        x = torch.where(torch.isfinite(x), x, torch.zeros_like(x))
         return self.weight * x
 
 
