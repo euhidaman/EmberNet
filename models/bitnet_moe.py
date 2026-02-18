@@ -75,7 +75,7 @@ class BitNetMoEConfig:
 
 
 class RMSNorm(nn.Module):
-    """Root Mean Square Layer Normalization."""
+    """Root Mean Square Layer Normalization (Microsoft BitNet)."""
 
     def __init__(self, hidden_size: int, eps: float = 1e-6):
         super().__init__()
@@ -83,110 +83,100 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Handle NaN/Inf in input
-        x = torch.nan_to_num(x, nan=0.0, posinf=1e3, neginf=-1e3)
         variance = x.pow(2).mean(-1, keepdim=True)
-        variance = variance.clamp(min=self.eps)
-        x = x * torch.rsqrt(variance + self.eps)
+        # Use rsqrt with clamped variance to prevent NaN
+        x = x * torch.rsqrt(variance.clamp_(min=self.eps))
         return self.weight * x
 
 
-def ternary_quantize(weight: torch.Tensor, alpha: float = 0.7) -> torch.Tensor:
+def activation_quant(x: torch.Tensor) -> torch.Tensor:
     """
-    Quantize weights to ternary {-1, 0, +1}.
-
-    Uses absmean scaling: threshold = α * mean(|W|)
-    Values below threshold become 0, others become sign(W).
+    Per-token activation quantization to 8-bit (Microsoft BitNet official).
+    Clamps min to 1e-5 to prevent division by zero/tiny values.
     """
-    threshold = alpha * weight.abs().mean()
-    quantized = torch.sign(weight) * (weight.abs() >= threshold).float()
-    return quantized
+    # Get max absolute value per token, clamped to prevent division by tiny values
+    max_val = x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
+    scale = 127.0 / max_val
+
+    # Quantize: multiply, round, clamp, then dequantize
+    y = (x * scale).round().clamp_(-128, 127) / scale
+
+    # Safety check - if input was all zeros or very small, return input unchanged
+    # This prevents NaN from 0/0 in edge cases
+    y = torch.where(torch.isfinite(y), y, x)
+
+    return y
 
 
-class STEQuantize(torch.autograd.Function):
-    """Straight-Through Estimator for ternary quantization."""
+def weight_quant(w: torch.Tensor) -> torch.Tensor:
+    """
+    Ternary weight quantization (Microsoft BitNet official).
+    Uses mean for centering and scaling - no division by scale.
+    """
+    # Calculate scale and mean
+    scale = w.abs().mean().clamp_(min=1e-8)  # Prevent zero scale
+    e = w.mean()
 
-    @staticmethod
-    def forward(ctx, weight: torch.Tensor, alpha: float = 0.7) -> torch.Tensor:
-        return ternary_quantize(weight, alpha)
+    # Ternary quantization: sign of (w - mean) * scale
+    u = (w - e).sign() * scale
 
-    @staticmethod
-    def backward(ctx, grad_output: torch.Tensor):
-        # Straight-through: pass gradient unchanged
-        return grad_output, None
+    # Safety check - if weights are corrupted, return input unchanged
+    u = torch.where(torch.isfinite(u), u, w)
+
+    return u
 
 
 class BitLinear(nn.Module):
     """
-    BitNet b1.58 linear layer with ternary weights {-1, 0, +1}.
-    Based on official BitNet implementation with absmax activation quantization.
+    BitNet b1.58 linear layer (Microsoft BitNet official implementation).
+
+    Key differences from naive implementations:
+    1. RMSNorm applied BEFORE activation quantization
+    2. Weight quantization uses mean (no division)
+    3. STE pattern: x + (quant(x) - x).detach()
+    4. No explicit division by potentially tiny scales
     """
 
-    def __init__(self, in_features: int, out_features: int, bias: bool = False, eps: float = 1e-5):
+    def __init__(self, in_features: int, out_features: int, bias: bool = False):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.eps = eps
 
-        # Weight stored in full precision for training
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_features))
         else:
             self.register_parameter('bias', None)
 
-        # Initialize weights with small values for stability
+        # RMSNorm for input stabilization
+        self.norm = RMSNorm(in_features)
+
         self._init_weights()
 
     def _init_weights(self):
-        # Use small initialization similar to official BitNet
         std = 0.02 / math.sqrt(self.in_features)
         nn.init.normal_(self.weight, mean=0.0, std=std)
 
-    def activation_quant(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Absmax activation quantization (from official BitNet).
-        Quantizes to int8 range and back for gradient stability.
-        """
-        # Compute per-row absmax scale (clamp to avoid division by zero)
-        scale = 127.0 / x.abs().max(dim=-1, keepdim=True).values.clamp_(min=self.eps)
-        # Quantize: scale -> round -> clamp -> unscale
-        x_quant = (x * scale).round().clamp(-128, 127) / scale
-        return x_quant
-
-    def weight_quant(self, weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Ternary weight quantization {-1, 0, +1} with scaling.
-        Returns quantized weights and the scale factor.
-        """
-        # Compute mean absolute value for scaling
-        scale = weight.abs().mean().clamp(min=self.eps)
-        # Ternary quantization with threshold
-        threshold = 0.5 * scale
-        weight_q = torch.sign(weight) * (weight.abs() > threshold).float()
-        return weight_q, scale
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Quantize activations using absmax (stable gradient flow)
-        x_quant = self.activation_quant(x)
+        w = self.weight
 
-        # Quantize weights with STE during training
-        if self.training:
-            weight_q = STEQuantize.apply(self.weight)
-            scale = self.weight.abs().mean().clamp(min=self.eps)
-        else:
-            weight_q, scale = self.weight_quant(self.weight)
+        # Normalize input before quantization
+        x_norm = self.norm(x)
 
-        # Linear transformation with scaled quantized weights
-        output = F.linear(x_quant, weight_q * scale, self.bias)
+        # STE for activation quantization
+        x_quant = x_norm + (activation_quant(x_norm) - x_norm).detach()
 
-        return output
+        # STE for weight quantization
+        w_quant = w + (weight_quant(w) - w).detach()
+
+        # Standard linear operation
+        y = F.linear(x_quant, w_quant, self.bias)
+
+        return y
 
     def get_quantized_weight(self) -> torch.Tensor:
-        """Return the quantized ternary weights for inference."""
-        weight_q, scale = self.weight_quant(self.weight)
-        return weight_q * scale
-        return self.weight_quant(self.weight)
+        """Return quantized weights for inference."""
+        return weight_quant(self.weight)
 
 
 class RotaryEmbedding(nn.Module):

@@ -109,8 +109,15 @@ class BitNetStableOptimizer:
         for param in self.param_groups[0]['params']:
             if param.grad is None:
                 continue
+
+            # Check for NaN/Inf gradients - clamp instead of skipping
             if not torch.isfinite(param.grad).all():
-                continue
+                # Replace NaN/Inf with zeros to prevent corruption
+                param.grad = torch.where(
+                    torch.isfinite(param.grad),
+                    param.grad,
+                    torch.zeros_like(param.grad)
+                )
 
             grad = param.grad.data
             state = self.state[param]
@@ -577,24 +584,33 @@ class Trainer:
         )
         loss = outputs["loss"]
 
-        # Check logits for NaN
+        # Check logits for NaN - FAIL FAST instead of skipping
         if "logits" in outputs and outputs["logits"] is not None:
             logits = outputs["logits"]
             if torch.isnan(logits).any() or torch.isinf(logits).any():
-                print("WARNING: NaN/Inf in logits, skipping batch")
-                self.optimizer.zero_grad()
-                return {"loss": 0.0, "skipped": True}
+                print("\n" + "="*70)
+                print("TRAINING ERROR: NaN/Inf detected in logits!")
+                print("This indicates an upstream problem, likely:")
+                print("  1. Bad learning rate (too high)")
+                print("  2. Exploding activations in vision encoder or projector")
+                print("  3. Corrupted input data")
+                print("="*70 + "\n")
+                raise ValueError("NaN/Inf in logits - see above for likely causes")
 
-        # Check for None, NaN/Inf loss
+        # Check for None, NaN/Inf loss - FAIL FAST
         if loss is None:
-            print("WARNING: loss is None, skipping batch")
-            self.optimizer.zero_grad()
-            return {"loss": 0.0, "skipped": True}
+            raise ValueError("Loss is None - model forward() returned None loss")
 
         if torch.isnan(loss) or torch.isinf(loss):
-            print("WARNING: NaN/Inf loss detected, skipping batch")
-            self.optimizer.zero_grad()
-            return {"loss": 0.0, "skipped": True}
+            print("\n" + "="*70)
+            print("TRAINING ERROR: NaN/Inf detected in loss!")
+            print("This indicates an upstream problem, likely:")
+            print("  1. Bad learning rate (too high)")
+            print("  2. Corrupted targets or labels")
+            print("  3. Division by zero in loss calculation")
+            print(f"Loss value: {loss}")
+            print("="*70 + "\n")
+            raise ValueError("NaN/Inf in loss - see above for likely causes")
 
         # Optional expert supervision (Stage 2 only)
         if (
@@ -635,14 +651,21 @@ class Trainer:
         else:
             loss.backward()
 
-        # Check gradients for NaN/Inf and apply emergency fix if needed
+        # Check gradients for NaN/Inf - FAIL FAST
         is_finite, bad_param = check_gradients_finite(self.model)
         if not is_finite:
-            print(f"WARNING: NaN/Inf gradient in {bad_param}, applying emergency fix")
-            emergency_gradient_fix(self.model)
-            if self.bitnet_scaler is not None:
-                self.bitnet_scaler.update(found_inf=True)
-            return {"loss": loss.item() * self.config.gradient_accumulation_steps, "skipped": False, "grad_fixed": True}
+            print("\n" + "="*70)
+            print(f"TRAINING ERROR: NaN/Inf gradient in parameter: {bad_param}")
+            print("This indicates an upstream problem, likely:")
+            print("  1. Learning rate too high")
+            print("  2. Numerical instability in model (e.g., division by zero)")
+            print("  3. Exploding activations")
+            print("\nSuggested fixes:")
+            print("  - Lower learning rate (try 1e-5 or 1e-6)")
+            print("  - Check input data for NaN/Inf")
+            print("  - Add gradient clipping (already enabled)")
+            print("="*70 + "\n")
+            raise ValueError(f"NaN/Inf gradient in {bad_param} - see above for fixes")
 
         if self.bitnet_scaler is not None:
             self.bitnet_scaler.update(found_inf=False)
@@ -840,13 +863,6 @@ class Trainer:
                 # Training step
                 metrics = self._train_step(batch)
 
-                # Skip if batch was invalid (NaN/Inf)
-                if metrics.get("skipped", False):
-                    # Still count as a step for accumulation purposes
-                    if (step + 1) % self.config.gradient_accumulation_steps == 0:
-                        self.optimizer.zero_grad()
-                        self.global_step += 1
-                    continue
 
                 epoch_loss += metrics["loss"]
                 epoch_steps += 1
