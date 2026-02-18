@@ -141,6 +141,32 @@ class BitNetStableOptimizer:
 
             param.data.add_(update.to(param.dtype), alpha=-step_size)
 
+    def state_dict(self):
+        """Return optimizer state for checkpointing."""
+        return {
+            'global_step': self.global_step,
+            'lr': self.lr,
+            'phase1_steps': self.phase1_steps,
+            'phase2_lr_factor': self.phase2_lr_factor,
+            'warmup_steps': self.warmup_steps,
+            'weight_decay': self.weight_decay,
+            'grad_clip': self.grad_clip,
+            'betas': self.betas,
+            'eps': self.eps,
+        }
+
+    def load_state_dict(self, state_dict):
+        """Load optimizer state from checkpoint."""
+        self.global_step = state_dict.get('global_step', 0)
+        self.lr = state_dict.get('lr', self.lr)
+        self.phase1_steps = state_dict.get('phase1_steps', self.phase1_steps)
+        self.phase2_lr_factor = state_dict.get('phase2_lr_factor', self.phase2_lr_factor)
+        self.warmup_steps = state_dict.get('warmup_steps', self.warmup_steps)
+        self.weight_decay = state_dict.get('weight_decay', self.weight_decay)
+        self.grad_clip = state_dict.get('grad_clip', self.grad_clip)
+        self.betas = state_dict.get('betas', self.betas)
+        self.eps = state_dict.get('eps', self.eps)
+
 
 class BitNetGradientScaler:
     """Custom gradient scaler for BitNet b1.58 to prevent underflow."""
