@@ -287,8 +287,6 @@ class EmberNetVLM(nn.Module):
                 image_embeds = flat_embeds.view(
                     batch_size, num_images * flat_embeds.shape[1], -1
                 )
-                    batch_size, num_images * flat_embeds.shape[1], -1
-                )
         else:
             image_embeds = None
 
