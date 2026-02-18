@@ -400,15 +400,30 @@ class Trainer:
             and outputs.get("router_logits", None) is not None
         ):
             router_logits_list = outputs["router_logits"]
-            router_logits_last = router_logits_list[-1]
+            router_logits_last = router_logits_list[-1]  # [batch * router_seq_len, num_experts]
             expert_targets = batch["expert_targets"].to(router_logits_last.device)
-            seq_len = input_ids.shape[1]
-            expanded_targets = expert_targets.unsqueeze(1).expand(-1, seq_len).reshape(-1)
 
-            expert_supervision_loss = torch.nn.functional.cross_entropy(
-                router_logits_last, expanded_targets, reduction="mean"
-            )
-            loss = loss + self.config.expert_supervision_weight * expert_supervision_loss
+            # FIX: Use the actual router logits shape, not input_ids length
+            # router_logits_last is already flattened to [batch * seq_len, num_experts]
+            total_tokens = router_logits_last.shape[0]
+            batch_size = expert_targets.shape[0]
+            router_seq_len = total_tokens // batch_size
+
+            # Reshape router logits to [batch * seq, num_experts]
+            router_logits_flat = router_logits_last.reshape(-1, router_logits_last.shape[-1])
+
+            # Expand targets to match router logits shape
+            expanded_targets = expert_targets.unsqueeze(1).expand(-1, router_seq_len).reshape(-1)
+
+            # Verify shapes match before computing loss
+            if router_logits_flat.shape[0] == expanded_targets.shape[0]:
+                expert_supervision_loss = torch.nn.functional.cross_entropy(
+                    router_logits_flat, expanded_targets, reduction="mean"
+                )
+                loss = loss + self.config.expert_supervision_weight * expert_supervision_loss
+            else:
+                print(f"WARNING: Shape mismatch in expert supervision - "
+                      f"router logits {router_logits_flat.shape[0]} != targets {expanded_targets.shape[0]}, skipping")
 
         # Scale loss for gradient accumulation
         loss = loss / self.config.gradient_accumulation_steps

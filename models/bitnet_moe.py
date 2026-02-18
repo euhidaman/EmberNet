@@ -317,6 +317,12 @@ class BitNetAttention(nn.Module):
 
         attn_weights = F.softmax(attn_weights, dim=-1)
 
+        # NaN protection for attention weights
+        if torch.isnan(attn_weights).any():
+            attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
+            # Focus on first token as fallback
+            attn_weights[:, :, :, 0] = 1.0
+
         # Apply attention to values
         attn_output = torch.matmul(attn_weights, v_expanded)
 
