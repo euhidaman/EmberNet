@@ -536,6 +536,9 @@ class BitNetMoEDecoder(nn.Module):
             for i in range(config.num_layers)
         ])
 
+        # Gradient checkpointing flag (set by trainer to save activation memory)
+        self.gradient_checkpointing = False
+
         # Output head
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -638,10 +641,24 @@ class BitNetMoEDecoder(nn.Module):
         # Forward through layers
         for i, layer in enumerate(self.layers):
             past_kv = past_key_values[i] if past_key_values is not None else None
-            hidden_states, router_logits, present_kv = layer(
-                hidden_states, causal_mask,
-                past_key_value=past_kv, use_cache=use_cache
-            )
+            if self.gradient_checkpointing and self.training and not use_cache:
+                from torch.utils.checkpoint import checkpoint
+                # Wrap layer call for gradient checkpointing; past_kv must be None
+                def make_layer_fn(l):
+                    def layer_fn(h, m):
+                        out_h, out_r, _ = l(h, m, past_key_value=None, use_cache=False)
+                        return out_h, out_r
+                    return layer_fn
+                hidden_states, router_logits = checkpoint(
+                    make_layer_fn(layer), hidden_states, causal_mask,
+                    use_reentrant=False
+                )
+                present_kv = None
+            else:
+                hidden_states, router_logits, present_kv = layer(
+                    hidden_states, causal_mask,
+                    past_key_value=past_kv, use_cache=use_cache
+                )
             if return_router_logits:
                 all_router_logits.append(router_logits)
             if use_cache:

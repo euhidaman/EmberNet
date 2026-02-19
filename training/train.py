@@ -287,6 +287,9 @@ class TrainingConfig:
     use_adaptive_grad_clip: bool = True
     grad_clip_percentile: float = 0.95
 
+    # Gradient checkpointing (reduces activation memory at cost of recompute)
+    use_gradient_checkpointing: bool = False
+
     # Token masking (future use)
     token_masking_prob: float = 0.0
 
@@ -334,6 +337,7 @@ class TrainingConfig:
             self.train_router = True
             self.train_experts = True
             self.max_grad_norm = 1.0
+            self.use_gradient_checkpointing = True  # Reduce activation memory for full decoder training
 
 
 class Trainer:
@@ -371,6 +375,11 @@ class Trainer:
             for p in self.ema_model.parameters():
                 p.requires_grad = False
             print("✓ EMA model initialized")
+
+        # Apply gradient checkpointing if configured
+        if config.use_gradient_checkpointing:
+            self.model.decoder.gradient_checkpointing = True
+            print("✓ Gradient checkpointing enabled for decoder")
 
         # Apply parameter freezing based on stage
         self._setup_parameter_freezing()
@@ -1000,9 +1009,18 @@ class Trainer:
 def run_training(args, stage: int, resume_from: Optional[str] = None):
     """Run training for a single stage. Returns the final checkpoint path."""
 
-    # Determine device
+    # Determine device - pick GPU with most free memory when auto
     if args.device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            best_gpu, best_free = 0, 0
+            for i in range(torch.cuda.device_count()):
+                free, _ = torch.cuda.mem_get_info(i)
+                if free > best_free:
+                    best_free, best_gpu = free, i
+            device = f"cuda:{best_gpu}"
+            print(f"Auto-selected GPU {best_gpu} ({best_free / 1024**3:.1f} GB free)")
+        else:
+            device = "cpu"
     else:
         device = args.device
 
