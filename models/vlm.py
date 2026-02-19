@@ -386,8 +386,13 @@ class EmberNetVLM(nn.Module):
 
             flat_logits = flat_logits.clamp(-50.0, 50.0)
 
-            loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.0)
-            loss = loss_fct(flat_logits, flat_labels)
+            # Guard: if all labels are masked (-100), CE returns NaN. Skip and return 0.
+            num_valid = (flat_labels != -100).sum()
+            if num_valid == 0:
+                loss = torch.tensor(0.0, device=flat_logits.device, requires_grad=True)
+            else:
+                loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.0)
+                loss = loss_fct(flat_logits, flat_labels)
 
             # Check for NaN loss - fail fast if it occurs (indicates upstream problem)
             if torch.isnan(loss) or torch.isinf(loss):

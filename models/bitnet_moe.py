@@ -614,10 +614,23 @@ class BitNetMoEDecoder(nn.Module):
 
         # Apply attention mask if provided
         if attention_mask is not None:
-            # Expand attention mask
-            extended_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-            extended_mask = (1.0 - extended_mask.float()) * float('-inf')
-            causal_mask = causal_mask + extended_mask[:, :, :, -total_len:]
+            # Build additive mask: 0 for valid positions, -inf for padding.
+            # CRITICAL: Do NOT use (1 - mask) * -inf because 0.0 * inf = NaN (IEEE 754).
+            # Instead use masked_fill which directly assigns -inf without any multiply.
+            pad_positions = (attention_mask == 0)  # [B, seq_len]
+            pad_positions = pad_positions.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, seq_len]
+            ext = torch.zeros(
+                batch_size, 1, 1, total_len,
+                dtype=hidden_states.dtype, device=hidden_states.device
+            )
+            # Align: attention_mask covers the current seq_len; if total_len > seq_len
+            # (KV cache), the earlier positions are always valid.
+            offset = total_len - pad_positions.shape[-1]
+            if offset > 0:
+                ext[:, :, :, offset:] = ext[:, :, :, offset:].masked_fill(pad_positions, float('-inf'))
+            else:
+                ext = ext.masked_fill(pad_positions[:, :, :, -total_len:], float('-inf'))
+            causal_mask = causal_mask + ext
 
         all_router_logits = []
         present_key_values = [] if use_cache else None
