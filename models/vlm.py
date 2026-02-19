@@ -114,7 +114,7 @@ class EmberNetVLM(nn.Module):
 
         # Build language decoder
         decoder_config = BitNetMoEConfig(
-            vocab_size=self.config.vocab_size + 10,  # Extra tokens for special tokens
+            vocab_size=self.config.vocab_size,
             hidden_size=self.config.hidden_size,
             intermediate_size=self.config.intermediate_size,
             num_layers=self.config.num_layers,
@@ -127,10 +127,6 @@ class EmberNetVLM(nn.Module):
             router_aux_loss_coef=self.config.router_aux_loss_coef,
         )
         self.decoder = BitNetMoEDecoder(decoder_config)
-
-        # Initialize decoder embeddings with very small values for stability
-        if hasattr(self.decoder, 'embed_tokens'):
-            nn.init.normal_(self.decoder.embed_tokens.weight, mean=0.0, std=0.001)
 
         # Image token embedding placeholder
         self.image_newline = nn.Parameter(
@@ -148,26 +144,13 @@ class EmberNetVLM(nn.Module):
         self._tokenizer = None
 
     def _initialize_decoder(self):
-        """Initialize decoder with small weights to prevent NaN during Stage 1."""
-        from .bitnet_moe import BitLinear, RMSNorm
-
+        """Decoder is already properly initialized by its own _init_weights method.
+        We only ensure LayerNorm/bias are correct (RMSNorm and BitLinear self-initialize)."""
         for name, module in self.decoder.named_modules():
-            if isinstance(module, BitLinear):
-                continue
-            if isinstance(module, RMSNorm):
-                continue
-
-            if isinstance(module, nn.Linear):
-                if module.weight is not None and module.weight.dim() >= 2:
-                    nn.init.normal_(module.weight, mean=0.0, std=0.001)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.LayerNorm):
+            if isinstance(module, nn.LayerNorm):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
-            if isinstance(module, nn.Embedding):
-                nn.init.normal_(module.weight, mean=0.0, std=0.001)
-        print("✓ Decoder initialized with small weights for stability")
+        print("✓ Decoder initialized")
 
     @property
     def tokenizer(self):

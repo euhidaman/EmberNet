@@ -221,15 +221,23 @@ def emergency_gradient_fix(model: nn.Module):
 
 
 def initialize_bitnet_weights(model: nn.Module):
-    """Proper initialization for BitNet b1.58 ternary weights."""
+    """Proper initialization for BitNet b1.58 ternary weights.
+    Only re-initializes BitLinear layers, preserving pretrained encoder
+    and other components that self-initialize (RMSNorm, Embeddings, etc.)."""
+    from models.bitnet_moe import BitLinear
+
+    count = 0
     for name, module in model.named_modules():
-        if hasattr(module, 'weight') and module.weight is not None:
-            if module.weight.dim() >= 2:
-                fan_in = module.weight.size(1)
-                std = math.sqrt(2.0 / fan_in) * 0.5
-                nn.init.normal_(module.weight, mean=0.0, std=std)
-        if hasattr(module, 'bias') and module.bias is not None:
-            nn.init.zeros_(module.bias)
+        # Skip pretrained vision encoder backbone entirely
+        if "vision_encoder.encoder" in name:
+            continue
+        # Only initialize BitLinear layers (core BitNet quantized layers)
+        if isinstance(module, BitLinear):
+            fan_in = module.weight.size(1)
+            std = math.sqrt(2.0 / fan_in) * 0.5
+            nn.init.normal_(module.weight, mean=0.0, std=std)
+            count += 1
+    print(f"✓ Initialized {count} BitLinear layers with BitNet-specific weights")
 
 
 # =============================================================================
