@@ -1136,7 +1136,13 @@ def create_dataloaders(
                 max_samples=max_samples_per_dataset,
             )
 
-        train_dataset = MixedDomainDataset(datasets, domains)
+        # In trial mode, use only the actual available samples instead of the
+        # default 10,000 (which inflates 34 real samples into 10k repeated ones).
+        if max_samples_per_dataset is not None:
+            total_mixed = sum(len(d) for d in datasets.values())
+        else:
+            total_mixed = 10000
+        train_dataset = MixedDomainDataset(datasets, domains, total_samples=total_mixed)
         val_dataset = None  # Simplified for stage 2
 
     train_loader = DataLoader(
