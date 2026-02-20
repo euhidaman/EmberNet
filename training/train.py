@@ -149,7 +149,9 @@ class BitNetStableOptimizer:
             master_param.add_(update, alpha=-step_size)
             
             # Anti-drift: prevent master parameters from exploding
-            master_param.clamp_(-100.0, 100.0)
+            # Tightened to [-3, 3] so that weights stay close to quantization boundaries,
+            # allowing the model to flip between -1, 0, and 1 more responsively.
+            master_param.clamp_(-3.0, 3.0)
             
             # Sync model parameters with master parameters (cast back to original dtype)
             param.data.copy_(master_param.to(param.dtype))

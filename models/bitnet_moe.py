@@ -95,17 +95,22 @@ class RMSNorm(nn.Module):
 
 def activation_quant(x: torch.Tensor) -> torch.Tensor:
     """
-    Per-token activation quantization to 8-bit (Microsoft BitNet official).
-    Hardened to handle inf/nan by mapping them to finite boundaries.
+    4-bit signed activation quantization (Range: [-8, 7]).
+    Strictly constrained for extreme efficiency as requested.
     """
     dtype = x.dtype
     x = x.float()
-    # Neutralize non-finite values before they cause NaNs in scaling
-    x = torch.nan_to_num(x, nan=0.0, posinf=128.0, neginf=-128.0)
-    x = x.clamp(-128.0, 128.0)
-    max_val = x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
-    scale = 127.0 / max_val
-    y = (x * scale).round().clamp_(-128, 127) / scale
+    # Neutralize non-finite values
+    x = torch.nan_to_num(x, nan=0.0, posinf=8.0, neginf=-8.0)
+    
+    # 4-bit signed uses a scale to fit values into [-8, 7]
+    # We use a slightly more aggressive epsilon (1e-4) to ensure quantization
+    # doesn't collapse on tiny noise.
+    max_val = x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-4)
+    scale = 7.0 / max_val
+    
+    # Quantize: Round to nearest integer and clamp to 4-bit boundaries
+    y = (x * scale).round().clamp_(-8, 7) / (scale + 1e-9)
     return y.to(dtype)
 
 
@@ -349,16 +354,23 @@ class BitNetExpert(nn.Module):
         self.gate_proj = BitLinear(hidden_size, intermediate_size)
         self.up_proj = BitLinear(hidden_size, intermediate_size)
         self.down_proj = BitLinear(intermediate_size, hidden_size)
+        # Added intermediate normalization to stabilize SwiGLU 
+        # when using ternary weights and 4-bit activations
+        self.norm = RMSNorm(intermediate_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # SwiGLU activation with stability
         gate = self.gate_proj(x)
         up = self.up_proj(x)
-        # Clamp before activation to prevent overflow
+        
+        # Stability clamping
         gate = gate.clamp(-20, 20)
         hidden = F.silu(gate) * up
-        # Clamp hidden states
-        hidden = hidden.clamp(-1e3, 1e3)
+        
+        # Normalize and re-quantize activations inside the expert layer
+        # This prevents variance explosion before the final projection
+        hidden = self.norm(hidden)
+        
         output = self.down_proj(hidden)
         return output
 
