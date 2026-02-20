@@ -456,6 +456,11 @@ class Trainer:
         self.best_loss = float('inf')
         self.training_log: List[Dict] = []
 
+        # Extended W&B tracking state
+        self._last_grad_norm: float = 0.0
+        self._total_clipped:  int   = 0
+        self._total_opt_steps: int  = 0
+
     def _setup_parameter_freezing(self):
         """Freeze parameters based on training stage."""
         config = self.config
@@ -703,9 +708,22 @@ class Trainer:
         if self.bitnet_scaler is not None:
             self.bitnet_scaler.update(found_inf=False)
 
-        return {
+        result: Dict = {
             "loss": loss.item() * self.config.gradient_accumulation_steps,
         }
+
+        # Capture expert routing probabilities for W&B logging
+        if (
+            self.config.stage == 2
+            and outputs.get("router_logits") is not None
+        ):
+            with torch.no_grad():
+                rl_last = outputs["router_logits"][-1]
+                flat = rl_last.reshape(-1, rl_last.shape[-1]).float()
+                probs = torch.softmax(flat, dim=-1).mean(dim=0)
+                result["expert_probs"] = probs.cpu().numpy()
+
+        return result
 
     def _optimizer_step(self):
         """Perform optimizer step with gradient clipping and unscaling."""
@@ -731,12 +749,18 @@ class Trainer:
                 if grads:
                     all_grads = torch.cat(grads)
                     clip_val = torch.quantile(all_grads, self.config.grad_clip_percentile)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_val.item())
+                    raw_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_val.item())
+                    self._last_grad_norm = raw_norm.item()
+                    if self._last_grad_norm > clip_val.item():
+                        self._total_clipped += 1
             else:
-                torch.nn.utils.clip_grad_norm_(
+                raw_norm = torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
                     self.config.max_grad_norm
                 )
+                self._last_grad_norm = raw_norm.item()
+                if self._last_grad_norm > self.config.max_grad_norm:
+                    self._total_clipped += 1
 
             if self.scaler is not None:
                 self.scaler.step(self.optimizer)
@@ -751,6 +775,7 @@ class Trainer:
                 self.scheduler.step()
 
         # EMA update
+        self._total_opt_steps += 1
         self._update_ema()
 
     def _update_ema(self):
@@ -933,7 +958,70 @@ class Trainer:
                             "train/lr": lr,
                             "train/epoch": epoch + 1,
                             "train/step": self.global_step,
+                            "train/stage": self.config.stage,
+                            # Gradient stats
+                            "train/grad_norm": self._last_grad_norm,
+                            "train/grad_clipped_ratio": (
+                                self._total_clipped / max(1, self._total_opt_steps)
+                            ),
                         }
+
+                        # -- Expert routing metrics (Stage 2 only) --
+                        expert_domains = [
+                            "vision_ocr", "vision_diagram",
+                            "code_math_chart", "code_math_formula",
+                            "spatial_scene", "spatial_reasoning",
+                            "agentic_knowledge", "agentic_reasoning",
+                        ]
+                        if "expert_probs" in metrics:
+                            import numpy as np
+                            eprobs = metrics["expert_probs"]
+                            for i, name in enumerate(expert_domains):
+                                if i < len(eprobs):
+                                    log_dict[f"expert/selection_freq_{name}"] = float(eprobs[i])
+                            # Load imbalance: coefficient of variation
+                            cv = float(np.std(eprobs) / max(np.mean(eprobs), 1e-8))
+                            log_dict["expert/load_imbalance"] = cv
+
+                        # -- Every-10-steps metrics --
+                        if self.global_step % 10 == 0:
+                            # Per-expert specialization index (entropy-based)
+                            if "expert_probs" in metrics:
+                                import numpy as np
+                                eprobs = metrics["expert_probs"]
+                                for i, name in enumerate(expert_domains):
+                                    if i < len(eprobs):
+                                        p = float(eprobs[i])
+                                        # spec index >0 means expert is preferred vs uniform
+                                        spec = p - (1.0 / len(eprobs))
+                                        log_dict[f"expert/specialization_index_{name}"] = spec
+
+                            # Weight quantization stats (sample a few decoder layers)
+                            try:
+                                import numpy as np
+                                weight_mags = []
+                                sparsity_vals = []
+                                for n, p in self.model.named_parameters():
+                                    if "weight" in n and p.dtype in (torch.float32, torch.float16, torch.bfloat16):
+                                        w = p.detach().float()
+                                        weight_mags.append(w.abs().mean().item())
+                                        sparsity_vals.append((w == 0).float().mean().item())
+                                if weight_mags:
+                                    log_dict["quantization/weight_magnitude_mean"] = float(np.mean(weight_mags))
+                                    log_dict["quantization/weight_sparsity_mean"]  = float(np.mean(sparsity_vals))
+                            except Exception:
+                                pass
+
+                        # -- Every-1000-steps metrics: param update magnitudes --
+                        if self.global_step % 1000 == 0:
+                            try:
+                                for pname, param in self.model.named_parameters():
+                                    if param.grad is not None and "weight" in pname:
+                                        upd_mag = (param.grad.detach().abs().mean().item())
+                                        safe_key = pname.replace(".", "/")
+                                        log_dict[f"params/update_magnitude_{safe_key}"] = upd_mag
+                            except Exception:
+                                pass
 
                         self.training_log.append({
                             "step": self.global_step,
@@ -957,9 +1045,12 @@ class Trainer:
 
                         # Log validation to wandb
                         if self.use_wandb:
+                            import math
+                            val_ppl = math.exp(min(val_loss, 20.0))  # cap to avoid overflow
                             wandb.log({
                                 "val/loss": val_loss,
                                 "val/best_loss": self.best_loss,
+                                "val/perplexity": val_ppl,
                             }, step=self.global_step)
 
                         self.model.train()

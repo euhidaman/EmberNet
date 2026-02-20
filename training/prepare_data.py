@@ -125,46 +125,44 @@ DATASETS = {
     # NOTE: Stage 1 trains the PROJECTOR, not the experts
     # =========================================================================
 
-    # NOTE: Using LLaVA-Instruct-150K with images included (easier for training)
+    # NOTE: Using alternative high-quality instruction datasets that don't require loading scripts
     "llava_instruct_150k": {
         "hf_name": "adamo1139/llava-instruct-150k-with-images",
-        "config": None,
+        "config": "default",
         "description": "LLaVA-Instruct-150K with images included",
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
         "preferred_download": "snapshot",
-        "extract_archives": True,
         "size_gb": 5.0,
         "priority": "critical",
         "samples": "150K",
     },
     "sharegpt4v": {
         "hf_name": "Lin-Chen/ShareGPT4V",
-        "config": None,
+        "config": "ShareGPT4V",
         "description": "Detailed image descriptions from GPT-4V",
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
-        "preferred_download": "snapshot",
+        "download_images_from_urls": True,
+        "image_url_field": "image",
         "size_gb": 8.0,
         "priority": "critical",
         "samples": "100K",
-        "note": "Raw JSON files with image URLs - requires manual image download or use images from other sources"
     },
     "allava_instruct": {
         "hf_name": "FreedomIntelligence/ALLaVA-4V",
-        "config": None,
+        "config": "allava_vflan",
         "description": "Diverse visual instruction tuning data",
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
-        "preferred_download": "snapshot",
-        "extract_archives": True,
+        "download_images_from_urls": True,
+        "image_url_field": "image",
         "size_gb": 6.0,
         "priority": "recommended",
         "samples": "700K",
-        "note": "Contains allava_laion and allava_vflan folders with JSON+images"
     },
     # NOTE: COCO captions from HuggingFaceM4/COCO
     "coco_captions": {
@@ -188,11 +186,9 @@ DATASETS = {
         "expert": "Projector (not experts)",
         "download_images_from_urls": True,
         "image_url_field": "image_url",
-        "allow_missing_images": True,
         "size_gb": 12.0,
         "priority": "optional",
         "samples": "3.3M",
-        "note": "Many URLs are expired - partial download expected (~70% success rate)"
     },
 
     # =========================================================================
@@ -265,17 +261,16 @@ DATASETS = {
 
     "chartqa": {
         "hf_name": "ahmed-masry/ChartQA",
-        "config": None,
+        "config": "default",
         "description": "Chart understanding - bar, line, pie charts",
         "stage": 2,
         "domain": "code_math_chart",
         "expert": "Expert 2: code_math_chart",
-        "preferred_download": "snapshot",
-        "extract_archives": True,
+        "download_images_from_urls": True,
+        "image_url_field": "imgname",
         "size_gb": 1.0,
         "priority": "critical",
         "samples": "32K",
-        "note": "Use snapshot download - images stored in ZIP file at repo root"
     },
     # NOTE: PlotQA alternative path (lmms-lab version doesn't exist)
     "plotqa": {
@@ -343,17 +338,15 @@ DATASETS = {
     },
     "gqa": {
         "hf_name": "lmms-lab/GQA",
-        "config": "default",
+        "config": "train_balanced_instructions",
         "description": "Scene graph based visual reasoning",
         "stage": 2,
         "domain": "spatial_reasoning",
         "size_gb": 15.0,
         "priority": "recommended",
-        "samples": "1.1M",
+        "samples": "22M",
         "expert": "Expert 5: spatial_reasoning",
         "requires_coco_images": True,
-        "coco_splits": ["gqa"],
-        "note": "Images are from Visual Genome dataset - downloaded automatically"
     },
     # NOTE: Visual Genome doesn't exist as standalone in this format
     # "visual_genome": {
@@ -369,16 +362,16 @@ DATASETS = {
     # },
     # NOTE: Visual Genome - Using ranjaykrishna/visual_genome (region_descriptions_v1.2.0)
     "visual_genome_region": {
-        "hf_name": "visual_genome",
-        "config": "region_descriptions_v1.2.0",
+        "hf_name": "ranjaykrishna/visual_genome",
+        "config": "region_descriptions",
         "description": "Dense region descriptions and relationships",
         "stage": 2,
         "domain": "spatial_scene",
         "expert": "Expert 4: spatial_scene",
+        "preferred_download": "snapshot",
         "size_gb": 10.0,
         "priority": "optional",
         "samples": "108K",
-        "note": "Official Visual Genome dataset with region descriptions"
     },
     "okvqa": {
         "hf_name": "lmms-lab/OK-VQA",
@@ -448,21 +441,31 @@ DATASETS = {
         "priority": "recommended",
         "samples": "107K",
     },
-    # NOTE: VSR has completely broken image URLs (0% download success)
-    # Commented out - use other spatial reasoning datasets instead
-    # "vsr": {
-    #     "hf_name": "cambridgeltl/vsr_random",
-    #     "config": "default",
-    #     "description": "Visual Spatial Reasoning dataset",
-    #     "stage": 2,
-    #     "domain": "spatial_reasoning",
-    #     "expert": "Expert 5: spatial_reasoning",
-    #     "download_images_from_urls": True,
-    #     "image_url_field": "image_url",
-    #     "size_gb": 0.5,
-    #     "priority": "optional",
-    #     "samples": "10K",
-    # },
+    "vsr": {
+        "hf_name": "cambridgeltl/vsr_random",
+        "config": "default",
+        "description": "Visual Spatial Reasoning dataset",
+        "stage": 2,
+        "domain": "spatial_reasoning",
+        "expert": "Expert 5: spatial_reasoning",
+        "download_images_from_urls": True,
+        "image_url_field": "image",
+        "size_gb": 0.5,
+        "priority": "optional",
+        "samples": "10K",
+    },
+    "winoground": {
+        "hf_name": "facebook/winoground",
+        "config": "default",
+        "description": "Visio-linguistic compositional reasoning",
+        "stage": 2,
+        "domain": "agentic_reasoning",
+        "expert": "Expert 7: agentic_reasoning",
+        "size_gb": 0.2,
+        "priority": "optional",
+        "samples": "800",
+        "requires_hf_token": True,
+    },
     # NOTE: VCR is not available on HuggingFace Hub; requires manual download.
     # "visual_commonsense": {
     #     "hf_name": "visual_commonsense",
@@ -499,21 +502,6 @@ DATASETS = {
     #     "size_gb": 18.0,
     #     "priority": "optional",
     #     "samples": "850K",
-    # },
-
-    # NOTE: Winoground - REMOVED (requires HF token + gated access, only 400 samples, not worth complexity)
-    # Small eval-only dataset, not useful for training. Use other reasoning datasets instead.
-    # "winoground": {
-    #     "hf_name": "facebook/winoground",
-    #     "config": "default",
-    #     "description": "Visio-linguistic compositional reasoning (REMOVED - gated, eval-only)",
-    #     "stage": 2,
-    #     "domain": "spatial_reasoning",
-    #     "expert": "Expert 5: spatial_reasoning",
-    #     "requires_hf_token": True,
-    #     "size_gb": 0.1,
-    #     "priority": "optional",
-    #     "samples": "400",
     # },
 }
 
@@ -759,25 +747,18 @@ def _snapshot_download_dataset(
     }
 
 
-def _download_image_from_url(url: str, save_path: Path, timeout: int = 30, retries: int = 3) -> bool:
+def _download_image_from_url(url: str, save_path: Path, timeout: int = 30) -> bool:
     """Download a single image from URL with retry logic."""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
-    }
-    for attempt in range(retries):
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(save_path, 'wb') as f:
-                    f.write(response.read())
-            return True
-        except (urllib.error.URLError, urllib.error.HTTPError, Exception):
-            if attempt < retries - 1:
-                time.sleep(1)
-            continue
-    return False
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(save_path, 'wb') as f:
+                f.write(response.read())
+        return True
+    except (urllib.error.URLError, urllib.error.HTTPError, Exception) as e:
+        return False
 
 
 def _download_images_from_dataset(
@@ -841,68 +822,37 @@ def _download_images_from_dataset(
 
 
 def _download_coco_images(save_path: Path, splits: List[str] = None) -> bool:
-    """Download COCO or Visual Genome images needed for datasets like GQA, VQAv2."""
+    """Download COCO images needed for datasets like GQA."""
     if splits is None:
         splits = ["train2017", "val2017"]
     
     images_dir = save_path / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
     
-    print(f"  Downloading images for splits: {splits}")
-
+    print(f"  Downloading COCO images for splits: {splits}")
+    
     for split in splits:
-        # Check if this is a Visual Genome split (GQA uses VG images)
-        if split.startswith("vg_") or split == "gqa":
-            # Visual Genome images (used by GQA)
-            # GQA uses images from Visual Genome dataset
-            vg_urls = [
-                "https://cs.stanford.edu/people/rak248/VG_100K_2/images.zip",
-                "https://cs.stanford.edu/people/rak248/VG_100K_2/images2.zip",
-            ]
-            for i, vg_url in enumerate(vg_urls):
-                zip_name = f"vg_images_{i+1}.zip"
-                zip_path = save_path / zip_name
-                target_dir = images_dir / f"VG_100K_{i+1 if i else ''}"
-
-                if target_dir.exists() and any(target_dir.iterdir()):
-                    print(f"    VG images part {i+1} already exists, skipping")
-                    continue
-
-                try:
-                    print(f"    Downloading Visual Genome images part {i+1}...")
-                    urllib.request.urlretrieve(vg_url, zip_path)
-                    print(f"    Extracting VG images part {i+1}...")
-                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                        zip_ref.extractall(images_dir)
-                    zip_path.unlink()
-                    print(f"    ✓ VG images part {i+1} downloaded")
-                except Exception as e:
-                    print(f"    ✗ Failed to download VG images: {e}")
-                    # Continue anyway, some images may work
-            return True
-        else:
-            # COCO images
-            zip_url = f"http://images.cocodataset.org/zips/{split}.zip"
-            zip_path = save_path / f"{split}.zip"
-
-            if (images_dir / split).exists():
-                print(f"    {split} already exists, skipping")
-                continue
-
-            try:
-                print(f"    Downloading {split}.zip...")
-                urllib.request.urlretrieve(zip_url, zip_path)
-
-                print(f"    Extracting {split}.zip...")
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(images_dir)
-
-                zip_path.unlink()
-                print(f"    ✓ {split} downloaded and extracted")
-            except Exception as e:
-                print(f"    ✗ Failed to download {split}: {e}")
-                return False
-
+        zip_url = f"http://images.cocodataset.org/zips/{split}.zip"
+        zip_path = save_path / f"{split}.zip"
+        
+        if (images_dir / split).exists():
+            print(f"    {split} already exists, skipping")
+            continue
+        
+        try:
+            print(f"    Downloading {split}.zip...")
+            urllib.request.urlretrieve(zip_url, zip_path)
+            
+            print(f"    Extracting {split}.zip...")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(images_dir)
+            
+            zip_path.unlink()
+            print(f"    ✓ {split} downloaded and extracted")
+        except Exception as e:
+            print(f"    ✗ Failed to download {split}: {e}")
+            return False
+    
     return True
 
 
@@ -934,18 +884,9 @@ def download_dataset(
     )
     allow_missing_images = bool(info.get("allow_missing_images", False)) or will_download_images
     
-    # Auto-enable extraction for datasets that need it
-    if info.get("extract_archives", False):
-        extract_archives = True
-
-    # Force datasets API for URL-based downloads (can't download URLs with snapshot method)
-    if will_download_images:
-        resolved_method = "datasets"
-    elif method == "auto":
+    resolved_method = method
+    if resolved_method == "auto":
         resolved_method = preferred_download
-    else:
-        resolved_method = method
-
     hf_token = (
         os.environ.get("HF_TOKEN")
         or os.environ.get("HUGGING_FACE_HUB_TOKEN")
@@ -981,19 +922,6 @@ def download_dataset(
     start_time = time.time()
 
     try:
-        # Initialize common variables at the top to avoid undefined variable errors
-        resolved_config = config_name
-        image_columns = []
-        has_text = True
-        image_validation_passed = False
-        sample_count = 0
-        missing_images = 0
-        splits = []
-        num_samples = {}
-        total_samples = 0
-        ds = None
-        snapshot_meta = {}
-
         if resolved_method == "snapshot":
             snapshot_meta = _snapshot_download_dataset(
                 hf_name,
@@ -1001,7 +929,15 @@ def download_dataset(
                 token=hf_token,
                 extract_archives=extract_archives,
             )
-            # snapshot-specific values already initialized above
+            resolved_config = config_name
+            image_columns = []
+            has_text = True
+            image_validation_passed = False
+            sample_count = 0
+            missing_images = 0
+            splits = []
+            num_samples = {}
+            total_samples = 0
         else:
             # Load dataset from HuggingFace via datasets library
             ds, resolved_config = _load_dataset_with_fallback(
@@ -1014,13 +950,12 @@ def download_dataset(
             features = ds[first_split].features
             image_columns = _image_columns(features)
             has_text = _is_text_feature(features)
-
-            # Calculate total samples early for error messages and metadata
+            image_validation_passed = True
+            
+            # Calculate total samples early for error messages
             splits = list(ds.keys())
             num_samples = {split: len(ds[split]) for split in ds.keys()}
             total_samples = sum(len(ds[split]) for split in ds.keys())
-
-            image_validation_passed = True
 
             if not image_columns:
                 if allow_missing_images:
@@ -1054,20 +989,12 @@ def download_dataset(
             # Save to disk
             save_path.mkdir(parents=True, exist_ok=True)
             ds.save_to_disk(str(save_path))
-
-        # Download images from URLs if needed (works for both snapshot and datasets methods)
-        if ds is not None and info.get("download_images_from_urls", False):
+            snapshot_meta = {}
+            
+            # Download images from URLs if needed
+            if info.get("download_images_from_urls", False):
                 url_field = info.get("image_url_field", "image")
                 print(f"\n  Dataset contains image URLs - downloading actual images...")
-
-                # Ensure splits/num_samples/total_samples are set (in case they weren't initialized earlier)
-                if not splits:
-                    splits = list(ds.keys())
-                if not num_samples:
-                    num_samples = {split: len(ds[split]) for split in ds.keys()}
-                if total_samples == 0:
-                    total_samples = sum(len(ds[split]) for split in ds.keys())
-
                 downloaded_count = 0
                 failed_count = 0
                 
@@ -1088,19 +1015,18 @@ def download_dataset(
                     print(f"\n  ✓ Downloaded {downloaded_count} images total")
                     snapshot_meta["images_downloaded"] = downloaded_count
                     snapshot_meta["images_failed"] = failed_count
-
-        # Download COCO/VG images if needed (for datasets like GQA or VQAv2)
-        if info.get("requires_coco_images", False):
-            coco_splits = info.get("coco_splits", ["train2017", "val2017"])
-            print(f"\n  Dataset requires external images - downloading...")
-            coco_success = _download_coco_images(save_path, splits=coco_splits)
-            if coco_success:
-                image_validation_passed = True
-                print(f"  ✓ Images downloaded")
-                snapshot_meta["coco_images_downloaded"] = True
-            else:
-                print(f"  ✗ Failed to download images")
-                snapshot_meta["coco_images_downloaded"] = False
+            
+            # Download COCO images if needed (for datasets like GQA)
+            if info.get("requires_coco_images", False):
+                print(f"\n  Dataset requires COCO images - downloading...")
+                coco_success = _download_coco_images(save_path)
+                if coco_success:
+                    image_validation_passed = True
+                    print(f"  ✓ COCO images downloaded")
+                    snapshot_meta["coco_images_downloaded"] = True
+                else:
+                    print(f"  ✗ Failed to download COCO images")
+                    snapshot_meta["coco_images_downloaded"] = False
 
         download_time = time.time() - start_time
 
@@ -1116,7 +1042,6 @@ def download_dataset(
             "priority": info["priority"],
             "description": info["description"],
             "download_method": resolved_method,
-            "download_success": True,
             "image_columns": image_columns,
             "text_feature_present": has_text,
             "image_samples_checked": sample_count,
@@ -1137,6 +1062,19 @@ def download_dataset(
         print(f"✓ Successfully saved {dataset_key} to {save_path}")
         print(f"  Download time: {download_time:.1f} seconds")
 
+        # Special handling for llava_instruct_150k - auto extract if needed
+        if dataset_key == "llava_instruct_150k":
+            zip_file = save_path / "train2017.zip"
+            if zip_file.exists():
+                print(f"  Extracting images from train2017.zip...")
+                try:
+                    import zipfile
+                    with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+                        zip_ref.extractall(save_path)
+                    print(f"  ✓ Images extracted successfully")
+                except Exception as e:
+                    print(f"  ! Warning: Failed to extract images: {e}")
+                    print(f"    You can manually extract {zip_file}")
 
         return True
 
@@ -1166,7 +1104,6 @@ def download_dataset(
                     "priority": info["priority"],
                     "description": info["description"],
                     "download_method": "snapshot",
-                    "download_success": True,
                     "image_columns": [],
                     "text_feature_present": True,
                     "image_samples_checked": 0,
@@ -1189,33 +1126,9 @@ def download_dataset(
                 return True
             except Exception as fallback_e:
                 print(f"✗ FAILED fallback snapshot for {dataset_key}: {fallback_e}")
-                # Write error metadata
-                save_path.mkdir(parents=True, exist_ok=True)
-                error_metadata = {
-                    "dataset_key": dataset_key,
-                    "hf_name": hf_name,
-                    "config": config_name,
-                    "download_success": False,
-                    "error": str(fallback_e),
-                    "download_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                }
-                with open(save_path / "metadata.json", "w", encoding="utf-8") as f:
-                    json.dump(error_metadata, f, indent=2)
                 return False
 
         print(f"✗ FAILED to download {dataset_key}: {e}")
-        # Write error metadata
-        save_path.mkdir(parents=True, exist_ok=True)
-        error_metadata = {
-            "dataset_key": dataset_key,
-            "hf_name": hf_name,
-            "config": config_name,
-            "download_success": False,
-            "error": err_msg,
-            "download_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        with open(save_path / "metadata.json", "w", encoding="utf-8") as f:
-            json.dump(error_metadata, f, indent=2)
         return False
 
 
@@ -1549,13 +1462,8 @@ Examples:
                 info["download_method"] = metadata.get("download_method")
                 info["splits"] = metadata.get("splits", [])
                 info["num_samples"] = metadata.get("num_samples", {})
-                # Include save_path so _load_from_index can find snapshot data
-                info["save_path"] = metadata.get("save_path", str((output_dir / dataset_key).absolute()))
             except Exception:
                 pass
-        else:
-            # Even without metadata.json, set save_path to the expected location
-            info["save_path"] = str((output_dir / dataset_key).absolute())
         index["datasets"][dataset_key] = info
 
     with open(index_path, "w", encoding="utf-8") as f:

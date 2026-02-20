@@ -62,22 +62,6 @@ DOMAIN_TAGS = {
     "general": "[DOMAIN: General]",
 }
 
-# Domain to expert index mapping (aligns with BitNetMoEConfig.expert_domains)
-DOMAIN_TO_EXPERT = {
-    "vision_ocr": 0,        # Expert 0: Text reading, document OCR
-    "vision_diagram": 1,    # Expert 1: Diagrams, infographics
-    "code_math_chart": 2,   # Expert 2: Charts, graphs, plots
-    "code_math_formula": 3, # Expert 3: Math equations, formulas
-    "spatial_scene": 4,     # Expert 4: Scene understanding
-    "spatial_reasoning": 5, # Expert 5: Spatial relationships
-    "agentic_knowledge": 6, # Expert 6: Knowledge-based reasoning
-    "agentic_reasoning": 7, # Expert 7: Multi-step reasoning
-    "general": 0,           # Default to expert 0
-    "robotics_action": 4,   # Map to spatial_scene
-    "robotics_spatial": 5,  # Map to spatial_reasoning
-    "agentic_tool": 6,      # Map to agentic_knowledge
-}
-
 
 @dataclass
 class DataConfig:
@@ -85,8 +69,7 @@ class DataConfig:
     data_dir: str = "./data"
     image_size: int = 224
     max_length: int = 2048
-    # Use TinyLlama tokenizer - vocab_size=32000 matches our model's 32002
-    tokenizer_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    tokenizer_name: str = "microsoft/phi-2"
 
     # Dataset mixing ratios
     vision_ratio: float = 0.4
@@ -157,14 +140,12 @@ class EmberNetDataset(Dataset):
         config: Optional[DataConfig] = None,
         split: str = "train",
         domain: str = "general",
-        max_samples: Optional[int] = None,
     ):
         self.config = config or DataConfig()
         self.split = split
         self.domain = domain
         self.domain_tag = DOMAIN_TAGS.get(domain, DOMAIN_TAGS["general"])
         self.data_root = Path(self.config.data_dir)
-        self.max_samples = max_samples
 
         self.image_processor = ImageProcessor(self.config.image_size)
 
@@ -182,13 +163,7 @@ class EmberNetDataset(Dataset):
 
         # Load data
         self.samples = self._load_data(data_path)
-
-        # Limit samples if max_samples is set (for trial runs)
-        if self.max_samples is not None and len(self.samples) > self.max_samples:
-            self.samples = self.samples[:self.max_samples]
-            print(f"  [Trial] Limited to {len(self.samples)} samples for {domain} ({split})")
-        else:
-            print(f"Loaded {len(self.samples)} samples for {domain} ({split})")
+        print(f"Loaded {len(self.samples)} samples for {domain} ({split})")
 
     def _load_data(self, data_path: str) -> List[Dict[str, Any]]:
         """Load data from various sources."""
@@ -229,113 +204,27 @@ class EmberNetDataset(Dataset):
             dataset_stage = str(info.get("stage", ""))
             dataset_domain = info.get("domain", "")
             download_method = info.get("download_method", "datasets")
-            save_path = info.get("save_path", "")
+
+            if download_method == "snapshot":
+                print(f"Skipping {key}: downloaded via snapshot mode (not normalized with datasets.save_to_disk)")
+                continue
 
             # Match condition:
             # - If domain is 'general', we take all stage 1 datasets (for alignment)
             # - OR if domain matches specifically (for expert SFT)
-            should_load = False
             if self.domain == "general":
                 if dataset_stage == "1":
-                    should_load = True
+                    datasets_to_load.append(key)
             elif dataset_domain == self.domain:
-                should_load = True
-
-            if should_load:
-                datasets_to_load.append((key, download_method, save_path))
+                datasets_to_load.append(key)
 
         print(f"Index scan: Found {len(datasets_to_load)} datasets for domain='{self.domain}'")
 
-        for key, method, save_path in datasets_to_load:
-            if method == "snapshot":
-                # For snapshot datasets, try to load raw files from the snapshot directory
-                print(f"Loading {key} from snapshot directory...")
-
-                # If save_path is missing, infer it from data_dir/dataset_key
-                if not save_path:
-                    inferred_path = self.data_root / key
-                    if inferred_path.exists():
-                        save_path = str(inferred_path)
-                        print(f"  Inferred save_path: {save_path}")
-                    else:
-                        print(f"Warning: No save_path in index and {inferred_path} does not exist for {key}")
-                        continue
-
-                snapshot_dir = Path(save_path)
-                if snapshot_dir.exists():
-                    # Try to load as directory with images and metadata
-                    snapshot_samples = self._load_snapshot_dataset(snapshot_dir, key)
-                    all_samples.extend(snapshot_samples)
-                else:
-                    print(f"Warning: Snapshot path {save_path} not found for {key}")
-            else:
-                # Load via standard HuggingFace datasets library
-                samples = self._load_huggingface(key)
-                all_samples.extend(samples)
+        for key in datasets_to_load:
+            samples = self._load_huggingface(key)
+            all_samples.extend(samples)
 
         return all_samples
-
-    def _load_snapshot_dataset(self, snapshot_dir: Path, dataset_key: str) -> List[Dict[str, Any]]:
-        """
-        Load a dataset from a snapshot directory (raw HuggingFace repo layout).
-        For snapshot datasets, we look for:
-        1. Parquet files with data
-        2. Images in subdirectories
-        3. metadata.json for info
-        """
-        samples = []
-
-        # Try to find parquet files
-        parquet_files = list(snapshot_dir.glob("**/*.parquet"))
-        if parquet_files:
-            try:
-                import pandas as pd
-
-                for pq_file in parquet_files:
-                    df = pd.read_parquet(pq_file)
-                    # Convert to samples
-                    for idx, row in df.iterrows():
-                        # Try to find image path
-                        image_path = None
-                        for col in ["image", "image_path", "img", "file_name"]:
-                            if col in row and row[col]:
-                                potential_path = snapshot_dir / str(row[col])
-                                if potential_path.exists():
-                                    image_path = str(potential_path)
-                                    break
-
-                        # Try to find text/question/answer
-                        text = ""
-                        question = ""
-                        answer = ""
-                        for col in ["caption", "text", "description"]:
-                            if col in row and row[col]:
-                                text = str(row[col])
-                                break
-                        for col in ["question", "query"]:
-                            if col in row and row[col]:
-                                question = str(row[col])
-                        for col in ["answer", "response", "output"]:
-                            if col in row and row[col]:
-                                answer = str(row[col])
-
-                        if image_path:
-                            samples.append({
-                                "image_path": image_path,
-                                "question": question or "Describe this image.",
-                                "answer": answer or text or "An image.",
-                                "conversations": [],
-                            })
-
-                if samples:
-                    print(f"Loaded {len(samples)} samples from {len(parquet_files)} parquet files in {dataset_key}")
-                    return samples
-            except Exception as e:
-                print(f"Warning: Could not load parquet files from {snapshot_dir}: {e}")
-
-        # Fallback: treat as image directory
-        print(f"No parquet files found, treating {dataset_key} as image directory")
-        return self._load_directory(snapshot_dir)
 
     def _select_split(self, dataset_obj):
         """Select the best split from DatasetDict/Dataset objects."""
@@ -507,21 +396,6 @@ class EmberNetDataset(Dataset):
         base_dir: Optional[Path] = None,
     ) -> Optional[Dict[str, Any]]:
         """Parse an item from various dataset formats."""
-        # Ensure item is a dictionary
-        if isinstance(item, str):
-            # If item is just a string, treat it as conceptual captions formatted text
-            item = {"caption": item, "text": item}
-        elif not isinstance(item, dict) and not hasattr(item, "get"):
-            # Fallback for non-dictionary items
-            try:
-                item = dict(item)
-            except (TypeError, ValueError):
-                return None
-
-        # Now item should be a dict-like object
-        if not hasattr(item, "get"):
-            # Still not dict-like, skip it
-            return None
 
         # Get image - handle different field names
         image = (
@@ -553,17 +427,6 @@ class EmberNetDataset(Dataset):
             }
 
         # =====================================================================
-        # ShareGPT4V format (raw JSON files from snapshot)
-        # =====================================================================
-
-        if "image" in item and "conversations" not in item and "caption" not in item:
-            return self._attach_base_dir({
-                "image": image,
-                "question": "Describe this image in detail.",
-                "answer": item.get("text", item.get("description", "An image.")),
-            }, base_dir)
-
-        # =====================================================================
         # STAGE 1: ALIGNMENT DATASETS
         # =====================================================================
 
@@ -586,40 +449,6 @@ class EmberNetDataset(Dataset):
                         "image": image,
                         "question": human_msg.replace("<image>", "").strip(),
                         "answer": assistant_msg,
-                    }, base_dir)
-
-        # =====================================================================
-        # ALLaVA format (from snapshot with allava_laion/allava_vflan folders)
-        # =====================================================================
-
-        if "id" in item and str(item.get("id", "")).startswith("allava_"):
-            convs = item.get("conversations", [])
-            if len(convs) >= 2:
-                question = ""
-                answer = ""
-                for conv in convs:
-                    role = conv.get("from", "")
-                    value = conv.get("value", "")
-                    if role == "human":
-                        question = value.replace("<image>", "").strip()
-                    elif role == "gpt":
-                        answer = value
-
-                if question and answer:
-                    img_value = item.get("image", "")
-                    img_path = image
-                    if base_dir and img_value:
-                        from pathlib import Path
-                        img_path_obj = base_dir / img_value
-                        if not img_path_obj.exists():
-                            img_path_obj = base_dir / "allava_laion" / "images" / img_value.split("/")[-1]
-                        if img_path_obj.exists():
-                            img_path = str(img_path_obj)
-
-                    return self._attach_base_dir({
-                        "image": img_path,
-                        "question": question,
-                        "answer": answer,
                     }, base_dir)
 
         # ShareGPT4V format
@@ -681,23 +510,6 @@ class EmberNetDataset(Dataset):
                 "answer": str(item["label"]),
             }
 
-        # ChartQA alternative format (from snapshot with imgname)
-        if "imgname" in item and "query" in item:
-            img_path = image
-            if base_dir:
-                from pathlib import Path
-                for ext in ['.png', '.jpg', '.jpeg']:
-                    potential_path = base_dir / "ChartQA Dataset" / "train" / "png" / f"{item['imgname']}{ext}"
-                    if potential_path.exists():
-                        img_path = str(potential_path)
-                        break
-
-            return self._attach_base_dir({
-                "image": img_path,
-                "question": item["query"],
-                "answer": str(item.get("label", item.get("answer", ""))),
-            }, base_dir)
-
         # PlotQA / FigureQA format
         if "question_string" in item and "answer" in item:
             return {
@@ -718,28 +530,13 @@ class EmberNetDataset(Dataset):
                 "answer": item["multiple_choice_answer"],
             }
 
-        # GQA format - needs to resolve imageId to Visual Genome image path
+        # GQA format
         if "question" in item and "fullAnswer" in item:
-            # GQA uses imageId which refers to Visual Genome images
-            image_id = item.get("imageId") or item.get("image_id")
-            resolved_image = image
-
-            if image_id and base_dir:
-                # Try to find image in VG_100K folders
-                for vg_folder in ["VG_100K", "VG_100K_2", "images"]:
-                    for ext in [".jpg", ".png", ".jpeg"]:
-                        img_path = base_dir / "images" / vg_folder / f"{image_id}{ext}"
-                        if img_path.exists():
-                            resolved_image = str(img_path)
-                            break
-                    if resolved_image != image:
-                        break
-
-            return self._attach_base_dir({
-                "image": resolved_image,
+            return {
+                "image": image,
                 "question": item["question"],
                 "answer": item["fullAnswer"],
-            }, base_dir)
+            }
 
         # OK-VQA / A-OKVQA format
         if "question" in item and "direct_answers" in item:
@@ -856,16 +653,6 @@ class EmberNetDataset(Dataset):
             labels = input_ids.clone()
             return input_ids, attention_mask, labels
 
-        # Ensure tokenizer has image token as special token
-        IMAGE_TOKEN = "<image>"
-        IMAGE_TOKEN_ID = 32001
-        VOCAB_SIZE = 32002  # Must match model's vocab_size
-
-        if IMAGE_TOKEN not in self.tokenizer.get_vocab():
-            self.tokenizer.add_special_tokens({
-                "additional_special_tokens": [IMAGE_TOKEN]
-            })
-
         # Tokenize full sequence
         full_text = prompt + target
         encoding = self.tokenizer(
@@ -878,20 +665,6 @@ class EmberNetDataset(Dataset):
 
         input_ids = encoding["input_ids"].squeeze(0)
         attention_mask = encoding["attention_mask"].squeeze(0)
-
-        # Map the tokenizer's image token ID to our expected IMAGE_TOKEN_ID
-        # The tokenizer assigns its own ID, we need to use 32001 consistently
-        tokenizer_image_id = self.tokenizer.convert_tokens_to_ids(IMAGE_TOKEN)
-        if tokenizer_image_id != IMAGE_TOKEN_ID and tokenizer_image_id != self.tokenizer.unk_token_id:
-            input_ids[input_ids == tokenizer_image_id] = IMAGE_TOKEN_ID
-
-        # CRITICAL: Clamp ALL token IDs to valid vocabulary range
-        # The tokenizer may have a larger vocab than our model
-        # Any token >= VOCAB_SIZE gets mapped to unk_token (0) or pad_token
-        out_of_range_mask = input_ids >= VOCAB_SIZE
-        if out_of_range_mask.any():
-            # Map out-of-range tokens to a safe token (use token ID 1 as fallback)
-            input_ids[out_of_range_mask] = 1  # Usually BOS or some valid token
 
         # Create labels (mask prompt portion)
         labels = input_ids.clone()
@@ -976,16 +749,12 @@ class EmberNetDataset(Dataset):
         # Tokenize
         input_ids, attention_mask, labels = self._tokenize(prompt, target)
 
-        # Get expert target for expert supervision
-        expert_target = torch.tensor(DOMAIN_TO_EXPERT.get(self.domain, 0), dtype=torch.long)
-
         return {
             "pixel_values": pixel_values,
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": labels,
             "domain": self.domain,
-            "expert_target": expert_target,
         }
 
 
@@ -1042,16 +811,12 @@ class MixedDomainDataset(Dataset):
 
 def collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     """Collate batch of samples."""
-    result = {
+    return {
         "pixel_values": torch.stack([b["pixel_values"] for b in batch]),
         "input_ids": torch.stack([b["input_ids"] for b in batch]),
         "attention_mask": torch.stack([b["attention_mask"] for b in batch]),
         "labels": torch.stack([b["labels"] for b in batch]),
     }
-    # Include expert_targets if present (for expert supervision in Stage 2)
-    if "expert_target" in batch[0]:
-        result["expert_targets"] = torch.stack([b["expert_target"] for b in batch])
-    return result
 
 
 def create_dataloaders(
@@ -1059,8 +824,6 @@ def create_dataloaders(
     batch_size: int = 4,
     num_workers: int = 4,
     stage: int = 1,
-    use_curriculum: bool = False,
-    max_samples_per_dataset: Optional[int] = None,
 ) -> Tuple[DataLoader, Optional[DataLoader]]:
     """
     Create training and validation dataloaders.
@@ -1070,21 +833,11 @@ def create_dataloaders(
         batch_size: Batch size for training
         num_workers: Number of data loading workers
         stage: Training stage (1=projector alignment, 2=expert SFT)
-        use_curriculum: Whether to use curriculum learning (Stage 2 only)
-            If True, easier datasets (VQAv2, COCO) are weighted higher early,
-            harder datasets (ChartQA, MathVista) weighted higher later.
-        max_samples_per_dataset: Maximum samples per dataset (None = use all).
-            Useful for trial runs to quickly validate the pipeline.
 
     Returns:
         train_loader, val_loader
     """
     config = data_config or DataConfig()
-
-    # Store max_samples in config for datasets to use
-    if max_samples_per_dataset is not None:
-        config.max_samples_per_dataset = max_samples_per_dataset
-        print(f"  [Trial Mode] Limiting to {max_samples_per_dataset} samples per dataset")
 
     if stage == 1:
         # Stage 1: Use general VLM data for projector alignment
@@ -1093,46 +846,26 @@ def create_dataloaders(
             config=config,
             split="train",
             domain="general",
-            max_samples=max_samples_per_dataset,
         )
         val_dataset = EmberNetDataset(
             config.data_dir,
             config=config,
             split="validation",
             domain="general",
-            max_samples=max_samples_per_dataset,
         )
     else:
         # Stage 2: Mix domain-specific datasets
-        # Curriculum: start with easier domains, gradually add harder ones
-        if use_curriculum:
-            # Curriculum learning: prioritize easier datasets first
-            # Easy: spatial_scene, general (VQAv2, COCO-like)
-            # Medium: vision_ocr, spatial_reasoning (TextVQA, GQA)
-            # Hard: code_math_chart, code_math_formula, agentic (ChartQA, MathVista, ScienceQA)
-            domains = {
-                "spatial_scene": 0.25,       # Easy - VQAv2
-                "general": 0.20,             # Easy - general captions
-                "vision_ocr": 0.15,          # Medium - TextVQA
-                "spatial_reasoning": 0.15,   # Medium - GQA
-                "vision_diagram": 0.05,      # Medium - AI2D
-                "code_math_chart": 0.08,     # Hard - ChartQA
-                "code_math_formula": 0.05,   # Hard - MathVista
-                "agentic_knowledge": 0.04,   # Hard - OK-VQA
-                "agentic_reasoning": 0.03,   # Hard - ScienceQA
-            }
-        else:
-            domains = {
-                "vision_ocr": config.vision_ratio / 2,
-                "vision_diagram": config.vision_ratio / 2,
-                "code_math_chart": config.code_math_ratio / 2,
-                "code_math_formula": config.code_math_ratio / 2,
-                "spatial_scene": config.robotics_ratio / 2,
-                "spatial_reasoning": config.robotics_ratio / 2,
-                "agentic_knowledge": config.agentic_ratio / 2,
-                "agentic_reasoning": config.agentic_ratio / 2,
-                "general": config.general_ratio,
-            }
+        domains = {
+            "vision_ocr": config.vision_ratio / 2,
+            "vision_diagram": config.vision_ratio / 2,
+            "code_math_chart": config.code_math_ratio / 2,
+            "code_math_formula": config.code_math_ratio / 2,
+            "spatial_scene": config.robotics_ratio / 2,
+            "spatial_reasoning": config.robotics_ratio / 2,
+            "agentic_knowledge": config.agentic_ratio / 2,
+            "agentic_reasoning": config.agentic_ratio / 2,
+            "general": config.general_ratio,
+        }
 
         datasets = {}
         for domain in domains:
@@ -1141,16 +874,9 @@ def create_dataloaders(
                 config=config,
                 split="train",
                 domain=domain,
-                max_samples=max_samples_per_dataset,
             )
 
-        # In trial mode, use only the actual available samples instead of the
-        # default 10,000 (which inflates 34 real samples into 10k repeated ones).
-        if max_samples_per_dataset is not None:
-            total_mixed = sum(len(d) for d in datasets.values())
-        else:
-            total_mixed = 10000
-        train_dataset = MixedDomainDataset(datasets, domains, total_samples=total_mixed)
+        train_dataset = MixedDomainDataset(datasets, domains)
         val_dataset = None  # Simplified for stage 2
 
     train_loader = DataLoader(
