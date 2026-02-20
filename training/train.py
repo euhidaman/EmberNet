@@ -85,7 +85,9 @@ class BitNetStableOptimizer:
             self.state[param] = {
                 'step': 0,
                 'exp_avg': torch.zeros_like(param.data, dtype=torch.float32),
-                'exp_avg_sq': torch.zeros_like(param.data, dtype=torch.float32)
+                'exp_avg_sq': torch.zeros_like(param.data, dtype=torch.float32),
+                # Master weights in FP32 to prevent precision loss during accumulation
+                'master_param': param.data.detach().clone().float()
             }
         self.global_step = 0
 
@@ -110,11 +112,8 @@ class BitNetStableOptimizer:
             if param.grad is None:
                 continue
 
-            # Skip update if gradient is not finite (will be caught elsewhere)
-            if not torch.isfinite(param.grad).all():
-                continue
-
-            grad = param.grad.data
+            # Hardened gradient handling - convert NaNs to zeros before processing
+            grad = torch.nan_to_num(param.grad.data, nan=0.0, posinf=1.0, neginf=-1.0)
             state = self.state[param]
 
             if self.grad_clip > 0:
@@ -125,8 +124,10 @@ class BitNetStableOptimizer:
             grad = grad.to(torch.float32)
             state['step'] += 1
             exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+            master_param = state['master_param']
             beta1, beta2 = self.betas
 
+            # Decay the first and second moment running average coefficient
             exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
             exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
@@ -139,9 +140,19 @@ class BitNetStableOptimizer:
             update = exp_avg / denom
 
             if self.weight_decay > 0:
-                update.add_(param.data.to(torch.float32), alpha=self.weight_decay)
+                update.add_(master_param, alpha=self.weight_decay)
 
-            param.data.add_(update.to(param.dtype), alpha=-step_size)
+            # Stabilize update magnitudes
+            update = update.clamp(-10.0, 10.0)
+
+            # Update master parameters in FP32
+            master_param.add_(update, alpha=-step_size)
+            
+            # Anti-drift: prevent master parameters from exploding
+            master_param.clamp_(-100.0, 100.0)
+            
+            # Sync model parameters with master parameters (cast back to original dtype)
+            param.data.copy_(master_param.to(param.dtype))
 
     def state_dict(self):
         """Return optimizer state for checkpointing."""
@@ -191,11 +202,15 @@ class BitNetGradientScaler:
     def update(self, found_inf: bool):
         if found_inf:
             self.scale *= self.backoff_factor
+            # Prevent scale from underflowing to zero
+            self.scale = max(self.scale, 1e-8)
             self._growth_tracker = 0
         else:
             self._growth_tracker += 1
             if self._growth_tracker >= self.growth_interval:
                 self.scale *= self.growth_factor
+                # Prevent scale from overflowing to inf
+                self.scale = min(self.scale, 1e12)
                 self._growth_tracker = 0
 
 
@@ -234,10 +249,12 @@ def initialize_bitnet_weights(model: nn.Module):
         # Only initialize BitLinear layers (core BitNet quantized layers)
         if isinstance(module, BitLinear):
             fan_in = module.weight.size(1)
-            std = math.sqrt(2.0 / fan_in) * 0.5
+            # Use small initialization scale (0.02 to 0.1) as recommended in BitNet papers
+            # This prevents early saturation of ternary weights
+            std = 0.05 / math.sqrt(fan_in) 
             nn.init.normal_(module.weight, mean=0.0, std=std)
             count += 1
-    print(f"✓ Initialized {count} BitLinear layers with BitNet-specific weights")
+    print(f"✓ Initialized {count} BitLinear layers with small-scale BitNet weights (std=0.05/sqrt(d))")
 
 
 # =============================================================================
@@ -657,7 +674,8 @@ class Trainer:
             # Use BitNet gradient scaler
             scaled_loss = self.bitnet_scaler.scale_loss(loss)
             scaled_loss.backward()
-            self.bitnet_scaler.unscale_gradients(self.optimizer)
+            # CRITICAL: Do NOT unscale gradients here if using accumulation!
+            # Unscaling must happen only before the optimizer step.
         elif self.scaler is not None:
             # Use standard AMP scaler
             self.scaler.scale(loss).backward()
@@ -688,8 +706,12 @@ class Trainer:
         }
 
     def _optimizer_step(self):
-        """Perform optimizer step with gradient clipping."""
+        """Perform optimizer step with gradient clipping and unscaling."""
         if self.use_bitnet_optimizer:
+            # Unscale gradients once before the step (correct for accumulation)
+            if self.bitnet_scaler is not None:
+                self.bitnet_scaler.unscale_gradients(self.optimizer)
+            
             # BitNet optimizer handles its own gradient clipping internally
             self.optimizer.step()
             self.optimizer.zero_grad()

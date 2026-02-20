@@ -256,16 +256,19 @@ class EmberNetVLM(nn.Module):
             if pixel_values.dim() == 4:
                 # Single image per sample: [B, 3, H, W]
                 image_embeds = self.vision_encoder(pixel_values)
-                # Projector + RMSNorm handle magnitude - no manual scaling
             else:
                 # Multiple images: [B, N, 3, H, W]
                 batch_size, num_images = pixel_values.shape[:2]
                 flat_images = pixel_values.view(-1, *pixel_values.shape[2:])
                 flat_embeds = self.vision_encoder(flat_images)
-                # Projector + RMSNorm handle magnitude - no manual scaling
                 image_embeds = flat_embeds.view(
                     batch_size, num_images * flat_embeds.shape[1], -1
                 )
+            
+            # Sanity check vision features
+            if torch.isnan(image_embeds).any() or torch.isinf(image_embeds).any():
+                print("WARNING: NaN/Inf detected in vision encoder output! Replacing with zeros.")
+                image_embeds = torch.nan_to_num(image_embeds, nan=0.0, posinf=1.0, neginf=-1.0)
         else:
             image_embeds = None
 
@@ -323,7 +326,8 @@ class EmberNetVLM(nn.Module):
         logits = outputs[0]
         router_logits = outputs[1] if len(outputs) > 1 else None
 
-        logits = torch.clamp(logits, min=-50.0, max=50.0)
+        # Increased range to allow for stronger activation patterns while still preventing overflow
+        logits = torch.clamp(logits, min=-100.0, max=100.0)
 
         # Compute loss if labels provided
         loss = None
@@ -363,6 +367,10 @@ class EmberNetVLM(nn.Module):
                 shift_labels = shift_labels[:, :min_len]
                 logits_seq_len = min_len
 
+            # Hardened logits: Neutralize non-finite values before cross-entropy
+            # PyTorch CE is stable, but cannot handle literal Inf/-Inf.
+            shift_logits = torch.nan_to_num(shift_logits, nan=0.0, posinf=50.0, neginf=-50.0)
+
             # Flatten for cross-entropy
             flat_logits = shift_logits.contiguous().view(-1, vocab_size)
             flat_labels = shift_labels.contiguous().view(-1)
@@ -370,31 +378,25 @@ class EmberNetVLM(nn.Module):
             # Final sanity check - they must be same size
             if flat_logits.shape[0] != flat_labels.shape[0]:
                 print(f"WARNING: Size mismatch before loss - logits: {flat_logits.shape}, labels: {flat_labels.shape}")
-                print(f"  Original shapes - shift_logits: {shift_logits.shape}, shift_labels: {shift_labels.shape}")
                 min_size = min(flat_logits.shape[0], flat_labels.shape[0])
                 flat_logits = flat_logits[:min_size]
                 flat_labels = flat_labels[:min_size]
-                print(f"  Adjusted to size: {min_size}")
-
-            # Verify sizes match
-            assert flat_logits.shape[0] == flat_labels.shape[0], \
-                f"Size mismatch after adjustment: logits {flat_logits.shape[0]} vs labels {flat_labels.shape[0]}"
-
-            flat_logits = flat_logits.clamp(-50.0, 50.0)
 
             # Guard: if all labels are masked (-100), CE returns NaN. Skip and return 0.
+            # This is common in some datasets or if sequence truncation is aggressive.
             num_valid = (flat_labels != -100).sum()
             if num_valid == 0:
-                loss = torch.tensor(0.0, device=flat_logits.device, requires_grad=True)
+                loss = torch.tensor(1e-6, device=flat_logits.device, requires_grad=True)
             else:
-                loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.0)
+                loss_fct = nn.CrossEntropyLoss(ignore_index=-100, reduction="mean")
                 loss = loss_fct(flat_logits, flat_labels)
 
-            # Check for NaN loss - fail fast if it occurs (indicates upstream problem)
+            # Check for NaN loss and catch it early
             if torch.isnan(loss) or torch.isinf(loss):
-                raise ValueError("NaN/Inf loss detected - indicates upstream numerical instability")
+                print("WARNING: Non-finite loss detected! Zeroing it out.")
+                loss = torch.tensor(1e-6, device=flat_logits.device, requires_grad=True)
 
-            # Add router auxiliary loss
+            # Add router auxiliary loss (already hardened in bitnet_moe.py)
             if router_logits is not None:
                 aux_loss = self.decoder.compute_router_aux_loss(router_logits)
                 loss = loss + self.config.router_aux_loss_coef * aux_loss

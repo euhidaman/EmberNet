@@ -96,12 +96,14 @@ class RMSNorm(nn.Module):
 def activation_quant(x: torch.Tensor) -> torch.Tensor:
     """
     Per-token activation quantization to 8-bit (Microsoft BitNet official).
-    Clamps min to 1e-5 to prevent division by zero/tiny values.
+    Hardened to handle inf/nan by mapping them to finite boundaries.
     """
     dtype = x.dtype
     x = x.float()
-    x = x.clamp(-50.0, 50.0)
-    max_val = x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-4)
+    # Neutralize non-finite values before they cause NaNs in scaling
+    x = torch.nan_to_num(x, nan=0.0, posinf=128.0, neginf=-128.0)
+    x = x.clamp(-128.0, 128.0)
+    max_val = x.abs().max(dim=-1, keepdim=True).values.clamp_(min=1e-5)
     scale = 127.0 / max_val
     y = (x * scale).round().clamp_(-128, 127) / scale
     return y.to(dtype)
@@ -110,11 +112,13 @@ def activation_quant(x: torch.Tensor) -> torch.Tensor:
 def weight_quant(w: torch.Tensor) -> torch.Tensor:
     """
     Ternary weight quantization (Microsoft BitNet official).
-    Uses mean for centering and scaling - no division by scale.
+    Hardened to handle inf/nan in latent weights.
     """
     dtype = w.dtype
     w = w.float()
-    scale = w.abs().mean().clamp(min=1e-8)
+    # Neutralize non-finite weights
+    w = torch.nan_to_num(w, nan=0.0, posinf=1.0, neginf=-1.0)
+    scale = w.abs().mean().clamp(min=1e-7, max=100.0)
     e = w.mean()
     u = (w - e).sign() * scale
     return u.to(dtype)
@@ -289,33 +293,27 @@ class BitNetAttention(nn.Module):
         present_key_value = (k, v) if use_cache else None
         kv_seq_len = k.shape[2]
 
+        # Store KV for future use
+        present_key_value = (k, v) if use_cache else None
+        kv_seq_len = k.shape[2]
+
         # Expand KV for GQA
-        if self.num_kv_groups > 1:
-            k_expanded = k.unsqueeze(2).expand(-1, -1, self.num_kv_groups, -1, -1)
-            k_expanded = k_expanded.reshape(batch_size, self.num_heads, kv_seq_len, self.head_dim)
-            v_expanded = v.unsqueeze(2).expand(-1, -1, self.num_kv_groups, -1, -1)
-            v_expanded = v_expanded.reshape(batch_size, self.num_heads, kv_seq_len, self.head_dim)
+        if self.num_kv_heads != self.num_heads:
+            # Efficient grouped-query expansion
+            k_expanded = k.repeat_interleave(self.num_kv_groups, dim=1)
+            v_expanded = v.repeat_interleave(self.num_kv_groups, dim=1)
         else:
             k_expanded, v_expanded = k, v
 
-        # Scaled dot-product attention
-        scale = 1.0 / math.sqrt(self.head_dim)
-        attn_weights = torch.matmul(q, k_expanded.transpose(-2, -1)) * scale
-
-        # Apply causal mask
-        if attention_mask is not None:
-            attn_weights = attn_weights + attention_mask
-
-        attn_weights = F.softmax(attn_weights, dim=-1)
-
-        # NaN protection for attention weights
-        if torch.isnan(attn_weights).any():
-            attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
-            # Focus on first token as fallback
-            attn_weights[:, :, :, 0] = 1.0
-
-        # Apply attention to values
-        attn_output = torch.matmul(attn_weights, v_expanded)
+        # Use Flash Attention / memory-efficient attention if available
+        # Optimized and more numerically stable than manual softmax
+        # Note: causal mask must be handled by the attention_mask which is pre-computed as additive
+        attn_output = torch.nn.functional.scaled_dot_product_attention(
+            q, k_expanded, v_expanded,
+            attn_mask=attention_mask,
+            dropout_p=0.0 if not self.training else 0.1,
+            is_causal=False # Mask is already causal + padding if provided
+        )
 
         # Reshape and project output
         attn_output = attn_output.transpose(1, 2).contiguous()
@@ -397,6 +395,8 @@ class BitNetMoELayer(nn.Module):
 
         # Compute router logits
         router_logits = self.router(hidden_flat)
+        # Robust clamping for router stability
+        router_logits = router_logits.clamp(-20.0, 20.0)
 
         # Expert dropout (mask some experts per batch during training)
         if self.training and self.expert_dropout > 0.0:
@@ -407,14 +407,14 @@ class BitNetMoELayer(nn.Module):
                     device=router_logits.device,
                 )
             )
-            router_logits = router_logits * expert_mask + (1 - expert_mask) * (-1e9)
+            router_logits = router_logits.masked_fill(expert_mask == 0, -1e4)
 
         # Gumbel-Softmax routing during training for better gradient flow
         if self.training:
             # Use stable Gumbel noise computation
             u = torch.rand_like(router_logits).clamp(1e-6, 1.0 - 1e-6)
             gumbel_noise = -torch.log(-torch.log(u))
-            logits_with_noise = router_logits + gumbel_noise * 0.1  # Reduced noise scale
+            logits_with_noise = (router_logits + gumbel_noise * 0.1).clamp(-40, 40)
             routing_weights = F.softmax(logits_with_noise, dim=-1)
         else:
             routing_weights = F.softmax(router_logits, dim=-1)
@@ -688,26 +688,28 @@ class BitNetMoEDecoder(nn.Module):
         num_layers = len(router_logits_list)
 
         for router_logits in router_logits_list:
-            # router_logits: [batch * seq_len, num_experts]
+            # Hardened router_logits
+            router_logits = torch.nan_to_num(router_logits, nan=0.0, posinf=20.0, neginf=-20.0)
             routing_weights = F.softmax(router_logits, dim=-1)
 
-            # Load balancing: encourage uniform expert usage
-            tokens_per_expert = routing_weights.mean(dim=0)  # [E]
+            # Load balancing
+            tokens_per_expert = routing_weights.mean(dim=0)
             uniform = torch.full_like(tokens_per_expert, 1.0 / self.config.num_experts)
+            # Use safe log for KL divergence
             load_balance_loss = F.kl_div(
-                (tokens_per_expert + 1e-8).log(), uniform, reduction="batchmean"
+                (tokens_per_expert + 1e-7).log(), uniform, reduction="batchmean"
             )
 
-            # Router z-loss: prevent logits from growing too large
+            # Router z-loss (stabilized)
             z_loss = torch.logsumexp(router_logits, dim=-1).mean()
 
-            # Entropy regularization: encourage confident routing
-            entropy = -(routing_weights * (routing_weights + 1e-8).log()).sum(dim=-1).mean()
+            # Entropy regularization
+            entropy = -(routing_weights * (routing_weights + 1e-7).log()).sum(dim=-1).mean()
 
-            layer_loss = (
-                load_balance_loss
-                + 0.01 * z_loss
-                + 0.001 * entropy
+            # Ensure aux losses are finite
+            layer_loss = torch.nan_to_num(
+                load_balance_loss + 0.01 * z_loss + 0.001 * entropy,
+                nan=0.0, posinf=1.0, neginf=0.0
             )
             total_loss += layer_loss
 
