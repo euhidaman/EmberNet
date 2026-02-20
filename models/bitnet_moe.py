@@ -111,17 +111,24 @@ def activation_quant(x: torch.Tensor) -> torch.Tensor:
 
 def weight_quant(w: torch.Tensor) -> torch.Tensor:
     """
-    Ternary weight quantization (Microsoft BitNet official).
-    Hardened to handle inf/nan in latent weights.
+    BitNet b1.58 ternary weight quantization {-1, 0, 1}.
+    Strict implementation of Microsoft's Round-Clip formula.
     """
     dtype = w.dtype
     w = w.float()
-    # Neutralize non-finite weights
+    # Neutralize non-finite weights early
     w = torch.nan_to_num(w, nan=0.0, posinf=1.0, neginf=-1.0)
-    scale = w.abs().mean().clamp(min=1e-7, max=100.0)
-    e = w.mean()
-    u = (w - e).sign() * scale
-    return u.to(dtype)
+    
+    # Calculate gamma (average absolute value) - the scale factor for b1.58
+    # Using 1e-9 epsilon to prevent division by zero in empty/masked layers
+    gamma = w.abs().mean().clamp(min=1e-9)
+    
+    # Ternary quantization: round(w / gamma) clamped to {-1, 0, 1}
+    # This allows the model to learn weights of exactly zero (1.58-bit sparsity)
+    w_quant = torch.round(w / gamma).clamp(-1, 1)
+    
+    # Return scaled ternary weights for FP32 simulation
+    return (w_quant * gamma).to(dtype)
 
 
 class BitLinear(nn.Module):
@@ -152,7 +159,9 @@ class BitLinear(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        std = 0.02 / math.sqrt(self.in_features)
+        # Standard BitNet b1.58 initialization: std = 1 / sqrt(d)
+        # This prevents the "always make things smaller" issue during early training
+        std = 1.0 / math.sqrt(self.in_features)
         nn.init.normal_(self.weight, mean=0.0, std=std)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -308,12 +317,21 @@ class BitNetAttention(nn.Module):
         # Use Flash Attention / memory-efficient attention if available
         # Optimized and more numerically stable than manual softmax
         # Note: causal mask must be handled by the attention_mask which is pre-computed as additive
-        attn_output = torch.nn.functional.scaled_dot_product_attention(
-            q, k_expanded, v_expanded,
-            attn_mask=attention_mask,
-            dropout_p=0.0 if not self.training else 0.1,
-            is_causal=False # Mask is already causal + padding if provided
-        )
+        try:
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
+                q, k_expanded, v_expanded,
+                attn_mask=attention_mask,
+                dropout_p=0.0 if not self.training else 0.1,
+                is_causal=False # Mask is already causal + padding if provided
+            )
+        except Exception as e:
+            # Robust fallback for environments without SDPA support or if mask shape is tricky
+            scale = 1.0 / math.sqrt(self.head_dim)
+            attn_weights = torch.matmul(q, k_expanded.transpose(-2, -1)) * scale
+            if attention_mask is not None:
+                attn_weights = attn_weights + attention_mask
+            attn_weights = torch.nan_to_num(torch.softmax(attn_weights, dim=-1), nan=0.0)
+            attn_output = torch.matmul(attn_weights, v_expanded)
 
         # Reshape and project output
         attn_output = attn_output.transpose(1, 2).contiguous()

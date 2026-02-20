@@ -249,12 +249,12 @@ def initialize_bitnet_weights(model: nn.Module):
         # Only initialize BitLinear layers (core BitNet quantized layers)
         if isinstance(module, BitLinear):
             fan_in = module.weight.size(1)
-            # Use small initialization scale (0.02 to 0.1) as recommended in BitNet papers
-            # This prevents early saturation of ternary weights
-            std = 0.05 / math.sqrt(fan_in) 
+            # Official BitNet b1.58 init: std = 1 / sqrt(d)
+            # This ensures weights are large enough that round(W/gamma) doesn't zero everything out.
+            std = 1.0 / math.sqrt(fan_in) 
             nn.init.normal_(module.weight, mean=0.0, std=std)
             count += 1
-    print(f"✓ Initialized {count} BitLinear layers with small-scale BitNet weights (std=0.05/sqrt(d))")
+    print(f"✓ Initialized {count} BitLinear layers with standard BitNet b1.58 weights (std=1/sqrt(d))")
 
 
 # =============================================================================
