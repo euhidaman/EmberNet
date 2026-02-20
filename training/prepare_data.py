@@ -1549,8 +1549,13 @@ Examples:
                 info["download_method"] = metadata.get("download_method")
                 info["splits"] = metadata.get("splits", [])
                 info["num_samples"] = metadata.get("num_samples", {})
+                # Include save_path so _load_from_index can find snapshot data
+                info["save_path"] = metadata.get("save_path", str((output_dir / dataset_key).absolute()))
             except Exception:
                 pass
+        else:
+            # Even without metadata.json, set save_path to the expected location
+            info["save_path"] = str((output_dir / dataset_key).absolute())
         index["datasets"][dataset_key] = info
 
     with open(index_path, "w", encoding="utf-8") as f:

@@ -876,7 +876,6 @@ class Trainer:
                 # Training step
                 metrics = self._train_step(batch)
 
-
                 epoch_loss += metrics["loss"]
                 epoch_steps += 1
 
@@ -945,6 +944,16 @@ class Trainer:
                     if self.global_step % self.config.save_interval == 0:
                         self._save_checkpoint(f"checkpoint_step_{self.global_step}.pt")
 
+            # ---- Flush remaining accumulated gradients at epoch end ----
+            # If the number of steps in this epoch wasn't divisible by
+            # gradient_accumulation_steps, there are leftover gradients
+            # that would otherwise be silently discarded.
+            remainder = epoch_steps % self.config.gradient_accumulation_steps
+            if remainder > 0 and epoch_steps > 0:
+                print(f"  Flushing {remainder} remaining accumulated gradient(s) at epoch end")
+                self._optimizer_step()
+                self.global_step += 1
+
             # End of epoch - handle case where all batches were skipped
             if epoch_steps == 0:
                 print(f"\n{'='*70}")
@@ -956,7 +965,26 @@ class Trainer:
 
             epoch_avg_loss = epoch_loss / epoch_steps
             print(f"\nEpoch {epoch+1} Complete | Average Loss: {epoch_avg_loss:.4f}")
-            print(f"  Valid batches: {epoch_steps} / {len(train_loader)}\n")
+            print(f"  Valid batches: {epoch_steps} / {len(train_loader)}")
+
+            # End-of-epoch validation (always run if val_loader exists)
+            if val_loader is not None:
+                val_loss = self.evaluate(val_loader)
+                print(f"  Epoch validation loss: {val_loss:.4f}")
+
+                if val_loss < self.best_loss:
+                    self.best_loss = val_loss
+                    self._save_checkpoint("best_model.pt", is_best=True)
+
+                if self.use_wandb:
+                    wandb.log({
+                        "val/loss": val_loss,
+                        "val/best_loss": self.best_loss,
+                    }, step=self.global_step)
+
+                self.model.train()
+
+            print()  # blank line for readability
 
             # Log epoch metrics to wandb
             if self.use_wandb:
@@ -973,7 +1001,10 @@ class Trainer:
 
         total_time = time.time() - start_time
         print(f"\nTraining complete in {total_time/60:.1f} minutes")
-        print(f"Best validation loss: {self.best_loss:.4f}")
+        if self.best_loss < float('inf'):
+            print(f"Best validation loss: {self.best_loss:.4f}")
+        else:
+            print(f"Best validation loss: N/A (no validation data or too few steps)")
 
         # Finish wandb run
         if self.use_wandb:

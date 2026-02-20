@@ -250,16 +250,24 @@ class EmberNetDataset(Dataset):
             if method == "snapshot":
                 # For snapshot datasets, try to load raw files from the snapshot directory
                 print(f"Loading {key} from snapshot directory...")
-                if save_path:
-                    snapshot_dir = Path(save_path)
-                    if snapshot_dir.exists():
-                        # Try to load as directory with images and metadata
-                        snapshot_samples = self._load_snapshot_dataset(snapshot_dir, key)
-                        all_samples.extend(snapshot_samples)
+
+                # If save_path is missing, infer it from data_dir/dataset_key
+                if not save_path:
+                    inferred_path = self.data_root / key
+                    if inferred_path.exists():
+                        save_path = str(inferred_path)
+                        print(f"  Inferred save_path: {save_path}")
                     else:
-                        print(f"Warning: Snapshot path {save_path} not found for {key}")
+                        print(f"Warning: No save_path in index and {inferred_path} does not exist for {key}")
+                        continue
+
+                snapshot_dir = Path(save_path)
+                if snapshot_dir.exists():
+                    # Try to load as directory with images and metadata
+                    snapshot_samples = self._load_snapshot_dataset(snapshot_dir, key)
+                    all_samples.extend(snapshot_samples)
                 else:
-                    print(f"Warning: No save_path in index for snapshot dataset {key}")
+                    print(f"Warning: Snapshot path {save_path} not found for {key}")
             else:
                 # Load via standard HuggingFace datasets library
                 samples = self._load_huggingface(key)
