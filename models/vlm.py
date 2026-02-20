@@ -203,10 +203,8 @@ class EmberNetVLM(nn.Module):
 
         # Embed text tokens
         text_embeds = self.decoder.embed_tokens(safe_input_ids)
-        text_embeds = text_embeds.clamp(-10.0, 10.0)
 
-        # Clamp image embeddings
-        image_embeds = image_embeds.clamp(-10.0, 10.0)
+        # Image embeddings already properly scaled by projector + RMSNorm
 
         # Always prepend image embeddings to text embeddings
         merged_embeds = torch.cat([image_embeds, text_embeds], dim=1)
@@ -258,15 +256,13 @@ class EmberNetVLM(nn.Module):
             if pixel_values.dim() == 4:
                 # Single image per sample: [B, 3, H, W]
                 image_embeds = self.vision_encoder(pixel_values)
-                # Scale down vision features to prevent gradient explosion
-                image_embeds = image_embeds * 0.1
+                # Projector + RMSNorm handle magnitude - no manual scaling
             else:
                 # Multiple images: [B, N, 3, H, W]
                 batch_size, num_images = pixel_values.shape[:2]
                 flat_images = pixel_values.view(-1, *pixel_values.shape[2:])
                 flat_embeds = self.vision_encoder(flat_images)
-                # Scale down vision features
-                flat_embeds = flat_embeds * 0.1
+                # Projector + RMSNorm handle magnitude - no manual scaling
                 image_embeds = flat_embeds.view(
                     batch_size, num_images * flat_embeds.shape[1], -1
                 )
