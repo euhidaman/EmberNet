@@ -284,3 +284,18 @@ class EmberNetLMMS(lmms):
 
     def loglikelihood_rolling(self, requests):
         return [(0.0,)] * len(requests)
+
+    # ------------------------------------------------------------------
+    # generate_until_multi_round — required abstract method in newer
+    # versions of lmms-eval for multi-turn / interleaved evaluation.
+    # EmberNet doesn't support multi-round conversations, so we flatten
+    # each round's context and delegate to generate_until.
+    # ------------------------------------------------------------------
+
+    def generate_until_multi_round(self, requests) -> List[str]:
+        """
+        Multi-round generation stub.
+        lmms-eval calls this for interleaved / multi-turn benchmarks.
+        EmberNet treats the full concatenated context as a single prompt.
+        """
+        return self.generate_until(requests)
