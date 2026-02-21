@@ -365,11 +365,13 @@ class LivePlotter:
     # ------------------------------------------------------------------
 
     def _safe(self, fn, *args, **kwargs):
-        """Call a plot function, swallowing any exception so training never crashes."""
+        """Call a plot function — print full traceback on error, never crash training."""
         try:
             fn(*args, **kwargs)
         except Exception as e:
-            print(f"  [viz] {fn.__name__} error (non-fatal): {e}")
+            import traceback
+            print(f"  [viz] ERROR in {fn.__name__}: {e}")
+            traceback.print_exc()
 
     def _print_summary(self, label: str = "", final: bool = False):
         try:

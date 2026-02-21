@@ -27,7 +27,7 @@ Usage (called by eval/auto_eval.py — not intended for direct use):
 from __future__ import annotations
 
 import sys
-import os
+import traceback
 from pathlib import Path
 
 # ── 0. Make sure repo root is on sys.path ──────────────────────────────────
@@ -35,39 +35,35 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# ── 1. Import adapter → triggers @register_model("embernet") ──────────────
-#       Must happen before lmms_eval.evaluator or models.__init__ are loaded.
+# ── 1. Import EmberNet adapter so the class is available ──────────────────
 try:
-    import eval.embernet_lmms_adapter as _adapter  # noqa: F401
-    print("[lmms_launcher] EmberNet model registered successfully.")
+    from eval.embernet_lmms_adapter import EmberNetLMMS
+    print("[lmms_launcher] EmberNetLMMS imported successfully.")
 except Exception as e:
-    print(f"[lmms_launcher] WARNING: Failed to register EmberNet model: {e}")
-    import traceback
+    print(f"[lmms_launcher] FATAL: Could not import EmberNetLMMS: {e}")
     traceback.print_exc()
+    sys.exit(1)
 
-# ── 2. Register into registry_v2 using register_manifest() ───────────────
-# registry_v2 uses ModelManifest with a dotted class path string — it does
-# NOT pick up @register_model decorators from the legacy registry.
-#
-# IMPORTANT: The singleton MODEL_REGISTRY_V2 instance lives in
-#   lmms_eval.models (the __init__.py), NOT in lmms_eval.models.registry_v2.
-#   Importing from the wrong module causes a silent ImportError.
+# ── 2. Monkey-patch lmms_eval.models.get_model ────────────────────────────
+# This is the ONLY 100% reliable way to inject a custom model regardless of
+# which registry version the installed lmms-eval uses.
+# get_model() is called by evaluator.simple_evaluate(); we intercept the
+# "embernet" lookup and return the class directly, bypassing all registries.
 try:
-    from lmms_eval.models import MODEL_REGISTRY_V2               # the singleton instance
-    from lmms_eval.models.registry_v2 import ModelManifest        # the dataclass
+    import lmms_eval.models as _lmms_models
 
-    manifest = ModelManifest(
-        model_id="embernet",
-        simple_class_path="eval.embernet_lmms_adapter.EmberNetLMMS",
-    )
-    MODEL_REGISTRY_V2.register_manifest(manifest, overwrite=True)
-    print("[lmms_launcher] Registered EmberNet into registry_v2 via register_manifest().")
-except ImportError as ie:
-    # Older lmms-eval without registry_v2 — @register_model already handled it
-    print(f"[lmms_launcher] registry_v2 not available ({ie}) — relying on legacy registry.")
+    _original_get_model = _lmms_models.get_model
+
+    def _patched_get_model(model_name, force_simple=False):
+        if model_name == "embernet":
+            print("[lmms_launcher] get_model intercepted → returning EmberNetLMMS")
+            return EmberNetLMMS
+        return _original_get_model(model_name, force_simple)
+
+    _lmms_models.get_model = _patched_get_model
+    print("[lmms_launcher] Patched lmms_eval.models.get_model successfully.")
 except Exception as e:
-    print(f"[lmms_launcher] registry_v2 patch failed (non-fatal): {e}")
-    import traceback
+    print(f"[lmms_launcher] WARNING: get_model patch failed: {e}")
     traceback.print_exc()
 
 # ── 3. Hand off to lmms_eval CLI ──────────────────────────────────────────
