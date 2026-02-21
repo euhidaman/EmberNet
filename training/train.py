@@ -475,7 +475,7 @@ class Trainer:
         # Live visualization — generates plots into {output_dir}/plots/
         try:
             from visualizations.live_plotter import LivePlotter
-            _plot_interval = 50 if config.is_trial_run else 500
+            _plot_interval = 10 if config.is_trial_run else 500
             self.live_plotter = LivePlotter(
                 output_dir=config.output_dir,
                 stage=config.stage,
@@ -974,13 +974,25 @@ class Trainer:
                     self._optimizer_step()
                     self.global_step += 1
 
+                    # Compute current LR (used by tqdm, logging, and live plotter)
+                    _lr_now = (
+                        self.optimizer._get_lr(self.optimizer.global_step)
+                        if self.use_bitnet_optimizer
+                        else self.optimizer.param_groups[0]["lr"]
+                    )
+
+                    # Feed live visualizer EVERY optimizer step
+                    self.live_plotter.record_step(
+                        step=self.global_step,
+                        loss=metrics["loss"],
+                        lr=_lr_now,
+                        grad_norm=self._last_grad_norm,
+                        clipped=(self._last_grad_norm > self.config.max_grad_norm),
+                        expert_probs=metrics.get("expert_probs"),
+                    )
+
                     # Always update tqdm postfix
                     if pbar is not None:
-                        _lr_now = (
-                            self.optimizer._get_lr(self.optimizer.global_step)
-                            if self.use_bitnet_optimizer
-                            else self.optimizer.param_groups[0]["lr"]
-                        )
                         pbar.set_postfix(
                             loss=f"{metrics['loss']:.4f}",
                             avg=f"{epoch_loss/epoch_steps:.4f}",
@@ -1094,16 +1106,6 @@ class Trainer:
                             "avg_loss": avg_loss,
                             "lr": lr,
                         })
-
-                        # Feed live visualizer
-                        self.live_plotter.record_step(
-                            step=self.global_step,
-                            loss=metrics["loss"],
-                            lr=lr,
-                            grad_norm=self._last_grad_norm,
-                            clipped=(self._last_grad_norm > self.config.max_grad_norm),
-                            expert_probs=metrics.get("expert_probs"),
-                        )
 
                         # Log to wandb
                         if self.use_wandb:
