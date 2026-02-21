@@ -126,7 +126,7 @@ def run_auto_eval(
         "--batch_size",   "1",
         "--include_path", str(eval_dir),
         "--output_path",  str(results_dir),
-        "--log_samples",
+        "--trust_remote_code",
     ]
     if limit:
         cmd += ["--limit", str(limit)]

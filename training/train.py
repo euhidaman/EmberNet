@@ -475,9 +475,11 @@ class Trainer:
         # Live visualization — generates plots into {output_dir}/plots/
         try:
             from visualizations.live_plotter import LivePlotter
+            _plot_interval = 50 if config.is_trial_run else 500
             self.live_plotter = LivePlotter(
                 output_dir=config.output_dir,
                 stage=config.stage,
+                plot_interval=_plot_interval,
             )
         except Exception as _viz_err:
             print(f"  [viz] Disabled — {_viz_err}")
