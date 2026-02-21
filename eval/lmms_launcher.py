@@ -45,34 +45,18 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 
-# ── 2. Also manually register into registry_v2 if it exists ───────────────
+# ── 2. Register into registry_v2 using register_manifest() ───────────────
+# registry_v2 uses ModelManifest with a dotted class path string — it does
+# NOT pick up @register_model decorators from the legacy registry.
 try:
-    from lmms_eval.models.registry_v2 import MODEL_REGISTRY_V2  # type: ignore
-    from eval.embernet_lmms_adapter import EmberNetLMMS
+    from lmms_eval.models.registry_v2 import MODEL_REGISTRY_V2, ModelManifest  # type: ignore
 
-    registered = False
-
-    # Pattern A: registry exposes a public register() method
-    if hasattr(MODEL_REGISTRY_V2, "register"):
-        try:
-            MODEL_REGISTRY_V2.register("embernet", EmberNetLMMS, is_simple=True)
-            registered = True
-        except Exception:
-            pass
-
-    # Pattern B: internal dict named _registry or _model_registry
-    if not registered:
-        for attr in ("_registry", "_model_registry", "registry"):
-            reg_dict = getattr(MODEL_REGISTRY_V2, attr, None)
-            if isinstance(reg_dict, dict) and "embernet" not in reg_dict:
-                reg_dict["embernet"] = EmberNetLMMS
-                registered = True
-                break
-
-    if registered:
-        print("[lmms_launcher] Registered EmberNet into registry_v2.")
-    else:
-        print("[lmms_launcher] Could not inject into registry_v2 — will rely on legacy registry.")
+    manifest = ModelManifest(
+        model_id="embernet",
+        simple_class_path="eval.embernet_lmms_adapter.EmberNetLMMS",
+    )
+    MODEL_REGISTRY_V2.register_manifest(manifest, overwrite=True)
+    print("[lmms_launcher] Registered EmberNet into registry_v2 via register_manifest().")
 except ImportError:
     pass  # older lmms-eval without registry_v2 — @register_model already handled it
 except Exception as e:
