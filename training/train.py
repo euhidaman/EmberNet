@@ -28,6 +28,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Iterator
 
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
@@ -917,7 +923,20 @@ class Trainer:
             epoch_loss = 0.0
             epoch_steps = 0
 
-            for step, batch in enumerate(train_loader):
+            pbar = (
+                tqdm(
+                    enumerate(train_loader),
+                    total=len(train_loader),
+                    desc=f"Epoch {epoch+1}/{self.config.epochs}",
+                    unit="step",
+                    dynamic_ncols=True,
+                )
+                if HAS_TQDM
+                else None
+            )
+            _iter = pbar if pbar is not None else enumerate(train_loader)
+
+            for step, batch in _iter:
                 # Warmup
                 self._warmup_lr()
 
@@ -932,6 +951,20 @@ class Trainer:
                     self._optimizer_step()
                     self.global_step += 1
 
+                    # Always update tqdm postfix
+                    if pbar is not None:
+                        _lr_now = (
+                            self.optimizer._get_lr(self.optimizer.global_step)
+                            if self.use_bitnet_optimizer
+                            else self.optimizer.param_groups[0]["lr"]
+                        )
+                        pbar.set_postfix(
+                            loss=f"{metrics['loss']:.4f}",
+                            avg=f"{epoch_loss/epoch_steps:.4f}",
+                            lr=f"{_lr_now:.2e}",
+                            step=self.global_step,
+                        )
+
                     # Logging
                     if self.global_step % self.config.log_interval == 0:
                         avg_loss = epoch_loss / epoch_steps
@@ -942,14 +975,24 @@ class Trainer:
                             lr = self.optimizer.param_groups[0]["lr"]
                         elapsed = time.time() - start_time
 
-                        print(
-                            f"Epoch {epoch+1}/{self.config.epochs} | "
-                            f"Step {self.global_step} | "
-                            f"Loss: {metrics['loss']:.4f} | "
-                            f"Avg Loss: {avg_loss:.4f} | "
-                            f"LR: {lr:.2e} | "
-                            f"Time: {elapsed:.1f}s"
-                        )
+                        if pbar is None:
+                            print(
+                                f"Epoch {epoch+1}/{self.config.epochs} | "
+                                f"Step {self.global_step} | "
+                                f"Loss: {metrics['loss']:.4f} | "
+                                f"Avg Loss: {avg_loss:.4f} | "
+                                f"LR: {lr:.2e} | "
+                                f"Time: {elapsed:.1f}s"
+                            )
+                        else:
+                            tqdm.write(
+                                f"Epoch {epoch+1}/{self.config.epochs} | "
+                                f"Step {self.global_step} | "
+                                f"Loss: {metrics['loss']:.4f} | "
+                                f"Avg Loss: {avg_loss:.4f} | "
+                                f"LR: {lr:.2e} | "
+                                f"Time: {elapsed:.1f}s"
+                            )
 
                         log_dict = {
                             "train/loss": metrics["loss"],
@@ -1067,6 +1110,9 @@ class Trainer:
                 print(f"  Flushing {remainder} remaining accumulated gradient(s) at epoch end")
                 self._optimizer_step()
                 self.global_step += 1
+
+            if pbar is not None:
+                pbar.close()
 
             # End of epoch - handle case where all batches were skipped
             if epoch_steps == 0:
