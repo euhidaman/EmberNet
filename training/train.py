@@ -852,7 +852,6 @@ class Trainer:
                 batch_size=self.config.batch_size,
                 num_workers=self.config.num_workers,
                 stage=self.config.stage,
-                use_curriculum=self.config.use_curriculum,
                 max_samples_per_dataset=self.config.max_samples_per_dataset,
             )
 

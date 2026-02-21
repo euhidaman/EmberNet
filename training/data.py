@@ -82,6 +82,9 @@ class DataConfig:
     use_augmentation: bool = True
     random_crop: bool = False
 
+    # Sample cap (for trial runs / debugging)
+    max_samples_per_dataset: Optional[int] = None
+
 
 class ImageProcessor:
     """Simple image preprocessing for training."""
@@ -163,6 +166,10 @@ class EmberNetDataset(Dataset):
 
         # Load data
         self.samples = self._load_data(data_path)
+        # Apply per-dataset sample cap (for trial runs)
+        cap = getattr(self.config, "max_samples_per_dataset", None)
+        if cap is not None and len(self.samples) > cap:
+            self.samples = self.samples[:cap]
         print(f"Loaded {len(self.samples)} samples for {domain} ({split})")
 
     def _load_data(self, data_path: str) -> List[Dict[str, Any]]:
@@ -824,6 +831,7 @@ def create_dataloaders(
     batch_size: int = 4,
     num_workers: int = 4,
     stage: int = 1,
+    max_samples_per_dataset: Optional[int] = None,
 ) -> Tuple[DataLoader, Optional[DataLoader]]:
     """
     Create training and validation dataloaders.
@@ -838,6 +846,8 @@ def create_dataloaders(
         train_loader, val_loader
     """
     config = data_config or DataConfig()
+    if max_samples_per_dataset is not None:
+        config.max_samples_per_dataset = max_samples_per_dataset
 
     if stage == 1:
         # Stage 1: Use general VLM data for projector alignment
