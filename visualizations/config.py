@@ -47,6 +47,11 @@ PLOT_DIRS = {
     # Stage Comparison
     "stage1_vs_stage2":      PLOTS_ROOT / "stage_comparison" / "stage1_vs_stage2",
     "ablation_studies":      PLOTS_ROOT / "stage_comparison" / "ablation_studies",
+    # Benchmark Results
+    "benchmark_spider":      PLOTS_ROOT / "benchmark_results" / "spider",
+    "benchmark_task_scores": PLOTS_ROOT / "benchmark_results" / "task_scores",
+    "benchmark_domain":      PLOTS_ROOT / "benchmark_results" / "domain_analysis",
+    "benchmark_dashboard":   PLOTS_ROOT / "benchmark_results" / "dashboard",
     # Errors
     "errors":                PLOTS_ROOT / "errors",
 }
@@ -83,6 +88,10 @@ _PLOT_DIR_SUFFIXES = {
     "benchmark_comparisons":  Path("performance_metrics/benchmark_comparisons"),
     "stage1_vs_stage2":       Path("stage_comparison/stage1_vs_stage2"),
     "ablation_studies":       Path("stage_comparison/ablation_studies"),
+    "benchmark_spider":       Path("benchmark_results/spider"),
+    "benchmark_task_scores":  Path("benchmark_results/task_scores"),
+    "benchmark_domain":       Path("benchmark_results/domain_analysis"),
+    "benchmark_dashboard":    Path("benchmark_results/dashboard"),
     "errors":                 Path("errors"),
 }
 

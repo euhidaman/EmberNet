@@ -15,6 +15,7 @@ from visualizations.performance_metrics import PerformanceMetricsPlotter
 from visualizations.stage_comparison import StageComparisonPlotter
 from visualizations.wandb_utils import WandBLogger
 from visualizations.live_plotter import LivePlotter
+from visualizations.benchmark_viz import BenchmarkVisualizer
 
 __all__ = [
     "VIZ_CONFIG",
@@ -29,4 +30,5 @@ __all__ = [
     "StageComparisonPlotter",
     "WandBLogger",
     "LivePlotter",
+    "BenchmarkVisualizer",
 ]

@@ -1481,6 +1481,34 @@ def main():
     print(f"Final checkpoint: {checkpoint_path}")
     print(f"{'='*70}\n")
 
+    # =========================================================================
+    # Automatic post-training benchmark evaluation (lmms-eval)
+    # Silently skipped if lmms-eval is not installed or checkpoint missing.
+    # =========================================================================
+    if checkpoint_path and Path(checkpoint_path).exists():
+        try:
+            import sys as _sys
+            _repo_root = str(Path(__file__).resolve().parent.parent)
+            if _repo_root not in _sys.path:
+                _sys.path.insert(0, _repo_root)
+            from eval.auto_eval import run_auto_eval
+            # Use the output dir from the last stage that ran
+            _last_output_dir = (
+                f"{args.output_dir}/trial/stage{stages_to_run[-1]}"
+                if args.trial
+                else f"{args.output_dir}/stage{stages_to_run[-1]}"
+            )
+            run_auto_eval(
+                checkpoint_path=checkpoint_path,
+                output_dir=_last_output_dir,
+                is_trial=getattr(args, 'trial', False),
+                device="auto",
+            )
+        except Exception as _eval_err:
+            print(f"  [eval] Post-training evaluation skipped: {_eval_err}")
+    else:
+        print("  [eval] No final checkpoint found — skipping benchmark evaluation.")
+
 
 if __name__ == "__main__":
     main()
