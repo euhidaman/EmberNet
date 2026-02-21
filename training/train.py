@@ -343,6 +343,12 @@ class TrainingConfig:
     bitnet_phase1_ratio: float = 0.6  # 60% of training in phase 1
     bitnet_phase2_lr_factor: float = 0.1  # Drop LR by 10x in phase 2
 
+    # HuggingFace Hub integration
+    push_to_hub: bool = False           # Push model card + weights after each epoch
+    hub_token: Optional[str] = None    # HF write token (falls back to HF_TOKEN env var)
+    hub_repo: Optional[str] = None     # Override repo ID (default: euhidaman/EmberNet[-Trial])
+    is_trial_run: bool = False          # Determines repo suffix (-Trial vs main)
+
     def __post_init__(self):
         # Adjust settings based on stage - using BitNet methodology
         if self.stage == 1:
@@ -1156,6 +1162,28 @@ class Trainer:
             # Save epoch checkpoint
             self._save_checkpoint(f"checkpoint_epoch_{epoch+1}.pt")
 
+            # ---- Push to HuggingFace Hub ----
+            if self.config.push_to_hub:
+                try:
+                    from training.hub_utils import push_to_hub as _push_to_hub
+                    elapsed = time.time() - start_time
+                    _push_to_hub(
+                        model=self.model,
+                        vlm_config=self.config.model_config or EmberNetConfig(),
+                        training_config=self.config,
+                        stage=self.config.stage,
+                        epoch=epoch + 1,
+                        total_epochs=self.config.epochs,
+                        avg_loss=epoch_avg_loss,
+                        global_step=self.global_step,
+                        training_seconds=elapsed,
+                        repo_id=self.config.hub_repo or None,
+                        hf_token=self.config.hub_token or None,
+                        is_trial=self.config.is_trial_run,
+                    )
+                except Exception as _hub_err:
+                    print(f"  [hub] Push failed (non-fatal): {_hub_err}")
+
         # Final save
         self._save_checkpoint("final_model.pt")
 
@@ -1277,6 +1305,10 @@ def run_training(args, stage: int, resume_from: Optional[str] = None):
         log_interval=log_interval,
         eval_interval=eval_interval,
         save_interval=save_interval,
+        push_to_hub=getattr(args, 'push_to_hub', False),
+        hub_token=getattr(args, 'hf_token', None),
+        hub_repo=getattr(args, 'hf_repo', None),
+        is_trial_run=getattr(args, 'trial', False),
     )
     config.max_samples_per_dataset = max_samples
 
@@ -1366,6 +1398,14 @@ def main():
                         help="W&B project name")
     parser.add_argument("--wandb-run-name", type=str, default=None,
                         help="W&B run name (default: auto-generated)")
+
+    # HuggingFace Hub
+    parser.add_argument("--push-to-hub", action="store_true",
+                        help="Push model weights + model card to HuggingFace Hub after each epoch")
+    parser.add_argument("--hf-token", type=str, default=None,
+                        help="HuggingFace write token (or set HF_TOKEN env var)")
+    parser.add_argument("--hf-repo", type=str, default=None,
+                        help="Override Hub repo ID (default: euhidaman/EmberNet-Trial for --trial, euhidaman/EmberNet for --main)")
 
     args = parser.parse_args()
 
