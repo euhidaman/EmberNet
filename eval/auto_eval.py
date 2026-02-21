@@ -124,7 +124,7 @@ def run_auto_eval(
         "--model_args",   model_args,
         "--tasks",        ",".join(tasks),
         "--batch_size",   "1",
-        "--include-path", str(eval_dir),
+        "--include_path", str(eval_dir),
         "--output_path",  str(results_dir),
         "--log_samples",
     ]

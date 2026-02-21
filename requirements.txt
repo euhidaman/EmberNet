@@ -22,3 +22,7 @@ wandb>=0.16.0
 
 # Progress bars
 tqdm>=4.65.0
+
+# Visualization
+seaborn>=0.12.0
+matplotlib>=3.7.0
