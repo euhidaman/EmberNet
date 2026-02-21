@@ -14,6 +14,7 @@ from visualizations.dataset_analysis import DatasetAnalysisPlotter
 from visualizations.performance_metrics import PerformanceMetricsPlotter
 from visualizations.stage_comparison import StageComparisonPlotter
 from visualizations.wandb_utils import WandBLogger
+from visualizations.live_plotter import LivePlotter
 
 __all__ = [
     "VIZ_CONFIG",
@@ -27,4 +28,5 @@ __all__ = [
     "PerformanceMetricsPlotter",
     "StageComparisonPlotter",
     "WandBLogger",
+    "LivePlotter",
 ]

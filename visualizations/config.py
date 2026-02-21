@@ -58,6 +58,48 @@ def ensure_plot_dirs():
         d.mkdir(parents=True, exist_ok=True)
 
 
+# Relative sub-paths (below whatever root is active).
+# Used by set_plots_root() to rebuild PLOT_DIRS when the root changes.
+_PLOT_DIR_SUFFIXES = {
+    "loss_curves":            Path("training_dynamics/loss_curves"),
+    "learning_rates":         Path("training_dynamics/learning_rates"),
+    "gradient_stats":         Path("training_dynamics/gradient_stats"),
+    "convergence":            Path("training_dynamics/convergence"),
+    "routing_patterns":       Path("expert_analysis/routing_patterns"),
+    "specialization_metrics": Path("expert_analysis/specialization_metrics"),
+    "expert_utilization":     Path("expert_analysis/expert_utilization"),
+    "spider_charts":          Path("expert_analysis/spider_charts"),
+    "model_diagrams":         Path("architecture_visualizations/model_diagrams"),
+    "attention_maps":         Path("architecture_visualizations/attention_maps"),
+    "token_flow":             Path("architecture_visualizations/token_flow"),
+    "weight_distributions":   Path("quantization_analysis/weight_distributions"),
+    "activation_histograms":  Path("quantization_analysis/activation_histograms"),
+    "bitwidth_efficiency":    Path("quantization_analysis/bitwidth_efficiency"),
+    "token_statistics":       Path("dataset_analysis/token_statistics"),
+    "domain_distributions":   Path("dataset_analysis/domain_distributions"),
+    "sample_visualizations":  Path("dataset_analysis/sample_visualizations"),
+    "accuracy_curves":        Path("performance_metrics/accuracy_curves"),
+    "perplexity_progression": Path("performance_metrics/perplexity_progression"),
+    "benchmark_comparisons":  Path("performance_metrics/benchmark_comparisons"),
+    "stage1_vs_stage2":       Path("stage_comparison/stage1_vs_stage2"),
+    "ablation_studies":       Path("stage_comparison/ablation_studies"),
+    "errors":                 Path("errors"),
+}
+
+
+def set_plots_root(new_root):
+    """Redirect all plot output directories under a new root folder.
+
+    Call this before instantiating any plotter to control where files land.
+    Typically called with ``{output_dir}/plots`` so plots sit next to checkpoints.
+    """
+    global PLOTS_ROOT, PLOT_DIRS
+    PLOTS_ROOT = Path(new_root)
+    for key, suffix in _PLOT_DIR_SUFFIXES.items():
+        PLOT_DIRS[key] = PLOTS_ROOT / suffix
+    ensure_plot_dirs()
+
+
 # ---------------------------------------------------------------------------
 # Expert metadata
 # ---------------------------------------------------------------------------
