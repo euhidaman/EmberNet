@@ -119,12 +119,11 @@ def run_auto_eval(
     model_args += ",dtype=bfloat16"
 
     cmd = [
-        sys.executable, "-m", "lmms_eval",
+        sys.executable, str(repo_root / "eval" / "lmms_launcher.py"),
         "--model",        "embernet",
         "--model_args",   model_args,
         "--tasks",        ",".join(tasks),
         "--batch_size",   "1",
-        "--include_path", str(eval_dir),
         "--output_path",  str(results_dir),
         "--trust_remote_code",
     ]
