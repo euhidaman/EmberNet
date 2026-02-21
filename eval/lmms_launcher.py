@@ -48,8 +48,13 @@ except Exception as e:
 # ── 2. Register into registry_v2 using register_manifest() ───────────────
 # registry_v2 uses ModelManifest with a dotted class path string — it does
 # NOT pick up @register_model decorators from the legacy registry.
+#
+# IMPORTANT: The singleton MODEL_REGISTRY_V2 instance lives in
+#   lmms_eval.models (the __init__.py), NOT in lmms_eval.models.registry_v2.
+#   Importing from the wrong module causes a silent ImportError.
 try:
-    from lmms_eval.models.registry_v2 import MODEL_REGISTRY_V2, ModelManifest  # type: ignore
+    from lmms_eval.models import MODEL_REGISTRY_V2               # the singleton instance
+    from lmms_eval.models.registry_v2 import ModelManifest        # the dataclass
 
     manifest = ModelManifest(
         model_id="embernet",
@@ -57,10 +62,13 @@ try:
     )
     MODEL_REGISTRY_V2.register_manifest(manifest, overwrite=True)
     print("[lmms_launcher] Registered EmberNet into registry_v2 via register_manifest().")
-except ImportError:
-    pass  # older lmms-eval without registry_v2 — @register_model already handled it
+except ImportError as ie:
+    # Older lmms-eval without registry_v2 — @register_model already handled it
+    print(f"[lmms_launcher] registry_v2 not available ({ie}) — relying on legacy registry.")
 except Exception as e:
     print(f"[lmms_launcher] registry_v2 patch failed (non-fatal): {e}")
+    import traceback
+    traceback.print_exc()
 
 # ── 3. Hand off to lmms_eval CLI ──────────────────────────────────────────
 try:
