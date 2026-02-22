@@ -28,12 +28,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Iterator
 
-try:
-    from tqdm import tqdm
-    HAS_TQDM = True
-except ImportError:
-    HAS_TQDM = False
-
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
@@ -91,9 +85,7 @@ class BitNetStableOptimizer:
             self.state[param] = {
                 'step': 0,
                 'exp_avg': torch.zeros_like(param.data, dtype=torch.float32),
-                'exp_avg_sq': torch.zeros_like(param.data, dtype=torch.float32),
-                # Master weights in FP32 to prevent precision loss during accumulation
-                'master_param': param.data.detach().clone().float()
+                'exp_avg_sq': torch.zeros_like(param.data, dtype=torch.float32)
             }
         self.global_step = 0
 
@@ -118,8 +110,11 @@ class BitNetStableOptimizer:
             if param.grad is None:
                 continue
 
-            # Hardened gradient handling - convert NaNs to zeros before processing
-            grad = torch.nan_to_num(param.grad.data, nan=0.0, posinf=1.0, neginf=-1.0)
+            # Skip update if gradient is not finite (will be caught elsewhere)
+            if not torch.isfinite(param.grad).all():
+                continue
+
+            grad = param.grad.data
             state = self.state[param]
 
             if self.grad_clip > 0:
@@ -130,10 +125,8 @@ class BitNetStableOptimizer:
             grad = grad.to(torch.float32)
             state['step'] += 1
             exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
-            master_param = state['master_param']
             beta1, beta2 = self.betas
 
-            # Decay the first and second moment running average coefficient
             exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
             exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
@@ -146,21 +139,9 @@ class BitNetStableOptimizer:
             update = exp_avg / denom
 
             if self.weight_decay > 0:
-                update.add_(master_param, alpha=self.weight_decay)
+                update.add_(param.data.to(torch.float32), alpha=self.weight_decay)
 
-            # Stabilize update magnitudes
-            update = update.clamp(-10.0, 10.0)
-
-            # Update master parameters in FP32
-            master_param.add_(update, alpha=-step_size)
-            
-            # Anti-drift: prevent master parameters from exploding
-            # Tightened to [-3, 3] so that weights stay close to quantization boundaries,
-            # allowing the model to flip between -1, 0, and 1 more responsively.
-            master_param.clamp_(-3.0, 3.0)
-            
-            # Sync model parameters with master parameters (cast back to original dtype)
-            param.data.copy_(master_param.to(param.dtype))
+            param.data.add_(update.to(param.dtype), alpha=-step_size)
 
     def state_dict(self):
         """Return optimizer state for checkpointing."""
@@ -210,15 +191,11 @@ class BitNetGradientScaler:
     def update(self, found_inf: bool):
         if found_inf:
             self.scale *= self.backoff_factor
-            # Prevent scale from underflowing to zero
-            self.scale = max(self.scale, 1e-8)
             self._growth_tracker = 0
         else:
             self._growth_tracker += 1
             if self._growth_tracker >= self.growth_interval:
                 self.scale *= self.growth_factor
-                # Prevent scale from overflowing to inf
-                self.scale = min(self.scale, 1e12)
                 self._growth_tracker = 0
 
 
@@ -257,12 +234,10 @@ def initialize_bitnet_weights(model: nn.Module):
         # Only initialize BitLinear layers (core BitNet quantized layers)
         if isinstance(module, BitLinear):
             fan_in = module.weight.size(1)
-            # Official BitNet b1.58 init: std = 1 / sqrt(d)
-            # This ensures weights are large enough that round(W/gamma) doesn't zero everything out.
-            std = 1.0 / math.sqrt(fan_in) 
+            std = math.sqrt(2.0 / fan_in) * 0.5
             nn.init.normal_(module.weight, mean=0.0, std=std)
             count += 1
-    print(f"✓ Initialized {count} BitLinear layers with standard BitNet b1.58 weights (std=1/sqrt(d))")
+    print(f"✓ Initialized {count} BitLinear layers with BitNet-specific weights")
 
 
 # =============================================================================
@@ -342,11 +317,6 @@ class TrainingConfig:
     use_bitnet_optimizer: bool = True  # Use BitNet stable optimizer
     bitnet_phase1_ratio: float = 0.6  # 60% of training in phase 1
     bitnet_phase2_lr_factor: float = 0.1  # Drop LR by 10x in phase 2
-
-    # HuggingFace Hub integration (always attempted; silently skipped if no token)
-    hub_token: Optional[str] = None    # HF write token (falls back to HF_TOKEN env var)
-    hub_repo: Optional[str] = None     # Override repo ID (default: euhidaman/EmberNet[-Trial])
-    is_trial_run: bool = False          # Determines repo suffix (-Trial vs main)
 
     def __post_init__(self):
         # Adjust settings based on stage - using BitNet methodology
@@ -466,29 +436,6 @@ class Trainer:
         self.global_step = 0
         self.best_loss = float('inf')
         self.training_log: List[Dict] = []
-
-        # Extended W&B tracking state
-        self._last_grad_norm: float = 0.0
-        self._total_clipped:  int   = 0
-        self._total_opt_steps: int  = 0
-
-        # Live visualization — generates plots into {output_dir}/plots/
-        try:
-            from visualizations.live_plotter import LivePlotter
-            _plot_interval = 10 if config.is_trial_run else 500
-            self.live_plotter = LivePlotter(
-                output_dir=config.output_dir,
-                stage=config.stage,
-                plot_interval=_plot_interval,
-            )
-        except Exception as _viz_err:
-            print(f"  [viz] Disabled — {_viz_err}")
-            from types import SimpleNamespace
-            self.live_plotter = SimpleNamespace(
-                record_step=lambda *a, **k: None,
-                plot_epoch=lambda *a, **k: None,
-                plot_final=lambda *a, **k: None,
-            )
 
     def _setup_parameter_freezing(self):
         """Freeze parameters based on training stage."""
@@ -710,8 +657,7 @@ class Trainer:
             # Use BitNet gradient scaler
             scaled_loss = self.bitnet_scaler.scale_loss(loss)
             scaled_loss.backward()
-            # CRITICAL: Do NOT unscale gradients here if using accumulation!
-            # Unscaling must happen only before the optimizer step.
+            self.bitnet_scaler.unscale_gradients(self.optimizer)
         elif self.scaler is not None:
             # Use standard AMP scaler
             self.scaler.scale(loss).backward()
@@ -737,30 +683,13 @@ class Trainer:
         if self.bitnet_scaler is not None:
             self.bitnet_scaler.update(found_inf=False)
 
-        result: Dict = {
+        return {
             "loss": loss.item() * self.config.gradient_accumulation_steps,
         }
 
-        # Capture expert routing probabilities for W&B logging
-        if (
-            self.config.stage == 2
-            and outputs.get("router_logits") is not None
-        ):
-            with torch.no_grad():
-                rl_last = outputs["router_logits"][-1]
-                flat = rl_last.reshape(-1, rl_last.shape[-1]).float()
-                probs = torch.softmax(flat, dim=-1).mean(dim=0)
-                result["expert_probs"] = probs.cpu().numpy()
-
-        return result
-
     def _optimizer_step(self):
-        """Perform optimizer step with gradient clipping and unscaling."""
+        """Perform optimizer step with gradient clipping."""
         if self.use_bitnet_optimizer:
-            # Unscale gradients once before the step (correct for accumulation)
-            if self.bitnet_scaler is not None:
-                self.bitnet_scaler.unscale_gradients(self.optimizer)
-            
             # BitNet optimizer handles its own gradient clipping internally
             self.optimizer.step()
             self.optimizer.zero_grad()
@@ -778,18 +707,12 @@ class Trainer:
                 if grads:
                     all_grads = torch.cat(grads)
                     clip_val = torch.quantile(all_grads, self.config.grad_clip_percentile)
-                    raw_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_val.item())
-                    self._last_grad_norm = raw_norm.item()
-                    if self._last_grad_norm > clip_val.item():
-                        self._total_clipped += 1
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_val.item())
             else:
-                raw_norm = torch.nn.utils.clip_grad_norm_(
+                torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
                     self.config.max_grad_norm
                 )
-                self._last_grad_norm = raw_norm.item()
-                if self._last_grad_norm > self.config.max_grad_norm:
-                    self._total_clipped += 1
 
             if self.scaler is not None:
                 self.scaler.step(self.optimizer)
@@ -804,7 +727,6 @@ class Trainer:
                 self.scheduler.step()
 
         # EMA update
-        self._total_opt_steps += 1
         self._update_ema()
 
     def _update_ema(self):
@@ -881,6 +803,7 @@ class Trainer:
                 batch_size=self.config.batch_size,
                 num_workers=self.config.num_workers,
                 stage=self.config.stage,
+                use_curriculum=self.config.use_curriculum,
                 max_samples_per_dataset=self.config.max_samples_per_dataset,
             )
 
@@ -946,25 +869,13 @@ class Trainer:
             epoch_loss = 0.0
             epoch_steps = 0
 
-            pbar = (
-                tqdm(
-                    enumerate(train_loader),
-                    total=len(train_loader),
-                    desc=f"Epoch {epoch+1}/{self.config.epochs}",
-                    unit="step",
-                    dynamic_ncols=True,
-                )
-                if HAS_TQDM
-                else None
-            )
-            _iter = pbar if pbar is not None else enumerate(train_loader)
-
-            for step, batch in _iter:
+            for step, batch in enumerate(train_loader):
                 # Warmup
                 self._warmup_lr()
 
                 # Training step
                 metrics = self._train_step(batch)
+
 
                 epoch_loss += metrics["loss"]
                 epoch_steps += 1
@@ -973,32 +884,6 @@ class Trainer:
                 if (step + 1) % self.config.gradient_accumulation_steps == 0:
                     self._optimizer_step()
                     self.global_step += 1
-
-                    # Compute current LR (used by tqdm, logging, and live plotter)
-                    _lr_now = (
-                        self.optimizer._get_lr(self.optimizer.global_step)
-                        if self.use_bitnet_optimizer
-                        else self.optimizer.param_groups[0]["lr"]
-                    )
-
-                    # Feed live visualizer EVERY optimizer step
-                    self.live_plotter.record_step(
-                        step=self.global_step,
-                        loss=metrics["loss"],
-                        lr=_lr_now,
-                        grad_norm=self._last_grad_norm,
-                        clipped=(self._last_grad_norm > self.config.max_grad_norm),
-                        expert_probs=metrics.get("expert_probs"),
-                    )
-
-                    # Always update tqdm postfix
-                    if pbar is not None:
-                        pbar.set_postfix(
-                            loss=f"{metrics['loss']:.4f}",
-                            avg=f"{epoch_loss/epoch_steps:.4f}",
-                            lr=f"{_lr_now:.2e}",
-                            step=self.global_step,
-                        )
 
                     # Logging
                     if self.global_step % self.config.log_interval == 0:
@@ -1010,24 +895,14 @@ class Trainer:
                             lr = self.optimizer.param_groups[0]["lr"]
                         elapsed = time.time() - start_time
 
-                        if pbar is None:
-                            print(
-                                f"Epoch {epoch+1}/{self.config.epochs} | "
-                                f"Step {self.global_step} | "
-                                f"Loss: {metrics['loss']:.4f} | "
-                                f"Avg Loss: {avg_loss:.4f} | "
-                                f"LR: {lr:.2e} | "
-                                f"Time: {elapsed:.1f}s"
-                            )
-                        else:
-                            tqdm.write(
-                                f"Epoch {epoch+1}/{self.config.epochs} | "
-                                f"Step {self.global_step} | "
-                                f"Loss: {metrics['loss']:.4f} | "
-                                f"Avg Loss: {avg_loss:.4f} | "
-                                f"LR: {lr:.2e} | "
-                                f"Time: {elapsed:.1f}s"
-                            )
+                        print(
+                            f"Epoch {epoch+1}/{self.config.epochs} | "
+                            f"Step {self.global_step} | "
+                            f"Loss: {metrics['loss']:.4f} | "
+                            f"Avg Loss: {avg_loss:.4f} | "
+                            f"LR: {lr:.2e} | "
+                            f"Time: {elapsed:.1f}s"
+                        )
 
                         log_dict = {
                             "train/loss": metrics["loss"],
@@ -1035,70 +910,7 @@ class Trainer:
                             "train/lr": lr,
                             "train/epoch": epoch + 1,
                             "train/step": self.global_step,
-                            "train/stage": self.config.stage,
-                            # Gradient stats
-                            "train/grad_norm": self._last_grad_norm,
-                            "train/grad_clipped_ratio": (
-                                self._total_clipped / max(1, self._total_opt_steps)
-                            ),
                         }
-
-                        # -- Expert routing metrics (Stage 2 only) --
-                        expert_domains = [
-                            "vision_ocr", "vision_diagram",
-                            "code_math_chart", "code_math_formula",
-                            "spatial_scene", "spatial_reasoning",
-                            "agentic_knowledge", "agentic_reasoning",
-                        ]
-                        if "expert_probs" in metrics:
-                            import numpy as np
-                            eprobs = metrics["expert_probs"]
-                            for i, name in enumerate(expert_domains):
-                                if i < len(eprobs):
-                                    log_dict[f"expert/selection_freq_{name}"] = float(eprobs[i])
-                            # Load imbalance: coefficient of variation
-                            cv = float(np.std(eprobs) / max(np.mean(eprobs), 1e-8))
-                            log_dict["expert/load_imbalance"] = cv
-
-                        # -- Every-10-steps metrics --
-                        if self.global_step % 10 == 0:
-                            # Per-expert specialization index (entropy-based)
-                            if "expert_probs" in metrics:
-                                import numpy as np
-                                eprobs = metrics["expert_probs"]
-                                for i, name in enumerate(expert_domains):
-                                    if i < len(eprobs):
-                                        p = float(eprobs[i])
-                                        # spec index >0 means expert is preferred vs uniform
-                                        spec = p - (1.0 / len(eprobs))
-                                        log_dict[f"expert/specialization_index_{name}"] = spec
-
-                            # Weight quantization stats (sample a few decoder layers)
-                            try:
-                                import numpy as np
-                                weight_mags = []
-                                sparsity_vals = []
-                                for n, p in self.model.named_parameters():
-                                    if "weight" in n and p.dtype in (torch.float32, torch.float16, torch.bfloat16):
-                                        w = p.detach().float()
-                                        weight_mags.append(w.abs().mean().item())
-                                        sparsity_vals.append((w == 0).float().mean().item())
-                                if weight_mags:
-                                    log_dict["quantization/weight_magnitude_mean"] = float(np.mean(weight_mags))
-                                    log_dict["quantization/weight_sparsity_mean"]  = float(np.mean(sparsity_vals))
-                            except Exception:
-                                pass
-
-                        # -- Every-1000-steps metrics: param update magnitudes --
-                        if self.global_step % 1000 == 0:
-                            try:
-                                for pname, param in self.model.named_parameters():
-                                    if param.grad is not None and "weight" in pname:
-                                        upd_mag = (param.grad.detach().abs().mean().item())
-                                        safe_key = pname.replace(".", "/")
-                                        log_dict[f"params/update_magnitude_{safe_key}"] = upd_mag
-                            except Exception:
-                                pass
 
                         self.training_log.append({
                             "step": self.global_step,
@@ -1122,12 +934,9 @@ class Trainer:
 
                         # Log validation to wandb
                         if self.use_wandb:
-                            import math
-                            val_ppl = math.exp(min(val_loss, 20.0))  # cap to avoid overflow
                             wandb.log({
                                 "val/loss": val_loss,
                                 "val/best_loss": self.best_loss,
-                                "val/perplexity": val_ppl,
                             }, step=self.global_step)
 
                         self.model.train()
@@ -1135,19 +944,6 @@ class Trainer:
                     # Save checkpoint
                     if self.global_step % self.config.save_interval == 0:
                         self._save_checkpoint(f"checkpoint_step_{self.global_step}.pt")
-
-            # ---- Flush remaining accumulated gradients at epoch end ----
-            # If the number of steps in this epoch wasn't divisible by
-            # gradient_accumulation_steps, there are leftover gradients
-            # that would otherwise be silently discarded.
-            remainder = epoch_steps % self.config.gradient_accumulation_steps
-            if remainder > 0 and epoch_steps > 0:
-                print(f"  Flushing {remainder} remaining accumulated gradient(s) at epoch end")
-                self._optimizer_step()
-                self.global_step += 1
-
-            if pbar is not None:
-                pbar.close()
 
             # End of epoch - handle case where all batches were skipped
             if epoch_steps == 0:
@@ -1160,26 +956,7 @@ class Trainer:
 
             epoch_avg_loss = epoch_loss / epoch_steps
             print(f"\nEpoch {epoch+1} Complete | Average Loss: {epoch_avg_loss:.4f}")
-            print(f"  Valid batches: {epoch_steps} / {len(train_loader)}")
-
-            # End-of-epoch validation (always run if val_loader exists)
-            if val_loader is not None:
-                val_loss = self.evaluate(val_loader)
-                print(f"  Epoch validation loss: {val_loss:.4f}")
-
-                if val_loss < self.best_loss:
-                    self.best_loss = val_loss
-                    self._save_checkpoint("best_model.pt", is_best=True)
-
-                if self.use_wandb:
-                    wandb.log({
-                        "val/loss": val_loss,
-                        "val/best_loss": self.best_loss,
-                    }, step=self.global_step)
-
-                self.model.train()
-
-            print()  # blank line for readability
+            print(f"  Valid batches: {epoch_steps} / {len(train_loader)}\n")
 
             # Log epoch metrics to wandb
             if self.use_wandb:
@@ -1191,40 +968,12 @@ class Trainer:
             # Save epoch checkpoint
             self._save_checkpoint(f"checkpoint_epoch_{epoch+1}.pt")
 
-            # ---- Visualizations (every epoch) ----
-            self.live_plotter.plot_epoch(epoch + 1, self.config.stage)
-
-            # ---- Push to HuggingFace Hub (auto — skips if no token found) ----
-            try:
-                from training.hub_utils import push_to_hub as _push_to_hub
-                elapsed = time.time() - start_time
-                _push_to_hub(
-                    model=self.model,
-                    vlm_config=self.config.model_config or EmberNetConfig(),
-                    training_config=self.config,
-                    stage=self.config.stage,
-                    epoch=epoch + 1,
-                    total_epochs=self.config.epochs,
-                    avg_loss=epoch_avg_loss,
-                    global_step=self.global_step,
-                    training_seconds=elapsed,
-                    repo_id=self.config.hub_repo or None,
-                    hf_token=self.config.hub_token or None,
-                    is_trial=self.config.is_trial_run,
-                )
-            except Exception as _hub_err:
-                print(f"  [hub] Push skipped (non-fatal): {_hub_err}")
-
         # Final save
         self._save_checkpoint("final_model.pt")
-        self.live_plotter.plot_final(self.config.stage)
 
         total_time = time.time() - start_time
         print(f"\nTraining complete in {total_time/60:.1f} minutes")
-        if self.best_loss < float('inf'):
-            print(f"Best validation loss: {self.best_loss:.4f}")
-        else:
-            print(f"Best validation loss: N/A (no validation data or too few steps)")
+        print(f"Best validation loss: {self.best_loss:.4f}")
 
         # Finish wandb run
         if self.use_wandb:
@@ -1337,9 +1086,6 @@ def run_training(args, stage: int, resume_from: Optional[str] = None):
         log_interval=log_interval,
         eval_interval=eval_interval,
         save_interval=save_interval,
-        hub_token=getattr(args, 'hf_token', None),
-        hub_repo=getattr(args, 'hf_repo', None),
-        is_trial_run=getattr(args, 'trial', False),
     )
     config.max_samples_per_dataset = max_samples
 
@@ -1430,12 +1176,6 @@ def main():
     parser.add_argument("--wandb-run-name", type=str, default=None,
                         help="W&B run name (default: auto-generated)")
 
-    # HuggingFace Hub (push happens automatically every epoch if a token is available)
-    parser.add_argument("--hf-token", type=str, default=None,
-                        help="HuggingFace write token (or set HF_TOKEN env var). Push is automatic when a token is found.")
-    parser.add_argument("--hf-repo", type=str, default=None,
-                        help="Override Hub repo ID (default: euhidaman/EmberNet-Trial for --trial, euhidaman/EmberNet for --main)")
-
     args = parser.parse_args()
 
     # =========================================================================
@@ -1484,34 +1224,6 @@ def main():
     print(f"Stages completed: {stages_to_run}")
     print(f"Final checkpoint: {checkpoint_path}")
     print(f"{'='*70}\n")
-
-    # =========================================================================
-    # Automatic post-training benchmark evaluation (lmms-eval)
-    # Silently skipped if lmms-eval is not installed or checkpoint missing.
-    # =========================================================================
-    if checkpoint_path and Path(checkpoint_path).exists():
-        try:
-            import sys as _sys
-            _repo_root = str(Path(__file__).resolve().parent.parent)
-            if _repo_root not in _sys.path:
-                _sys.path.insert(0, _repo_root)
-            from eval.auto_eval import run_auto_eval
-            # Use the output dir from the last stage that ran
-            _last_output_dir = (
-                f"{args.output_dir}/trial/stage{stages_to_run[-1]}"
-                if args.trial
-                else f"{args.output_dir}/stage{stages_to_run[-1]}"
-            )
-            run_auto_eval(
-                checkpoint_path=checkpoint_path,
-                output_dir=_last_output_dir,
-                is_trial=getattr(args, 'trial', False),
-                device="auto",
-            )
-        except Exception as _eval_err:
-            print(f"  [eval] Post-training evaluation skipped: {_eval_err}")
-    else:
-        print("  [eval] No final checkpoint found — skipping benchmark evaluation.")
 
 
 if __name__ == "__main__":

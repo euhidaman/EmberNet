@@ -198,9 +198,11 @@ def _load_scores(results_dir: Path, expected_tasks: List[str]) -> Dict[str, floa
     from visualizations.benchmark_viz import extract_scores_from_lmms_results
 
     scores: Dict[str, float] = {}
+    seen_files: set = set()
 
-    # Try the combined results.json first (v0.6 behavior)
+    # Try the combined results*.json first (v0.6 behavior)
     for json_file in sorted(results_dir.rglob("results*.json")):
+        seen_files.add(json_file)
         try:
             with open(json_file) as f:
                 data = json.load(f)
@@ -210,17 +212,21 @@ def _load_scores(results_dir: Path, expected_tasks: List[str]) -> Dict[str, floa
         except Exception:
             pass
 
-    # Also scan for per-task JSON files (v0.5 behavior / per-task logs)
+    # Also scan any *.json files not yet processed (v0.5 per-task logs)
     for json_file in sorted(results_dir.rglob("*.json")):
-        if "results" in json_file.name and json_file not in scores:
-            try:
-                with open(json_file) as f:
-                    data = json.load(f)
-                if "results" in data:
-                    extracted = extract_scores_from_lmms_results(data)
-                    scores.update(extracted)
-            except Exception:
-                pass
+        if json_file in seen_files:
+            continue
+        if "results" not in json_file.name:
+            continue
+        seen_files.add(json_file)
+        try:
+            with open(json_file) as f:
+                data = json.load(f)
+            if "results" in data:
+                extracted = extract_scores_from_lmms_results(data)
+                scores.update(extracted)
+        except Exception:
+            pass
 
     return scores
 

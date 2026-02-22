@@ -217,24 +217,47 @@ class EmberNetLMMS(lmms):
         """
         Generate responses for a list of lmms-eval requests.
 
-        For simple models, each request.args is a tuple:
-            (visual_list, context_str, gen_kwargs_dict, doc_id, task, split)
-        visual_list is a list of PIL.Image objects (may be empty for text-only).
+        lmms-eval v0.5+ passes request.arguments as:
+            (context, gen_kwargs, doc_to_visual_fn, doc_id, task, split)
+        where doc_to_visual_fn is a *callable* that returns a list of PIL images
+        when called with the document dict.  Older versions may pass a list
+        directly.  We handle both cases robustly.
         """
         results = []
 
         for request in tqdm(requests, desc="EmberNet eval", dynamic_ncols=True):
             args = request.args
 
-            # Unpack — lmms-eval may pass 6-element tuple
-            if len(args) == 6:
-                visuals, context, gen_kwargs, doc_id, task, split = args
-            elif len(args) == 5:
-                visuals, context, gen_kwargs, task, split = args
-                doc_id = None
-            else:
-                visuals, context, gen_kwargs = args[0], args[1], args[2] if len(args) > 2 else {}
-                task, split, doc_id = None, None, None
+            # --- Unpack positional arguments ---
+            # Canonical order (lmms-eval ≥ 0.5):
+            #   args[0] = context (str)
+            #   args[1] = gen_kwargs (dict)
+            #   args[2] = doc_to_visual (callable or list)
+            #   args[3] = doc_id
+            #   args[4] = task name
+            #   args[5] = split
+            context       = args[0] if len(args) > 0 else ""
+            gen_kwargs    = args[1] if len(args) > 1 else {}
+            doc_to_visual = args[2] if len(args) > 2 else None
+            doc_id        = args[3] if len(args) > 3 else None
+            task          = args[4] if len(args) > 4 else None
+            split         = args[5] if len(args) > 5 else None
+
+            # --- Resolve visuals ---
+            # doc_to_visual is typically a bound method; call it with the doc
+            # to materialise the actual PIL image list.
+            visuals: list = []
+            if callable(doc_to_visual):
+                try:
+                    visuals = doc_to_visual(request.doc) or []
+                except Exception:
+                    visuals = []
+            elif isinstance(doc_to_visual, (list, tuple)):
+                visuals = list(doc_to_visual)
+
+            # --- Guard: gen_kwargs must be a dict ---
+            if not isinstance(gen_kwargs, dict):
+                gen_kwargs = {}
 
             # generation params from request, with instance defaults as fallback
             max_new = int(gen_kwargs.get("max_new_tokens", self._max_new_tokens))
