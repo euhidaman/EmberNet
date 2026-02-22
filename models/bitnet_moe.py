@@ -711,7 +711,18 @@ class BitNetMoEDecoder(nn.Module):
             )
             total_loss += layer_loss
 
-        return total_loss / max(1, num_layers)
+        final = total_loss / max(1, num_layers)
+
+        # Diagnostic: print per-component breakdown when aux loss is anomalously large
+        if isinstance(final, torch.Tensor) and final.item() > 1000.0:
+            print(
+                f"[AUX LOSS DIAGNOSTIC] Anomalous aux_loss={final.item():.4e} "
+                f"over {num_layers} layers. "
+                f"Last layer — load_balance={load_balance_loss.item():.4e}, "
+                f"z_loss={z_loss.item():.4e}, entropy={entropy.item():.4e}"
+            )
+
+        return final
 
     def get_num_params(self, trainable_only: bool = False) -> int:
         """Count parameters in the model."""

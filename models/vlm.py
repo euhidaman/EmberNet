@@ -389,24 +389,45 @@ class EmberNetVLM(nn.Module):
             # Guard: if all labels are masked (-100), CE returns NaN. Skip and return 0.
             num_valid = (flat_labels != -100).sum()
             if num_valid == 0:
-                loss = torch.tensor(0.0, device=flat_logits.device, requires_grad=True)
+                ce_loss = torch.tensor(0.0, device=flat_logits.device, requires_grad=True)
             else:
                 loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=0.0)
-                loss = loss_fct(flat_logits, flat_labels)
+                ce_loss = loss_fct(flat_logits, flat_labels)
 
             # Check for NaN loss - fail fast if it occurs (indicates upstream problem)
-            if torch.isnan(loss) or torch.isinf(loss):
+            if torch.isnan(ce_loss) or torch.isinf(ce_loss):
                 raise ValueError("NaN/Inf loss detected - indicates upstream numerical instability")
 
+            loss = ce_loss
+
             # Add router auxiliary loss
+            aux_loss_val = 0.0
             if router_logits is not None:
                 aux_loss = self.decoder.compute_router_aux_loss(router_logits)
+                aux_loss_val = aux_loss.item()
                 loss = loss + self.config.router_aux_loss_coef * aux_loss
+
+            # Diagnostic: print disaggregated breakdown on first anomalous batch
+            total_val = loss.item()
+            if total_val > 100.0:
+                print(
+                    f"\n[LOSS DIAGNOSTIC] Abnormal total loss detected: {total_val:.4e}\n"
+                    f"  CE loss       : {ce_loss.item():.4e}  (normal range ~2-12)\n"
+                    f"  Aux loss      : {aux_loss_val:.4e}  (before coef={self.config.router_aux_loss_coef})\n"
+                    f"  Aux * coef    : {self.config.router_aux_loss_coef * aux_loss_val:.4e}\n"
+                    f"  num_valid_toks: {num_valid.item()}\n"
+                    f"  flat_logits   : shape={flat_logits.shape}, "
+                    f"min={flat_logits.min().item():.2f}, max={flat_logits.max().item():.2f}\n"
+                )
+
+        else:
+            ce_loss = None
 
         if return_dict:
             return {
                 "logits": logits,
                 "loss": loss,
+                "ce_loss": ce_loss,
                 "router_logits": router_logits,
             }
 

@@ -725,8 +725,19 @@ class Trainer:
         if self.bitnet_scaler is not None:
             self.bitnet_scaler.update(found_inf=False)
 
+        ce_loss_scalar = outputs.get("ce_loss")
+        ce_loss_val = ce_loss_scalar.item() if ce_loss_scalar is not None else float("nan")
+        total_val = loss.item() * self.config.gradient_accumulation_steps
+        if total_val > 100.0:
+            print(
+                f"\n[TRAIN STEP DIAGNOSTIC] raw_loss={total_val:.4e}  "
+                f"ce_loss={ce_loss_val:.4e}  "
+                f"implied_aux_contribution={(total_val - ce_loss_val):.4e}"
+            )
+
         return {
-            "loss": loss.item() * self.config.gradient_accumulation_steps,
+            "loss": total_val,
+            "ce_loss": ce_loss_val,
         }
 
     def _optimizer_step(self):
