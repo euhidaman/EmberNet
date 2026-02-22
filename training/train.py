@@ -971,8 +971,9 @@ class Trainer:
                                 print(f"  [viz] record_step error: {_vz_err}")
 
                         log_dict = {
-                            "train/loss": metrics["loss"],
-                            "train/avg_loss": avg_loss,
+                            "train/loss": raw_loss,
+                            "train/window_avg_loss": window_avg,
+                            "train/cumul_avg_loss": cumul_avg,
                             "train/lr": lr,
                             "train/epoch": epoch + 1,
                             "train/step": self.global_step,
@@ -980,8 +981,9 @@ class Trainer:
 
                         self.training_log.append({
                             "step": self.global_step,
-                            "loss": metrics["loss"],
-                            "avg_loss": avg_loss,
+                            "loss": raw_loss,
+                            "window_avg_loss": window_avg,
+                            "cumul_avg_loss": cumul_avg,
                             "lr": lr,
                         })
 
