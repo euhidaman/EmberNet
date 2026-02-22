@@ -278,7 +278,6 @@ class EmberNetLMMS(lmms):
                     response = self._model.generate(
                         image=image,
                         prompt=prompt,
-                        tokenizer=self.tokenizer,
                         max_new_tokens=max_new,
                         temperature=temp if temp > 0 else None,
                         top_p=top_p if temp > 0 else None,

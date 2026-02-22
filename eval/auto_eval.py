@@ -194,35 +194,27 @@ def _load_scores(results_dir: Path, expected_tasks: List[str]) -> Dict[str, floa
     """
     Scan lmms-eval output directory for result JSON files and extract scores.
     lmms-eval v0.5+ writes a JSON per task run under results_dir.
+
+    lmms-eval may name output files as:
+      - results_{timestamp}.json  (starts with "results")
+      - {timestamp}_results.json  (ends with "results" before extension)
+      - nested under model-name subdirs
+    We scan ALL *.json files and accept any that contain a top-level "results" key.
     """
     from visualizations.benchmark_viz import extract_scores_from_lmms_results
 
     scores: Dict[str, float] = {}
     seen_files: set = set()
 
-    # Try the combined results*.json first (v0.6 behavior)
-    for json_file in sorted(results_dir.rglob("results*.json")):
-        seen_files.add(json_file)
-        try:
-            with open(json_file) as f:
-                data = json.load(f)
-            if "results" in data:
-                extracted = extract_scores_from_lmms_results(data)
-                scores.update(extracted)
-        except Exception:
-            pass
-
-    # Also scan any *.json files not yet processed (v0.5 per-task logs)
+    # Scan every *.json under results_dir; accept if it has a top-level "results" key
     for json_file in sorted(results_dir.rglob("*.json")):
         if json_file in seen_files:
             continue
-        if "results" not in json_file.name:
-            continue
         seen_files.add(json_file)
         try:
             with open(json_file) as f:
                 data = json.load(f)
-            if "results" in data:
+            if isinstance(data, dict) and "results" in data:
                 extracted = extract_scores_from_lmms_results(data)
                 scores.update(extracted)
         except Exception:

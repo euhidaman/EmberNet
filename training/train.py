@@ -947,6 +947,29 @@ class Trainer:
                 if len(_window_losses) > _WINDOW:
                     _window_losses.pop(0)
 
+                # Current LR (needed for both live-plotter and log line)
+                if self.use_bitnet_optimizer:
+                    _cur_lr = self.optimizer._get_lr(self.optimizer.global_step)
+                else:
+                    _cur_lr = self.optimizer.param_groups[0]["lr"]
+
+                # Feed every batch into the live plotter so epoch-end plots are
+                # always populated — even when gradient accumulation means there
+                # are zero full optimizer steps (e.g. Stage-1 trial with 2 batches
+                # and accum=4).
+                if self.live_plotter is not None:
+                    try:
+                        # Use a monotone batch counter so the x-axis is meaningful
+                        # even before the first optimizer step.
+                        _viz_step = epoch * len(train_loader) + step + 1
+                        self.live_plotter.record_step(
+                            step=_viz_step,
+                            loss=raw_loss,
+                            lr=_cur_lr,
+                        )
+                    except Exception as _vz_err:
+                        print(f"  [viz] record_step error: {_vz_err}")
+
                 # Optimizer step (after accumulation)
                 if (step + 1) % self.config.gradient_accumulation_steps == 0:
                     self._optimizer_step()
@@ -958,11 +981,6 @@ class Trainer:
                         # than a cumulative epoch avg that's polluted by early spikes
                         window_avg = float(np.mean(_window_losses))
                         cumul_avg  = epoch_loss / epoch_steps
-                        # Get LR from BitNet optimizer or standard optimizer
-                        if self.use_bitnet_optimizer:
-                            lr = self.optimizer._get_lr(self.optimizer.global_step)
-                        else:
-                            lr = self.optimizer.param_groups[0]["lr"]
                         elapsed = time.time() - start_time
 
                         print(
@@ -971,26 +989,15 @@ class Trainer:
                             f"Loss: {raw_loss:.4f} | "
                             f"WinAvg({_WINDOW}): {window_avg:.4f} | "
                             f"CumAvg: {cumul_avg:.4f} | "
-                            f"LR: {lr:.2e} | "
+                            f"LR: {_cur_lr:.2e} | "
                             f"Time: {elapsed:.1f}s"
                         )
-
-                        # Feed data into live plotter
-                        if self.live_plotter is not None:
-                            try:
-                                self.live_plotter.record_step(
-                                    step=self.global_step,
-                                    loss=raw_loss,
-                                    lr=lr,
-                                )
-                            except Exception as _vz_err:
-                                print(f"  [viz] record_step error: {_vz_err}")
 
                         log_dict = {
                             "train/loss": raw_loss,
                             "train/window_avg_loss": window_avg,
                             "train/cumul_avg_loss": cumul_avg,
-                            "train/lr": lr,
+                            "train/lr": _cur_lr,
                             "train/epoch": epoch + 1,
                             "train/step": self.global_step,
                         }
@@ -1000,7 +1007,7 @@ class Trainer:
                             "loss": raw_loss,
                             "window_avg_loss": window_avg,
                             "cumul_avg_loss": cumul_avg,
-                            "lr": lr,
+                            "lr": _cur_lr,
                         })
 
                         # Log to wandb
