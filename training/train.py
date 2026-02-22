@@ -686,8 +686,13 @@ class Trainer:
             expanded_targets = expert_targets.unsqueeze(1).expand(-1, router_seq_len).reshape(-1)
 
             if router_logits_flat.shape[0] == expanded_targets.shape[0]:
+                # IMPORTANT: clamp before CE. During training, expert dropout sets
+                # masked-expert logits to -1e9. That makes CE(target=masked expert) → +∞.
+                # Clamping to ±10 is safe (softmax is already saturated beyond ±10)
+                # and prevents the dropout mask from blowing up the supervision loss.
+                router_logits_safe = router_logits_flat.clamp(-10.0, 10.0)
                 expert_supervision_loss = torch.nn.functional.cross_entropy(
-                    router_logits_flat, expanded_targets, reduction="mean"
+                    router_logits_safe, expanded_targets, reduction="mean"
                 )
                 loss = loss + self.config.expert_supervision_weight * expert_supervision_loss
 
