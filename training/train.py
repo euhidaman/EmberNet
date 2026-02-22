@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Iterator
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
@@ -47,6 +48,28 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from models import EmberNetVLM
 from models.vlm import EmberNetConfig
 from training.data import DataConfig, create_dataloaders
+
+# Visualization and evaluation helpers (imported here so they're always available)
+try:
+    from visualizations.live_plotter import LivePlotter
+    _HAS_LIVE_PLOTTER = True
+except Exception as _lp_err:
+    print(f"[WARNING] LivePlotter unavailable: {_lp_err}")
+    _HAS_LIVE_PLOTTER = False
+
+try:
+    from training.hub_utils import push_to_hub as _push_to_hub
+    _HAS_HUB_UTILS = True
+except Exception as _hu_err:
+    print(f"[WARNING] hub_utils unavailable: {_hu_err}")
+    _HAS_HUB_UTILS = False
+
+try:
+    from eval.auto_eval import run_auto_eval as _run_auto_eval
+    _HAS_AUTO_EVAL = True
+except Exception as _ae_err:
+    print(f"[WARNING] auto_eval unavailable: {_ae_err}")
+    _HAS_AUTO_EVAL = False
 
 
 # =============================================================================
@@ -436,6 +459,25 @@ class Trainer:
         self.global_step = 0
         self.best_loss = float('inf')
         self.training_log: List[Dict] = []
+
+        # ---- Live training plots ----
+        # plot every 50 steps in trial mode (small datasets), 200 otherwise
+        _plot_interval = 50
+        if _HAS_LIVE_PLOTTER:
+            try:
+                self.live_plotter = LivePlotter(
+                    output_dir=config.output_dir,
+                    stage=config.stage,
+                    plot_interval=_plot_interval,
+                )
+            except Exception as _lp_init_err:
+                print(f"[WARNING] Could not initialise LivePlotter: {_lp_init_err}")
+                self.live_plotter = None
+        else:
+            self.live_plotter = None
+
+        # Store model config for hub-push calls
+        self._model_config = config.model_config or EmberNetConfig()
 
     def _setup_parameter_freezing(self):
         """Freeze parameters based on training stage."""
@@ -866,8 +908,12 @@ class Trainer:
         start_time = time.time()
 
         for epoch in range(self.config.epochs):
-            epoch_loss = 0.0
-            epoch_steps = 0
+            epoch_loss      = 0.0
+            epoch_steps     = 0
+            # Robust windowed average: keeps only the last N batch losses so
+            # early-training outliers don't dominate the displayed average.
+            _WINDOW         = 50
+            _window_losses: List[float] = []
 
             for step, batch in enumerate(train_loader):
                 # Warmup
@@ -876,9 +922,14 @@ class Trainer:
                 # Training step
                 metrics = self._train_step(batch)
 
-
-                epoch_loss += metrics["loss"]
+                raw_loss = metrics["loss"]
+                epoch_loss  += raw_loss
                 epoch_steps += 1
+
+                # Update rolling window (used for avg loss display)
+                _window_losses.append(raw_loss)
+                if len(_window_losses) > _WINDOW:
+                    _window_losses.pop(0)
 
                 # Optimizer step (after accumulation)
                 if (step + 1) % self.config.gradient_accumulation_steps == 0:
@@ -887,7 +938,10 @@ class Trainer:
 
                     # Logging
                     if self.global_step % self.config.log_interval == 0:
-                        avg_loss = epoch_loss / epoch_steps
+                        # Windowed avg (last _WINDOW batches) — far more stable
+                        # than a cumulative epoch avg that's polluted by early spikes
+                        window_avg = float(np.mean(_window_losses))
+                        cumul_avg  = epoch_loss / epoch_steps
                         # Get LR from BitNet optimizer or standard optimizer
                         if self.use_bitnet_optimizer:
                             lr = self.optimizer._get_lr(self.optimizer.global_step)
@@ -898,11 +952,23 @@ class Trainer:
                         print(
                             f"Epoch {epoch+1}/{self.config.epochs} | "
                             f"Step {self.global_step} | "
-                            f"Loss: {metrics['loss']:.4f} | "
-                            f"Avg Loss: {avg_loss:.4f} | "
+                            f"Loss: {raw_loss:.4f} | "
+                            f"WinAvg({_WINDOW}): {window_avg:.4f} | "
+                            f"CumAvg: {cumul_avg:.4f} | "
                             f"LR: {lr:.2e} | "
                             f"Time: {elapsed:.1f}s"
                         )
+
+                        # Feed data into live plotter
+                        if self.live_plotter is not None:
+                            try:
+                                self.live_plotter.record_step(
+                                    step=self.global_step,
+                                    loss=raw_loss,
+                                    lr=lr,
+                                )
+                            except Exception as _vz_err:
+                                print(f"  [viz] record_step error: {_vz_err}")
 
                         log_dict = {
                             "train/loss": metrics["loss"],
@@ -954,26 +1020,72 @@ class Trainer:
                 self._save_checkpoint(f"emergency_epoch_{epoch+1}.pt")
                 raise RuntimeError("Training failed: All batches produced NaN/Inf losses")
 
-            epoch_avg_loss = epoch_loss / epoch_steps
-            print(f"\nEpoch {epoch+1} Complete | Average Loss: {epoch_avg_loss:.4f}")
-            print(f"  Valid batches: {epoch_steps} / {len(train_loader)}\n")
+            # Flush any leftover accumulation steps that didn't hit the boundary
+            leftover = epoch_steps % self.config.gradient_accumulation_steps
+            if leftover > 0:
+                print(f"  Flushing {leftover} remaining accumulated gradient(s) at epoch end")
+                self._optimizer_step()
+                self.global_step += 1
+
+            epoch_avg_loss  = epoch_loss / epoch_steps
+            window_avg_final = float(np.mean(_window_losses)) if _window_losses else epoch_avg_loss
+
+            print(f"\nEpoch {epoch+1} Complete")
+            print(f"  Cumulative Avg Loss : {epoch_avg_loss:.4f}")
+            print(f"  Final Window Avg    : {window_avg_final:.4f}  (last {len(_window_losses)} batches)")
+            print(f"  Valid batches       : {epoch_steps} / {len(train_loader)}\n")
 
             # Log epoch metrics to wandb
             if self.use_wandb:
                 wandb.log({
-                    "epoch/avg_loss": epoch_avg_loss,
-                    "epoch/number": epoch + 1,
+                    "epoch/avg_loss":        epoch_avg_loss,
+                    "epoch/window_avg_loss": window_avg_final,
+                    "epoch/number":          epoch + 1,
                 }, step=self.global_step)
 
             # Save epoch checkpoint
             self._save_checkpoint(f"checkpoint_epoch_{epoch+1}.pt")
 
+            # Per-epoch live plots
+            if self.live_plotter is not None:
+                try:
+                    self.live_plotter.plot_epoch(epoch + 1, self.config.stage)
+                except Exception as _vz_err:
+                    print(f"  [viz] plot_epoch error: {_vz_err}")
+
+            # HuggingFace Hub push (no-op if token not set)
+            if _HAS_HUB_UTILS:
+                try:
+                    elapsed_so_far = time.time() - start_time
+                    _push_to_hub(
+                        model=self.model,
+                        vlm_config=self._model_config,
+                        training_config=self.config,
+                        stage=self.config.stage,
+                        epoch=epoch + 1,
+                        total_epochs=self.config.epochs,
+                        avg_loss=epoch_avg_loss,
+                        global_step=self.global_step,
+                        training_seconds=elapsed_so_far,
+                        is_trial=bool(self.config.max_samples_per_dataset),
+                    )
+                except Exception as _hub_err:
+                    print(f"  [hub] push_to_hub error: {_hub_err}")
+
         # Final save
         self._save_checkpoint("final_model.pt")
 
+        # Final live plots
+        if self.live_plotter is not None:
+            try:
+                self.live_plotter.plot_final(self.config.stage)
+            except Exception as _vz_err:
+                print(f"  [viz] plot_final error: {_vz_err}")
+
         total_time = time.time() - start_time
+        best_str = f"{self.best_loss:.4f}" if self.best_loss < float("inf") else "N/A (no validation data or too few steps)"
         print(f"\nTraining complete in {total_time/60:.1f} minutes")
-        print(f"Best validation loss: {self.best_loss:.4f}")
+        print(f"Best validation loss: {best_str}")
 
         # Finish wandb run
         if self.use_wandb:
@@ -1224,6 +1336,32 @@ def main():
     print(f"Stages completed: {stages_to_run}")
     print(f"Final checkpoint: {checkpoint_path}")
     print(f"{'='*70}\n")
+
+    # =========================================================================
+    # Post-training benchmark evaluation
+    # =========================================================================
+    if _HAS_AUTO_EVAL and checkpoint_path:
+        # Derive output_dir from checkpoint path (parent of stage dir)
+        _ckpt_path = Path(checkpoint_path)
+        # e.g. ./checkpoints/trial/stage2/final_model.pt → ./checkpoints/trial
+        _output_dir = str(_ckpt_path.parent.parent)
+        _device = args.device if args.device != "auto" else "cuda"
+        try:
+            _run_auto_eval(
+                checkpoint_path=str(_ckpt_path),
+                output_dir=_output_dir,
+                is_trial=args.trial,
+                best_loss=0.0,
+                device=_device,
+            )
+        except Exception as _ae_exc:
+            import traceback as _tb
+            print(f"\n[auto_eval] ERROR: {_ae_exc}")
+            _tb.print_exc()
+    elif not _HAS_AUTO_EVAL:
+        print("\n[auto_eval] Skipped — eval/auto_eval.py not importable (see warning above).")
+    else:
+        print("\n[auto_eval] Skipped — no checkpoint path available.")
 
 
 if __name__ == "__main__":

@@ -254,14 +254,24 @@ def plot_filename(category: str, subcategory: str, name: str, ext: str = "png") 
 # Error logging helper
 # ---------------------------------------------------------------------------
 def log_plot_error(plot_name: str, error: Exception):
-    """Write a plot error to the errors directory."""
+    """Print the full traceback to the terminal AND write it to the errors directory."""
+    import traceback as _tb
+    _full_tb = _tb.format_exc()
+
+    # Always print the full traceback immediately so it appears inline in the logs
+    print("\n" + "=" * 70)
+    print(f"  [PLOT ERROR] {plot_name}: {type(error).__name__}: {error}")
+    print("-" * 70)
+    print(_full_tb)
+    print("=" * 70 + "\n")
+
+    # Also persist to disk
     err_dir = PLOT_DIRS["errors"]
     err_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     err_file = err_dir / f"{plot_name}_error_{ts}.txt"
     with open(err_file, "w") as f:
-        import traceback
         f.write(f"Plot: {plot_name}\n")
         f.write(f"Time: {ts}\n\n")
-        f.write(traceback.format_exc())
-    print(f"  [ERROR] {plot_name}: {error} — logged to {err_file}")
+        f.write(_full_tb)
+    print(f"  [PLOT ERROR] Full traceback saved → {err_file}")

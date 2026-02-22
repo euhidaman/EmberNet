@@ -551,10 +551,26 @@ class TrainingDynamicsPlotter:
                 s2_val = 1.8 * (s2_steps ** -0.45) + np.random.normal(0, 0.02, len(s2_steps))
                 data = {"s1_steps": s1_steps, "s1_val": s1_val, "s2_steps": s2_steps, "s2_val": s2_val}
 
-            s1_steps = np.asarray(data["s1_steps"])
-            s1_val   = np.asarray(data["s1_val"])
-            s2_steps = np.asarray(data["s2_steps"])
-            s2_val   = np.asarray(data["s2_val"])
+            # Use .get() per key so a partial data dict (e.g. only Stage 1
+            # data available mid-training) falls back to synthetic placeholders
+            # rather than crashing with KeyError.
+            _syn = {}
+            if any(k not in data for k in ("s1_steps", "s1_val", "s2_steps", "s2_val")):
+                incomplete = True   # mark as incomplete when any key is missing
+                _rng = np.random.default_rng(seed=0)
+                _s1 = np.arange(1, 500)
+                _s2 = np.arange(1, 500)
+                _syn = {
+                    "s1_steps": _s1,
+                    "s1_val":   3.0 * (_s1 ** -0.35) + _rng.normal(0, 0.02, len(_s1)),
+                    "s2_steps": _s2,
+                    "s2_val":   1.8 * (_s2 ** -0.45) + _rng.normal(0, 0.02, len(_s2)),
+                }
+
+            s1_steps = np.asarray(data.get("s1_steps", _syn.get("s1_steps", np.arange(1, 500))))
+            s1_val   = np.asarray(data.get("s1_val",   _syn.get("s1_val",   3.0 * (s1_steps ** -0.35))))
+            s2_steps = np.asarray(data.get("s2_steps", _syn.get("s2_steps", np.arange(1, 500))))
+            s2_val   = np.asarray(data.get("s2_val",   _syn.get("s2_val",   1.8 * (s2_steps ** -0.45))))
 
             def powerlaw_fit(steps, vals):
                 log_s = np.log(steps + 1)
