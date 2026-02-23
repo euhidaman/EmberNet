@@ -1,4 +1,4 @@
-"""
+﻿"""
 Stage Comparison Visualizations
 
 Covers:
@@ -84,7 +84,6 @@ class StageComparisonPlotter:
 
             title = "Stage 1 vs Stage 2 – Loss Curves"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/stage1_vs_stage2/loss_comparison", step)
@@ -140,7 +139,6 @@ class StageComparisonPlotter:
 
             title = "Parameter Update Magnitudes by Stage"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/stage1_vs_stage2/param_updates", step)
@@ -204,7 +202,6 @@ class StageComparisonPlotter:
 
             title = "Expert Routing: Before vs After Stage 2"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/stage1_vs_stage2/routing_before_after", step)
@@ -248,7 +245,6 @@ class StageComparisonPlotter:
             ax.set_ylabel("Validation Accuracy (%)")
             title = "Ablation: Number of Experts vs Accuracy"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=8)
 
@@ -296,7 +292,6 @@ class StageComparisonPlotter:
             ax3.set_ylabel("Inference Speed (tok/s)", color="#2ca02c")
             title = "Ablation: Routing Strategy Comparison"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax1.set_title(title, fontweight="bold")
 
             lines = [bars1, bars2, bars3]
@@ -358,7 +353,6 @@ class StageComparisonPlotter:
             fig.colorbar(im, ax=ax, label="0=worst → 1=best (per-column)")
             title = "Ablation: Quantization Impact (green=better)"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/ablation/quantization_impact", step)

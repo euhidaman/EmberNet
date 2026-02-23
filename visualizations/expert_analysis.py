@@ -1,4 +1,4 @@
-"""
+﻿"""
 Expert Analysis Visualizations
 
 Covers:
@@ -74,7 +74,6 @@ class ExpertAnalysisPlotter:
             ax.set_ylabel("Expert")
             title = "Expert Selection Frequency over Training"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/routing_patterns/selection_heatmap", step)
@@ -146,7 +145,6 @@ class ExpertAnalysisPlotter:
             ax.set_ylim(0, 100)
             title = "Expert Routing by Dataset"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(ncol=4, fontsize=8, loc="upper right")
 
@@ -257,7 +255,6 @@ class ExpertAnalysisPlotter:
             ax.set_ylabel("Specialization Index (0=uniform, 1=perfect)")
             title = "Expert Specialization Index"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=8, ncol=2)
             ax.set_ylim(0, 1.05)
@@ -312,7 +309,6 @@ class ExpertAnalysisPlotter:
 
             title = "Expert Ternary Weight Distributions (Initial vs Final)"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/specialization_metrics/weight_sparsity_grid", step)
@@ -356,7 +352,6 @@ class ExpertAnalysisPlotter:
 
             title = "Expert Output Variance by Domain"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/specialization_metrics/output_variance", step)
@@ -396,7 +391,6 @@ class ExpertAnalysisPlotter:
             ax.set_ylabel("Load Imbalance Coefficient\n(std / mean usage)")
             title = "Expert Load Balancing"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -443,7 +437,6 @@ class ExpertAnalysisPlotter:
             ax.legend()
             title = "Expert Token Usage Distribution"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/expert_utilization/usage_violin", step)
@@ -483,7 +476,6 @@ class ExpertAnalysisPlotter:
             cbar.set_ticklabels(["Dead (≤1%)", "Active (>1%)"])
             title = "Dead Expert Detection"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/expert_utilization/dead_expert_heatmap", step)
@@ -558,7 +550,6 @@ class ExpertAnalysisPlotter:
 
             title = "Per-Expert Domain Proficiency"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold", y=1.01)
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/spider_charts/per_expert", step)
@@ -604,7 +595,6 @@ class ExpertAnalysisPlotter:
             ax.legend(bbox_to_anchor=(1.35, 1.1), fontsize=8)
             title = "Comparative Expert Spider Chart – All Experts"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold", pad=20)
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/spider_charts/comparative", step)
@@ -656,7 +646,6 @@ class ExpertAnalysisPlotter:
 
             title = "Spider Chart Temporal Evolution (Expert Specialization)"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/spider_charts/temporal_evolution", step)
@@ -709,7 +698,6 @@ class ExpertAnalysisPlotter:
             ax.set_ylim(0, 100)
             title = "Expert Token Utilization Over Training (Stacked Area)"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=7, ncol=2, bbox_to_anchor=(1.01, 1), loc="upper left")
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/expert_utilization/stacked_area_usage", step)
@@ -759,7 +747,6 @@ class ExpertAnalysisPlotter:
             ax.set_ylim(0, max_ent * 1.1)
             title = "Expert Routing Entropy over Training"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=9)
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/routing_patterns/routing_entropy_over_time", step)

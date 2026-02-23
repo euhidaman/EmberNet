@@ -1,4 +1,4 @@
-"""
+﻿"""
 Performance Metrics Visualizations
 
 Covers:
@@ -73,7 +73,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylim(0, 100)
             title = "Per-Dataset Accuracy Progression"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=6, ncol=3, bbox_to_anchor=(1.01, 1), loc="upper left")
 
@@ -117,7 +116,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylim(0, 100)
             title = "Domain-Aggregated Accuracy"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -160,7 +158,6 @@ class PerformanceMetricsPlotter:
 
             title = "Per-Expert Accuracy: Target Domain vs Others"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -208,7 +205,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylabel("Perplexity (log scale)")
             title = "Validation Perplexity over Training"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=8)
 
@@ -254,7 +250,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylabel("Average Perplexity")
             title = "Perplexity by Token Position"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -305,7 +300,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylim(0, 100)
             title = "Benchmark Accuracy: EmberNet vs Baselines"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -353,7 +347,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylabel("Average Accuracy across Benchmarks (%)")
             title = "Model Size vs Performance Trade-off"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -405,7 +398,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylabel("Tokens / Second")
             title = "Inference Speed Comparison"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -446,7 +438,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylabel("Energy per Query (mJ)")
             title = "Inference Energy Distribution by Task Type"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/efficiency/inference_energy_distribution", step)
             self._generated.append(out); return out
@@ -506,7 +497,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylabel("Average Accuracy (%)")
             title = "Accuracy vs Energy – Efficiency Frontier"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=8, ncol=2)
             out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/efficiency/accuracy_vs_energy_pareto", step)
@@ -567,7 +557,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylabel("Average Accuracy (%)")
             title = "Model Size × Accuracy × Energy Efficiency"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/efficiency/model_efficiency_tradeoff", step)
             self._generated.append(out); return out

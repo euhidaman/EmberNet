@@ -1,4 +1,4 @@
-"""
+﻿"""
 Dataset Analysis Visualizations
 
 Covers:
@@ -64,7 +64,6 @@ class DatasetAnalysisPlotter:
             ax.set_ylabel("Total Tokens (Millions)")
             title = "Token Distribution per Dataset"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -114,7 +113,6 @@ class DatasetAnalysisPlotter:
             ax.set_ylabel("Sequence Length (tokens)")
             title = "Sequence Length Distribution per Dataset"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/token_statistics/seq_length_violin", step)
@@ -158,7 +156,6 @@ class DatasetAnalysisPlotter:
             ax.set_ylabel("Cumulative Tokens (Billions)")
             title = "Cumulative Token Exposure by Training Stage"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -198,7 +195,6 @@ class DatasetAnalysisPlotter:
                 t.set_fontsize(9)
             title = "Domain Token Distribution"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold", pad=15)
 
             out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/domain_distributions/domain_pie", step)
@@ -251,7 +247,6 @@ class DatasetAnalysisPlotter:
             ax.set_ylabel("Batch Composition (%)")
             title = "Dataset Mixing Schedule (Curriculum Learning)"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, ncol=2)
 
@@ -299,7 +294,6 @@ class DatasetAnalysisPlotter:
 
             title = "Expert-Dataset Alignment: Designed vs Learned"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/domain_distributions/expert_dataset_alignment", step)

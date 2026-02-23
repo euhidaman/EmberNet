@@ -492,7 +492,7 @@ class EmberNetVLM(nn.Module):
             input_ids = torch.tensor([[1, 2, 3]], device=device)
 
         # Merge embeddings
-        inputs_embeds, attention_mask = self._merge_image_text_embeds(
+        inputs_embeds, attention_mask, _ = self._merge_image_text_embeds(
             input_ids, image_embeds
         )
 

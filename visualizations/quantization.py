@@ -1,4 +1,4 @@
-"""
+﻿"""
 Quantization Analysis Visualizations
 
 Covers:
@@ -74,7 +74,6 @@ class QuantizationPlotter:
 
             title = "Weight Distributions: FP16 vs Ternary"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/quantization/weight_distributions/before_after_hist", step)
@@ -115,7 +114,6 @@ class QuantizationPlotter:
             ax.set_ylim(0, 60)
             title = "Layer-wise Weight Sparsity"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -156,7 +154,6 @@ class QuantizationPlotter:
             ax.set_ylabel("Average |weight| (before quantization)")
             title = "Weight Magnitude Decay Over Training"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -197,7 +194,6 @@ class QuantizationPlotter:
             ax.set_ylabel("Density")
             title = f"Activation Distribution: FP16 vs 4-bit  (RMSE={rmse:.4f})"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.axvline(-8, color="red", ls=":", lw=1.2, label="4-bit clip boundary")
             ax.axvline(7,  color="red", ls=":", lw=1.2)
@@ -235,7 +231,6 @@ class QuantizationPlotter:
             ax.set_ylabel("Activation Clipping Frequency (%)")
             title = "Activation Clipping Frequency (outside [-8, 7])"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -272,7 +267,6 @@ class QuantizationPlotter:
             ax.set_ylabel("Activation Magnitude (pre-quantization)")
             title = "Layer-wise Activation Scale"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/quantization/activations/scale_boxplot", step)
@@ -319,7 +313,6 @@ class QuantizationPlotter:
             ax.set_ylabel("Memory (MB)")
             title = "Model Size Breakdown by Component"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -357,7 +350,6 @@ class QuantizationPlotter:
             ax.set_ylabel("Effective bits per parameter")
             title = "Effective Bitwidth per Layer  (H(p_{-1}, p_{0}, p_{+1}))"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -402,7 +394,6 @@ class QuantizationPlotter:
             ax.set_ylabel("Validation Perplexity (lower is better)")
             title = "Quantization Pareto: Size vs Perplexity"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 

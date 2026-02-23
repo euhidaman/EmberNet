@@ -1,4 +1,4 @@
-"""
+﻿"""
 Training Dynamics Visualizations
 
 Covers:
@@ -36,7 +36,6 @@ class TrainingDynamicsPlotter:
 
     All methods accept optional *data* dicts of NumPy arrays / lists.
     When data is None or a key is missing the method falls back to
-    plausible synthetic / placeholder data so the plot is always rendered
     (annotated as "Incomplete" in that case).
     """
 
@@ -115,7 +114,6 @@ class TrainingDynamicsPlotter:
             ax.set_ylabel("Loss (log scale)")
             title = "EmberNet – Multi-Stage Loss Progression"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(loc="upper right")
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/multi_stage_loss", step)
@@ -175,7 +173,6 @@ class TrainingDynamicsPlotter:
             ax2.set_ylim(0, 100)
             title2 = "Stage 2 Loss Components – Percentage"
             if incomplete:
-                title2 += "  [Incomplete – placeholder data]"
             ax2.set_title(title2, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/components", step)
@@ -224,7 +221,6 @@ class TrainingDynamicsPlotter:
             ax.set_ylabel("Dataset")
             title = "Per-Dataset Loss Heatmap"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
             # Domain separators
@@ -308,7 +304,6 @@ class TrainingDynamicsPlotter:
             ax.set_ylabel("Learning Rate (log scale)")
             title = "BitNet b1.58 – Two-Phase LR Schedule"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(ncol=2, fontsize=9)
 
@@ -358,7 +353,6 @@ class TrainingDynamicsPlotter:
             ax.set_ylabel("Learning Rate (log scale)")
             title = "Per-Parameter-Group Learning Rate"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -422,7 +416,6 @@ class TrainingDynamicsPlotter:
             ax.set_ylabel("Gradient Norm (log scale)")
             title = "Gradient Norms Over Time"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=8, ncol=2)
 
@@ -473,7 +466,6 @@ class TrainingDynamicsPlotter:
             ax.set_ylabel("Model Layer")
             title = "Gradient Flow Heatmap (log₁₀ scale)"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/gradient_stats/grad_flow_heatmap", step)
@@ -517,7 +509,6 @@ class TrainingDynamicsPlotter:
             ax.set_ylabel("Clipping Frequency (%)")
             title = "Gradient Clipping Frequency per Epoch"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -596,7 +587,6 @@ class TrainingDynamicsPlotter:
             ax.set_ylabel("Validation Loss (log scale)")
             title = "Loss Convergence Rate (Power-Law Fit)"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -646,7 +636,6 @@ class TrainingDynamicsPlotter:
             ax2.set_ylabel("Cumulative Tokens (Billions)")
             title = "Training Efficiency: Loss vs Wall-Clock Time vs Tokens"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax1.set_title(title, fontweight="bold")
 
             lines1, labels1 = ax1.get_legend_handles_labels()
@@ -715,7 +704,6 @@ class TrainingDynamicsPlotter:
             ax.set_ylabel("Loss (log scale)")
             title = "Loss vs Cumulative Tokens"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=9, ncol=2)
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/loss_vs_tokens", step)
@@ -758,7 +746,6 @@ class TrainingDynamicsPlotter:
             ax.set_xlabel("Training Step"); ax.set_ylabel("Loss")
             title = "Training Loss Stability – Spike Detection"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold"); ax.legend(fontsize=9)
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/loss_spike_detection", step)
             self._generated.append(out); return out
@@ -793,7 +780,6 @@ class TrainingDynamicsPlotter:
             ax.set_ylim(0, max(s1_rate.max(), s2_rate.max()) * 1.25)
             title = "Gradient Clipping Rate by Epoch"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold"); ax.legend()
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/gradient_stats/gradient_clipping_rate_line", step)
             self._generated.append(out); return out
@@ -827,7 +813,6 @@ class TrainingDynamicsPlotter:
             ax.set_yscale("log")
             title = "Tokens-to-Convergence at Loss Thresholds"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold"); ax.legend()
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/convergence/tokens_to_convergence", step)
             self._generated.append(out); return out
@@ -865,7 +850,6 @@ class TrainingDynamicsPlotter:
             ax.set_xlabel("Training Step"); ax.set_ylabel("Cumulative Energy (kWh)")
             title = "Cumulative Training Energy vs Steps"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold"); ax.legend()
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/energy_metrics/energy_vs_steps", step)
             self._generated.append(out); return out
@@ -903,7 +887,6 @@ class TrainingDynamicsPlotter:
             ax.set_xlabel("Training Step"); ax.set_ylabel("Cumulative CO₂ Emissions (kg)")
             title = "Cumulative CO₂ Emissions vs Training Steps"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold"); ax.legend()
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/co2_metrics/co2_vs_steps", step)
             self._generated.append(out); return out
@@ -934,7 +917,6 @@ class TrainingDynamicsPlotter:
             ax.set_xlabel("Training Step"); ax.set_ylabel("kWh per 1M Tokens")
             title = "Training Energy Efficiency: kWh per 1M Tokens"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold"); ax.legend()
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/energy_metrics/energy_per_token", step)
             self._generated.append(out); return out
@@ -982,7 +964,6 @@ class TrainingDynamicsPlotter:
 
             title = "Stage-wise Energy and CO₂ Comparison"
             if mode_tag: title += f"  {mode_tag}"
-            if incomplete: title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/energy_metrics/stage_energy_comparison", step)
             self._generated.append(out); return out

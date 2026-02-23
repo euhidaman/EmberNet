@@ -1,4 +1,4 @@
-"""
+﻿"""
 Architecture Visualizations
 
 Covers:
@@ -246,7 +246,6 @@ class ArchitecturePlotter:
             ax.set_xticklabels(["Image tokens", "Text tokens"])
             title = "Cross-Modal Attention Weights"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             fig.colorbar(im, ax=ax, label="Attention weight")
             ax.legend()
@@ -284,7 +283,6 @@ class ArchitecturePlotter:
 
             title = "Self-Attention Maps Across 16 Decoder Layers"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
             out = _save_and_log(fig, out, self.logger, "plots/architecture/attention_maps/layerwise_grid", step)
             self._generated.append(out)
@@ -315,7 +313,6 @@ class ArchitecturePlotter:
             ax.set_ylabel("Average Attention Distance (tokens)")
             title = "Average Attention Distance by Layer"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.set_xticks(layers)
 
@@ -401,7 +398,6 @@ class ArchitecturePlotter:
             ax.legend(fontsize=8)
             title = "Expert Activation by Token Position"
             if incomplete:
-                title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             fig.colorbar(im, ax=ax, label="Routing Probability")
 
