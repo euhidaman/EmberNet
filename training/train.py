@@ -740,9 +740,23 @@ class Trainer:
                 f"implied_aux_contribution={(total_val - ce_loss_val):.4e}"
             )
 
+        # Extract mean expert routing probability per expert (for live plotter)
+        _expert_probs = None
+        if outputs.get("router_logits"):
+            try:
+                probs_layers = []
+                for rl in outputs["router_logits"]:
+                    p = torch.softmax(rl.detach().float(), dim=-1).mean(0)  # (n_experts,)
+                    probs_layers.append(p.cpu().numpy())
+                if probs_layers:
+                    _expert_probs = np.mean(probs_layers, axis=0)  # avg over layers
+            except Exception:
+                pass
+
         return {
             "loss": total_val,
             "ce_loss": ce_loss_val,
+            "expert_probs": _expert_probs,
         }
 
     def _optimizer_step(self):
@@ -966,6 +980,7 @@ class Trainer:
                             step=_viz_step,
                             loss=raw_loss,
                             lr=_cur_lr,
+                            expert_probs=metrics.get("expert_probs"),
                         )
                     except Exception as _vz_err:
                         print(f"  [viz] record_step error: {_vz_err}")

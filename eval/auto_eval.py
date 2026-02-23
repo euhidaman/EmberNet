@@ -205,20 +205,34 @@ def _load_scores(results_dir: Path, expected_tasks: List[str]) -> Dict[str, floa
 
     scores: Dict[str, float] = {}
     seen_files: set = set()
+    files_scanned = 0
+    files_accepted = 0
+
+    if not results_dir.exists():
+        print(f"  [auto_eval] _load_scores: results_dir does not exist: {results_dir.resolve()}")
+        return scores
 
     # Scan every *.json under results_dir; accept if it has a top-level "results" key
     for json_file in sorted(results_dir.rglob("*.json")):
         if json_file in seen_files:
             continue
         seen_files.add(json_file)
+        files_scanned += 1
         try:
             with open(json_file) as f:
                 data = json.load(f)
             if isinstance(data, dict) and "results" in data:
+                files_accepted += 1
                 extracted = extract_scores_from_lmms_results(data)
                 scores.update(extracted)
         except Exception:
             pass
+
+    print(f"  [auto_eval] _load_scores: scanned {files_scanned} JSON, "
+          f"accepted {files_accepted} with 'results' key → {len(scores)} task scores")
+    if files_scanned == 0:
+        top_contents = [p.name for p in results_dir.iterdir()] if results_dir.exists() else []
+        print(f"  [auto_eval]   dir contents: {top_contents}")
 
     return scores
 
