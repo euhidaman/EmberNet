@@ -540,7 +540,7 @@ class PerformanceMetricsPlotter:
             names    = list(models_info.keys())
 
             # Color = energy (low=good=green, high=bad=red): use plasma colormap
-            norm_e   = (energies - energies.min()) / (energies.ptp() + 1e-9)
+            norm_e   = (energies - energies.min()) / ((energies.max() - energies.min()) + 1e-9)
             colors_  = cmap(norm_e)
             # Bubble area ∝ energy (use fixed scaling)
             bubble_s = (energies / energies.max() * 500 + 50)

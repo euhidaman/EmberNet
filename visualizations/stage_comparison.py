@@ -333,13 +333,13 @@ class StageComparisonPlotter:
             # Normalise per column: 0=worst 1=best
             normed = np.zeros_like(table)
             # Accuracy: higher is better
-            normed[:, 0] = (table[:, 0] - table[:, 0].min()) / (table[:, 0].ptp() + 1e-8)
+            normed[:, 0] = (table[:, 0] - table[:, 0].min()) / ((table[:, 0].max() - table[:, 0].min()) + 1e-8)
             # Size: lower is better
-            normed[:, 1] = 1 - (table[:, 1] - table[:, 1].min()) / (table[:, 1].ptp() + 1e-8)
+            normed[:, 1] = 1 - (table[:, 1] - table[:, 1].min()) / ((table[:, 1].max() - table[:, 1].min()) + 1e-8)
             # Speed: higher is better
-            normed[:, 2] = (table[:, 2] - table[:, 2].min()) / (table[:, 2].ptp() + 1e-8)
+            normed[:, 2] = (table[:, 2] - table[:, 2].min()) / ((table[:, 2].max() - table[:, 2].min()) + 1e-8)
             # Memory: lower is better
-            normed[:, 3] = 1 - (table[:, 3] - table[:, 3].min()) / (table[:, 3].ptp() + 1e-8)
+            normed[:, 3] = 1 - (table[:, 3] - table[:, 3].min()) / ((table[:, 3].max() - table[:, 3].min()) + 1e-8)
 
             fig, ax = plt.subplots(figsize=(10, 5))
             im = ax.imshow(normed, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")

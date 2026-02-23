@@ -244,27 +244,30 @@ class EmberNetLMMS(lmms):
             split         = args[5] if len(args) > 5 else None
 
             # --- Resolve visuals ---
-            # doc_to_visual is a bound method; call it with the doc dict to
-            # materialise the actual PIL image list.
+            # doc_to_visual is task.doc_to_visual — a bound method that must be
+            # called with the raw dataset doc from self.task_dict[task][split][doc_id].
+            # This is the pattern used by every lmms-eval model implementation
+            # (cambrians, vila, qwen_vl, vllm, etc.).
             visuals: list = []
             if callable(doc_to_visual):
                 try:
-                    visuals = doc_to_visual(request.doc) or []
+                    doc = self.task_dict[task][split][doc_id]
+                    visuals = doc_to_visual(doc) or []
                 except Exception as _ve:
-                    logger.debug(f"[EmberNet] doc_to_visual error (doc {doc_id}): {_ve}")
+                    logger.warning(f"[EmberNet] doc_to_visual error (doc {doc_id}): {_ve}")
                     visuals = []
             elif isinstance(doc_to_visual, (list, tuple)):
                 visuals = list(doc_to_visual)
 
             if not visuals:
-                # Last-ditch: try pulling 'image' directly from the doc dict
-                doc = getattr(request, 'doc', {}) or {}
-                _img = doc.get('image') or doc.get('img') or doc.get('images')
-                if _img is not None:
-                    if isinstance(_img, list):
-                        visuals = _img
-                    else:
-                        visuals = [_img]
+                # Fallback: pull image field directly from the doc dict
+                try:
+                    doc = self.task_dict[task][split][doc_id]
+                    _img = doc.get('image') or doc.get('img') or doc.get('images')
+                    if _img is not None:
+                        visuals = _img if isinstance(_img, list) else [_img]
+                except Exception:
+                    pass
 
             # --- Guard: gen_kwargs must be a dict ---
             if not isinstance(gen_kwargs, dict):
@@ -299,8 +302,9 @@ class EmberNetLMMS(lmms):
                 logger.warning(f"[EmberNet] generate error (doc {doc_id}): {e}")
                 if image is None:
                     logger.warning(
-                        f"[EmberNet] image was None — doc_to_visual={type(doc_to_visual).__name__}, "
-                        f"request.arguments accessible={hasattr(request, 'arguments')}"
+                        f"[EmberNet] image was None — task={task}, split={split}, "
+                        f"doc_id={doc_id}, doc_to_visual type={type(doc_to_visual).__name__}, "
+                        f"task_dict has task={task in (self.task_dict or {})}"
                     )
                 response = ""
 
