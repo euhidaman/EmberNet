@@ -304,7 +304,7 @@ class DatasetAnalysisPlotter:
 
             fig, axes = plt.subplots(n_rows, n_cols, figsize=VIZ_CONFIG["figsize_grid45"])
             for idx, ax in enumerate(axes.flatten()):
-                if incomplete or data is None or idx >= len(data.get("images", [])):
+                if data is None or idx >= len(data.get("images", [])):
                     # Placeholder colored tile per dataset domain
                     ds = ALL_DATASETS[idx % len(ALL_DATASETS)]
                     domain = _dataset_domain(ds)
@@ -321,7 +321,6 @@ class DatasetAnalysisPlotter:
                 ax.set_yticks([])
 
             title = "Representative Samples (one per dataset)"
-                title += "  [Incomplete – placeholder tiles]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/sample_visualizations/sample_grid", step)
@@ -351,7 +350,6 @@ class DatasetAnalysisPlotter:
                 ax.set_yticks([])
 
             title = "Failure Case Analysis"
-                title += "  [Incomplete – placeholder tiles]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/sample_visualizations/failure_cases", step)

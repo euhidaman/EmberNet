@@ -343,13 +343,15 @@ class ArchitecturePlotter:
                         sources.append(si)
                         targets.append(n_input + ei)
                         values.append(float(flows[si, ei]) * 64)
-                        colors.append(list(EXPERT_COLORS.values())[ei] + "80")
+                        _c = list(EXPERT_COLORS.values())[ei]
+                        colors.append(f"rgba({int(_c[1:3],16)},{int(_c[3:5],16)},{int(_c[5:7],16)},0.50)")
 
                 for ei in range(len(EXPERT_NAMES)):
                     sources.append(n_input + ei)
                     targets.append(n_input + len(EXPERT_NAMES))
                     values.append(sum(flows[:, ei]) * 32)
-                    colors.append(list(EXPERT_COLORS.values())[ei] + "80")
+                    _c = list(EXPERT_COLORS.values())[ei]
+                    colors.append(f"rgba({int(_c[1:3],16)},{int(_c[3:5],16)},{int(_c[5:7],16)},0.50)")
 
                 fig_s = go.Figure(go.Sankey(
                     node=dict(label=all_labels, pad=15, thickness=18,

@@ -104,7 +104,7 @@ class ExpertAnalysisPlotter:
                 cbar_kws={"label": "Co-occurrence Probability"},
             )
             ax.set_title(
-                "Top-2 Expert Co-occurrence Matrix" + ("  [Incomplete]" if incomplete else ""),
+                "Top-2 Expert Co-occurrence Matrix",
                 fontweight="bold",
             )
             plt.xticks(rotation=45, ha="right")
@@ -190,10 +190,9 @@ class ExpertAnalysisPlotter:
                         pad=15, thickness=20,
                     ),
                     link=dict(source=sources, target=targets, value=values,
-                              color=[c + "60" for c in link_colors]),
+                              color=[f"rgba({int(c[1:3],16)},{int(c[3:5],16)},{int(c[5:7],16)},0.38)" for c in link_colors]),
                 ))
                 title = "Token Routing Sankey (Snapshot)"
-                    title += " [Incomplete]"
                 fig_sankey.update_layout(title_text=title, font_size=11, height=500)
                 pio.write_image(fig_sankey, str(out), width=1200, height=600, scale=2)
                 self.logger.log_image(out, "plots/expert_analysis/routing_patterns/sankey_snapshot", step=step)

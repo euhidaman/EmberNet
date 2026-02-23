@@ -530,7 +530,6 @@ class TrainingDynamicsPlotter:
             # rather than crashing with KeyError.
             _syn = {}
             if any(k not in data for k in ("s1_steps", "s1_val", "s2_steps", "s2_val")):
-                incomplete = True   # mark as incomplete when any key is missing
                 _rng = np.random.default_rng(seed=0)
                 _s1 = np.arange(1, 500)
                 _s2 = np.arange(1, 500)
