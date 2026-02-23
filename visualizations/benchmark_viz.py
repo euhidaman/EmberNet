@@ -575,27 +575,32 @@ def extract_scores_from_lmms_results(results_dict: dict) -> Dict[str, float]:
 
         # special case: MME returns perception + cognition
         if "mme" in base:
-            perception = metrics.get("mme_perception_score,none", 0.0)
-            cognition  = metrics.get("mme_cognition_score,none", 0.0)
-            total      = (perception or 0.0) + (cognition or 0.0)
-            if total > 0:
-                raw = min(total / MME_MAX * 100.0, 100.0)
+            perception = metrics.get("mme_perception_score,none") or 0.0
+            cognition  = metrics.get("mme_cognition_score,none")  or 0.0
+            total      = float(perception) + float(cognition)
+            raw = min(total / MME_MAX * 100.0, 100.0)  # 0.0 if total==0
         else:
             for mkey in METRIC_PRIORITY:
                 if mkey in metrics:
-                    raw = metrics[mkey]
+                    v = metrics[mkey]
+                    raw = float(v) if v is not None else 0.0
                     break
-            # If still None, scan for first float-valued key
+            # If still None, scan for first numeric key (treat None values as 0)
             if raw is None:
                 for k, v in metrics.items():
-                    if isinstance(v, (int, float)) and not k.endswith("stderr"):
-                        raw = v
+                    if k.endswith("_stderr") or k.endswith(",stderr"):
+                        continue
+                    if isinstance(v, (int, float)):
+                        raw = float(v)
+                        break
+                    elif v is None:   # lmms-eval stores None for failed evals
+                        raw = 0.0
                         break
 
         if raw is not None:
             # Convert [0,1] → [0,100] if expressed as fraction
             val = float(raw)
-            if val <= 1.0 and val >= 0.0:
+            if 0.0 <= val <= 1.0:
                 val *= 100.0
             scores[base] = round(val, 2)
 

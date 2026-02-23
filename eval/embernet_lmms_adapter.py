@@ -226,16 +226,16 @@ class EmberNetLMMS(lmms):
         results = []
 
         for request in tqdm(requests, desc="EmberNet eval", dynamic_ncols=True):
-            args = request.args
+            # lmms-eval ≥ 0.5 stores the full 6-tuple in request.arguments:
+            #   (context, gen_kwargs, doc_to_visual_fn, doc_id, task, split)
+            # Older versions or the base lm-eval-harness use request.args
+            # (a 2-tuple: context, until).  Try the lmms-eval attribute first.
+            try:
+                args = request.arguments
+            except AttributeError:
+                args = request.args
 
             # --- Unpack positional arguments ---
-            # Canonical order (lmms-eval ≥ 0.5):
-            #   args[0] = context (str)
-            #   args[1] = gen_kwargs (dict)
-            #   args[2] = doc_to_visual (callable or list)
-            #   args[3] = doc_id
-            #   args[4] = task name
-            #   args[5] = split
             context       = args[0] if len(args) > 0 else ""
             gen_kwargs    = args[1] if len(args) > 1 else {}
             doc_to_visual = args[2] if len(args) > 2 else None
@@ -244,16 +244,27 @@ class EmberNetLMMS(lmms):
             split         = args[5] if len(args) > 5 else None
 
             # --- Resolve visuals ---
-            # doc_to_visual is typically a bound method; call it with the doc
-            # to materialise the actual PIL image list.
+            # doc_to_visual is a bound method; call it with the doc dict to
+            # materialise the actual PIL image list.
             visuals: list = []
             if callable(doc_to_visual):
                 try:
                     visuals = doc_to_visual(request.doc) or []
-                except Exception:
+                except Exception as _ve:
+                    logger.debug(f"[EmberNet] doc_to_visual error (doc {doc_id}): {_ve}")
                     visuals = []
             elif isinstance(doc_to_visual, (list, tuple)):
                 visuals = list(doc_to_visual)
+
+            if not visuals:
+                # Last-ditch: try pulling 'image' directly from the doc dict
+                doc = getattr(request, 'doc', {}) or {}
+                _img = doc.get('image') or doc.get('img') or doc.get('images')
+                if _img is not None:
+                    if isinstance(_img, list):
+                        visuals = _img
+                    else:
+                        visuals = [_img]
 
             # --- Guard: gen_kwargs must be a dict ---
             if not isinstance(gen_kwargs, dict):
@@ -286,6 +297,11 @@ class EmberNetLMMS(lmms):
                 response = response.strip() if isinstance(response, str) else ""
             except Exception as e:
                 logger.warning(f"[EmberNet] generate error (doc {doc_id}): {e}")
+                if image is None:
+                    logger.warning(
+                        f"[EmberNet] image was None — doc_to_visual={type(doc_to_visual).__name__}, "
+                        f"request.arguments accessible={hasattr(request, 'arguments')}"
+                    )
                 response = ""
 
             results.append(response)
