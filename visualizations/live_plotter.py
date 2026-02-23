@@ -109,6 +109,8 @@ class LivePlotter:
         self._routing_entropy: List[float] = []       # Shannon entropy per step
         self._energy_kwh:   List[float] = []          # cumulative kWh per step (if tracked)
         self._co2_kg:       List[float] = []          # cumulative kg CO₂ per step (if tracked)
+        # per-group LR history — dict of {group_name: lr} recorded each step
+        self._lr_groups_history: List[dict] = []
 
         # index into per-step lists at which each epoch ended
         self._epoch_ends: List[int] = []
@@ -133,6 +135,7 @@ class LivePlotter:
         routing_entropy: float = 0.0,
         energy_kwh: float = 0.0,
         co2_kg: float = 0.0,
+        lr_groups: Optional[dict] = None,
     ):
         """Accumulate metrics; trigger periodic plots every plot_interval steps."""
         if self.disabled:
@@ -146,6 +149,8 @@ class LivePlotter:
         self._routing_entropy.append(float(routing_entropy))
         self._energy_kwh.append(float(energy_kwh))
         self._co2_kg.append(float(co2_kg))
+        if lr_groups is not None:
+            self._lr_groups_history.append({k: float(v) for k, v in lr_groups.items()})
         if expert_probs is not None:
             arr = np.asarray(expert_probs, dtype=float)
             if arr.shape == (8,):
@@ -184,7 +189,29 @@ class LivePlotter:
             self._plot_routing_entropy()
         if any(e > 0 for e in self._energy_kwh):
             self._plot_energy_curve()
+        # Save per-group LR history so post-training viz can use real data
+        if self._lr_groups_history:
+            self.save_lr_groups_json()
         self._print_summary("Final", final=True)
+
+    def save_lr_groups_json(self, path: Optional["Path"] = None) -> Optional["Path"]:
+        """Write per-group LR history to a JSON file next to the checkpoints."""
+        import json
+        if not self._steps or not self._lr_groups_history:
+            return None
+        n = min(len(self._steps), len(self._lr_groups_history))
+        steps = self._steps[:n]
+        # Transpose list-of-dicts → dict-of-lists
+        groups = list(self._lr_groups_history[0].keys())
+        lrs_by_group = {g: [self._lr_groups_history[i].get(g, 0.0) for i in range(n)] for g in groups}
+        payload = {"steps": steps, "lrs": lrs_by_group}
+        if path is None:
+            path = self.output_dir / "lr_groups.json"
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(payload, f)
+        return path
 
     # ------------------------------------------------------------------
     # Core chart generation (direct matplotlib — always reliable)

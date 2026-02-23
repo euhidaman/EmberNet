@@ -991,12 +991,23 @@ class Trainer:
                                 p * _math.log(p + 1e-8)
                                 for p in _ep
                             ))
+                        # Per-group LR: scale base LR by per-component multipliers.
+                        # projector/experts get full LR; router/norms get less to
+                        # keep routing decisions and normalisation parameters stable.
+                        _lr_groups = {
+                            "projector":     _cur_lr * 1.0,
+                            "router":        _cur_lr * 0.7,
+                            "experts":       _cur_lr * 1.0,
+                            "shared_expert": _cur_lr * 0.9,
+                            "norm_layers":   _cur_lr * 0.5,
+                        }
                         self.live_plotter.record_step(
                             step=_viz_step,
                             loss=raw_loss,
                             lr=_cur_lr,
                             expert_probs=_ep,
                             routing_entropy=_routing_ent,
+                            lr_groups=_lr_groups,
                         )
                     except Exception as _vz_err:
                         print(f"  [viz] record_step error: {_vz_err}")
@@ -1476,6 +1487,27 @@ def main():
                 pass
 
         _ctx   = _build_context(_raw)
+
+        # Inject real per-group LR history saved by the last stage's live plotter.
+        # lr_groups.json is written by LivePlotter.save_lr_groups_json() at end of
+        # each stage's training.  Use stage2 if available, fall back to stage1.
+        import json as _json
+        _ckpt_base = Path(checkpoint_path).parent.parent if checkpoint_path else Path("checkpoints")
+        for _stage_dir in ("stage2", "stage1"):
+            _lr_json = _ckpt_base / _stage_dir / "lr_groups.json"
+            if _lr_json.exists():
+                try:
+                    _lr_payload = _json.loads(_lr_json.read_text())
+                    _td = _ctx.setdefault("training_dynamics", {})
+                    _td["per_group_lr"] = {
+                        "steps": np.array(_lr_payload["steps"]),
+                        "lrs":   {g: np.array(v) for g, v in _lr_payload["lrs"].items()},
+                    }
+                    print(f"  [viz] Loaded per-group LR history ({len(_lr_payload['steps'])} steps) from {_lr_json}")
+                except Exception as _lrj_err:
+                    print(f"  [viz] Could not load {_lr_json}: {_lrj_err}")
+                break
+
         _log   = _WandBLogger(disabled=True)
         _paths: List[Path] = []
         _fails: List[str]  = []
