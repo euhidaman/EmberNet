@@ -64,21 +64,26 @@ from loguru import logger  # lmms-eval ships loguru
 # Task → expert domain mapping (informational, logged at eval start)
 # ---------------------------------------------------------------------------
 TASK_EXPERT_MAP = {
-    "textvqa":       "vision_ocr",
-    "docvqa":        "vision_ocr",
-    "ocrvqa":        "vision_ocr",
-    "ai2d":          "vision_diagram",
-    "chartqa":       "code_math_chart",
-    "mathvista":     "code_math_formula",
-    "vqav2":         "spatial_scene",
-    "gqa":           "spatial_reasoning",
-    "ok_vqa":        "agentic_knowledge",
-    "scienceqa_img": "agentic_reasoning",
-    "clevr":         "agentic_reasoning",
-    "mme":           "general",
-    "mmmu":          "general",
-    "mmstar":        "general",
-    "seed_bench":    "general",
+    "textvqa":                "vision_ocr",
+    "docvqa":                 "vision_ocr",
+    "ocrvqa":                 "vision_ocr",
+    "ocrbench":               "vision_ocr",       # dedicated OCR benchmark
+    "ai2d":                   "vision_diagram",
+    "chartqa":                "code_math_chart",
+    "charxiv_val_reasoning":  "code_math_chart",  # harder arXiv chart reasoning
+    "charxiv_val_descriptive":"vision_diagram",   # arXiv chart description
+    "mathvista":              "code_math_formula",
+    "vqav2":                  "spatial_scene",
+    "gqa":                    "spatial_reasoning",
+    "ok_vqa":                 "agentic_knowledge",
+    "scienceqa_img":          "agentic_reasoning",
+    "clevr":                  "agentic_reasoning",
+    "pope":                   "general",           # hallucination benchmark
+    "hallusion_bench_image":  "general",           # visual illusion + hallucination
+    "mme":                    "general",
+    "mmmu":                   "general",
+    "mmstar":                 "general",
+    "seed_bench":             "general",
 }
 
 

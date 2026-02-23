@@ -35,22 +35,31 @@ from typing import Dict, List, Optional
 # Each task maps to one expert domain for the spider chart
 SUITE_TRIAL = [
     "textvqa",       # E0: vision_ocr     (fastest OCR benchmark)
+    "ocrbench",      # E0: vision_ocr     (dedicated OCR; tests quantization degradation)
     "ai2d",          # E1: vision_diagram
     "chartqa",       # E2: code_math_chart
     "scienceqa_img", # E7: agentic_reasoning
+    "pope",          # General: hallucination (quantized models hallucinate more)
+    "mmstar",        # General: image-required MCQ (no language-prior shortcut)
     "mme",           # General
 ]
 
 SUITE_CORE = [
-    "textvqa",       # E0
-    "ai2d",          # E1
-    "chartqa",       # E2
-    "mathvista",     # E3
-    "vqav2",         # E4  (large; skipped in trial)
-    "gqa",           # E5
-    "ok_vqa",        # E6
-    "scienceqa_img", # E7
-    "mme",           # General
+    "textvqa",               # E0
+    "ocrbench",              # E0: deeper OCR stress-test
+    "ai2d",                  # E1
+    "chartqa",               # E2
+    "charxiv_val_reasoning", # E2: harder arXiv chart reasoning
+    "charxiv_val_descriptive",# E1: arXiv chart description
+    "mathvista",             # E3
+    "vqav2",                 # E4  (large; skipped in trial)
+    "gqa",                   # E5
+    "ok_vqa",                # E6
+    "scienceqa_img",         # E7
+    "pope",                  # General: hallucination
+    "hallusion_bench_image", # General: visual illusions + hallucination
+    "mmstar",                # General: image-required MCQ
+    "mme",                   # General
 ]
 
 

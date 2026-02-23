@@ -40,38 +40,48 @@ apply_mpl_style()
 # Task → expert domain mapping
 # ---------------------------------------------------------------------------
 TASK_TO_EXPERT = {
-    "textvqa":       "vision_ocr",
-    "docvqa_val":    "vision_ocr",
-    "ocrvqa":        "vision_ocr",
-    "ai2d":          "vision_diagram",
-    "chartqa":       "code_math_chart",
-    "mathvista":     "code_math_formula",
-    "vqav2":         "spatial_scene",
-    "gqa":           "spatial_reasoning",
-    "ok_vqa":        "agentic_knowledge",
-    "scienceqa_img": "agentic_reasoning",
-    "clevr":         "agentic_reasoning",
-    "mme":           "general",
-    "mmmu_val":      "general",
-    "mmstar":        "general",
-    "seed_bench":    "general",
+    "textvqa":                "vision_ocr",
+    "docvqa_val":             "vision_ocr",
+    "ocrvqa":                 "vision_ocr",
+    "ocrbench":               "vision_ocr",
+    "ai2d":                   "vision_diagram",
+    "chartqa":                "code_math_chart",
+    "charxiv_val_reasoning":  "code_math_chart",
+    "charxiv_val_descriptive":"vision_diagram",
+    "mathvista":              "code_math_formula",
+    "vqav2":                  "spatial_scene",
+    "gqa":                    "spatial_reasoning",
+    "ok_vqa":                 "agentic_knowledge",
+    "scienceqa_img":          "agentic_reasoning",
+    "clevr":                  "agentic_reasoning",
+    "pope":                   "general",
+    "hallusion_bench_image":  "general",
+    "mme":                    "general",
+    "mmmu_val":               "general",
+    "mmstar":                 "general",
+    "seed_bench":             "general",
 }
 
 TASK_DISPLAY = {
-    "textvqa":       "TextVQA",
-    "docvqa_val":    "DocVQA",
-    "ocrvqa":        "OCR-VQA",
-    "ai2d":          "AI2D",
-    "chartqa":       "ChartQA",
-    "mathvista":     "MathVista",
-    "vqav2":         "VQAv2",
-    "gqa":           "GQA",
-    "ok_vqa":        "OK-VQA",
-    "scienceqa_img": "ScienceQA",
-    "mme":           "MME",
-    "mmmu_val":      "MMMU",
-    "mmstar":        "MMStar",
-    "seed_bench":    "SEED-Bench",
+    "textvqa":                "TextVQA",
+    "docvqa_val":             "DocVQA",
+    "ocrvqa":                 "OCR-VQA",
+    "ocrbench":               "OCRBench",
+    "ai2d":                   "AI2D",
+    "chartqa":                "ChartQA",
+    "charxiv_val_reasoning":  "CharXiv-Reasoning",
+    "charxiv_val_descriptive":"CharXiv-Descriptive",
+    "mathvista":              "MathVista",
+    "vqav2":                  "VQAv2",
+    "gqa":                    "GQA",
+    "ok_vqa":                 "OK-VQA",
+    "scienceqa_img":          "ScienceQA",
+    "pope":                   "POPE",
+    "hallusion_bench_image":  "HallusionBench",
+    "mme":                    "MME",
+    "mmmu_val":               "MMMU",
+    "mmstar":                 "MMStar",
+    "seed_bench":             "SEED-Bench",
 }
 
 GENERAL_COLOR = "#bcbd22"
@@ -546,13 +556,26 @@ def _aggregate_domain_scores(scores: Dict[str, float]) -> Dict[str, float]:
     return {d: float(np.mean(vals)) for d, vals in domain_totals.items()}
 
 
+# Task-specific primary metric keys (checked before METRIC_PRIORITY).
+# These are the canonical lmms-eval JSON result keys for tasks whose
+# metric name doesn't match the generic priority list.
+_TASK_METRIC_OVERRIDE = {
+    "pope":                    "pope_f1_score,none",       # F1 best captures hallucination tradeoff
+    "ocrbench":                "ocrbench_accuracy,none",
+    "hallusion_bench_image":   "aAcc,none",                # answer-level accuracy
+    "mmstar":                  "average,none",
+    "charxiv_val_reasoning":   "reasoning_acc,none",
+    "charxiv_val_descriptive": "descriptive_acc,none",
+}
+
+
 def extract_scores_from_lmms_results(results_dict: dict) -> Dict[str, float]:
     """
     Parse lmms-eval results dict into a flat {task: score_0_to_100} mapping.
 
     Handles the different metric names across benchmarks.
     """
-    # Priority order of metric keys to try per task
+    # Generic priority order (used when no task-specific override exists)
     METRIC_PRIORITY = [
         "accuracy,none",
         "exact_match,none",
@@ -573,8 +596,14 @@ def extract_scores_from_lmms_results(results_dict: dict) -> Dict[str, float]:
 
         raw = None
 
+        # task-specific metric override (checked first)
+        if base in _TASK_METRIC_OVERRIDE:
+            override_key = _TASK_METRIC_OVERRIDE[base]
+            v = metrics.get(override_key)
+            raw = float(v) if v is not None else 0.0
+
         # special case: MME returns perception + cognition
-        if "mme" in base:
+        elif "mme" in base:
             perception = metrics.get("mme_perception_score,none") or 0.0
             cognition  = metrics.get("mme_cognition_score,none")  or 0.0
             total      = float(perception) + float(cognition)
