@@ -43,7 +43,6 @@ class StageComparisonPlotter:
         key = "loss_stage1_vs_stage2"
         out = PLOT_DIRS["stage1_vs_stage2"] / plot_filename("stage_comparison", "stage_vs_stage", key)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(150)
                 s1_n = 2000
@@ -83,7 +82,6 @@ class StageComparisonPlotter:
                 ax.set_ylim(y_min, y_max * 1.2)
 
             title = "Stage 1 vs Stage 2 – Loss Curves"
-            if incomplete:
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/stage1_vs_stage2/loss_comparison", step)
@@ -97,7 +95,6 @@ class StageComparisonPlotter:
         key = "parameter_update_magnitude"
         out = PLOT_DIRS["stage1_vs_stage2"] / plot_filename("stage_comparison", "stage_vs_stage", key)
         try:
-            incomplete = data is None
             param_groups = [
                 "embed_tokens", "attn.q_proj", "attn.k_proj", "attn.v_proj", "attn.o_proj",
                 "router", "expert.gate", "expert.up", "expert.down",
@@ -138,7 +135,6 @@ class StageComparisonPlotter:
             ax2.tick_params(axis="x", rotation=30)
 
             title = "Parameter Update Magnitudes by Stage"
-            if incomplete:
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/stage1_vs_stage2/param_updates", step)
@@ -152,7 +148,6 @@ class StageComparisonPlotter:
         key = "routing_before_after_stage2"
         out = PLOT_DIRS["stage1_vs_stage2"] / plot_filename("stage_comparison", "stage_vs_stage", key)
         try:
-            incomplete = data is None
             N = len(EXPERT_NAMES)
             angles = np.linspace(0, 2 * np.pi, N, endpoint=False)
 
@@ -201,7 +196,6 @@ class StageComparisonPlotter:
             draw_spider_ax(ax2, data["after"],  data.get("ideal"), title="End of Stage 2 (specialized)")
 
             title = "Expert Routing: Before vs After Stage 2"
-            if incomplete:
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/stage1_vs_stage2/routing_before_after", step)
@@ -219,7 +213,6 @@ class StageComparisonPlotter:
         key = "ablation_num_experts"
         out = PLOT_DIRS["ablation_studies"] / plot_filename("stage_comparison", "ablation", key)
         try:
-            incomplete = data is None
             num_experts_list = [2, 4, 8, 16]
             if data is None:
                 np.random.seed(160)
@@ -244,7 +237,6 @@ class StageComparisonPlotter:
             ax.set_xlabel("Number of Experts")
             ax.set_ylabel("Validation Accuracy (%)")
             title = "Ablation: Number of Experts vs Accuracy"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=8)
 
@@ -259,7 +251,6 @@ class StageComparisonPlotter:
         key = "ablation_routing_strategy"
         out = PLOT_DIRS["ablation_studies"] / plot_filename("stage_comparison", "ablation", key)
         try:
-            incomplete = data is None
             strategies = ["Top-1", "Top-2", "Top-4", "Soft\nRouting"]
             if data is None:
                 np.random.seed(161)
@@ -291,7 +282,6 @@ class StageComparisonPlotter:
             ax2.set_ylabel("Model Size (MB)",     color="#ff7f0e")
             ax3.set_ylabel("Inference Speed (tok/s)", color="#2ca02c")
             title = "Ablation: Routing Strategy Comparison"
-            if incomplete:
             ax1.set_title(title, fontweight="bold")
 
             lines = [bars1, bars2, bars3]
@@ -312,7 +302,6 @@ class StageComparisonPlotter:
         key = "ablation_quantization_impact"
         out = PLOT_DIRS["ablation_studies"] / plot_filename("stage_comparison", "ablation", key)
         try:
-            incomplete = data is None
             levels  = ["FP32", "FP16", "Ternary", "Binary"]
             metrics = ["Accuracy (%)", "Model Size (MB)", "Inference Speed\n(tok/s)", "Peak Memory\n(MB)"]
             if data is None:
@@ -352,7 +341,6 @@ class StageComparisonPlotter:
             ax.set_yticklabels(levels)
             fig.colorbar(im, ax=ax, label="0=worst → 1=best (per-column)")
             title = "Ablation: Quantization Impact (green=better)"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/ablation/quantization_impact", step)

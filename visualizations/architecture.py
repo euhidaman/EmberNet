@@ -223,7 +223,6 @@ class ArchitecturePlotter:
         key = "cross_modal_attention_heatmap"
         out = PLOT_DIRS["attention_maps"] / plot_filename("architecture", "attention_maps", key)
         try:
-            incomplete = data is None
             n_img_tokens  = 64
             n_text_tokens = 20
             n_query_tokens = 20
@@ -245,7 +244,6 @@ class ArchitecturePlotter:
             ax.set_xticks([n_img_tokens // 2 - 0.5, n_img_tokens + n_text_tokens // 2])
             ax.set_xticklabels(["Image tokens", "Text tokens"])
             title = "Cross-Modal Attention Weights"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             fig.colorbar(im, ax=ax, label="Attention weight")
             ax.legend()
@@ -261,7 +259,6 @@ class ArchitecturePlotter:
         key = "layerwise_attention_grid"
         out = PLOT_DIRS["attention_maps"] / plot_filename("architecture", "attention_maps", key)
         try:
-            incomplete = data is None
             n_layers = 16
             seq_len  = 32
             if data is None:
@@ -282,7 +279,6 @@ class ArchitecturePlotter:
                 ax.set_yticks([])
 
             title = "Self-Attention Maps Across 16 Decoder Layers"
-            if incomplete:
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
             out = _save_and_log(fig, out, self.logger, "plots/architecture/attention_maps/layerwise_grid", step)
             self._generated.append(out)
@@ -295,7 +291,6 @@ class ArchitecturePlotter:
         key = "avg_attention_distance_per_layer"
         out = PLOT_DIRS["attention_maps"] / plot_filename("architecture", "attention_maps", key)
         try:
-            incomplete = data is None
             n_layers = 16
             if data is None:
                 np.random.seed(52)
@@ -312,7 +307,6 @@ class ArchitecturePlotter:
             ax.set_xlabel("Layer Number")
             ax.set_ylabel("Average Attention Distance (tokens)")
             title = "Average Attention Distance by Layer"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.set_xticks(layers)
 
@@ -379,7 +373,6 @@ class ArchitecturePlotter:
         key = "expert_activation_timeline"
         out = PLOT_DIRS["token_flow"] / plot_filename("architecture", "token_flow", key)
         try:
-            incomplete = data is None
             n_experts = len(EXPERT_NAMES)
             n_tokens  = 128
             if data is None:
@@ -397,7 +390,6 @@ class ArchitecturePlotter:
             ax.axvline(63.5, color="cyan", lw=1.5, ls="--", label="Img/Text boundary")
             ax.legend(fontsize=8)
             title = "Expert Activation by Token Position"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             fig.colorbar(im, ax=ax, label="Routing Probability")
 

@@ -58,7 +58,6 @@ class TrainingDynamicsPlotter:
         try:
             fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
 
-            incomplete = data is None
             if data is None:
                 data = _synthetic_loss_data()
 
@@ -113,7 +112,6 @@ class TrainingDynamicsPlotter:
             ax.set_xlabel("Training Steps")
             ax.set_ylabel("Loss (log scale)")
             title = "EmberNet – Multi-Stage Loss Progression"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend(loc="upper right")
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/multi_stage_loss", step)
@@ -133,7 +131,6 @@ class TrainingDynamicsPlotter:
         key = "loss_components_breakdown"
         out = PLOT_DIRS["loss_curves"] / plot_filename("training_dynamics", "loss_curves", key)
         try:
-            incomplete = data is None
             if data is None:
                 n = 3000
                 steps = np.arange(n)
@@ -172,7 +169,6 @@ class TrainingDynamicsPlotter:
             ax2.set_xlabel("Training Steps")
             ax2.set_ylim(0, 100)
             title2 = "Stage 2 Loss Components – Percentage"
-            if incomplete:
             ax2.set_title(title2, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/components", step)
@@ -192,7 +188,6 @@ class TrainingDynamicsPlotter:
         key = "per_dataset_loss_heatmap"
         out = PLOT_DIRS["loss_curves"] / plot_filename("training_dynamics", "loss_curves", key)
         try:
-            incomplete = data is None
             datasets = ALL_DATASETS
             n_ckpts = 10
             if data is None:
@@ -220,7 +215,6 @@ class TrainingDynamicsPlotter:
             ax.set_xlabel("Training Checkpoint")
             ax.set_ylabel("Dataset")
             title = "Per-Dataset Loss Heatmap"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
 
             # Domain separators
@@ -251,7 +245,6 @@ class TrainingDynamicsPlotter:
         key = "bitnet_two_phase_lr_schedule"
         out = PLOT_DIRS["learning_rates"] / plot_filename("training_dynamics", "learning_rates", key)
         try:
-            incomplete = data is None
             if data is None:
                 total = 5000
                 warmup = 500
@@ -303,7 +296,6 @@ class TrainingDynamicsPlotter:
             ax.set_xlabel("Training Steps")
             ax.set_ylabel("Learning Rate (log scale)")
             title = "BitNet b1.58 – Two-Phase LR Schedule"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend(ncol=2, fontsize=9)
 
@@ -324,7 +316,6 @@ class TrainingDynamicsPlotter:
         key = "per_param_group_lr"
         out = PLOT_DIRS["learning_rates"] / plot_filename("training_dynamics", "learning_rates", key)
         try:
-            incomplete = data is None
             groups = ["projector", "router", "experts", "shared_expert", "norm_layers"]
             group_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
             n = 5000
@@ -352,7 +343,6 @@ class TrainingDynamicsPlotter:
             ax.set_xlabel("Training Steps")
             ax.set_ylabel("Learning Rate (log scale)")
             title = "Per-Parameter-Group Learning Rate"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -377,7 +367,6 @@ class TrainingDynamicsPlotter:
         key = "gradient_norms_over_time"
         out = PLOT_DIRS["gradient_stats"] / plot_filename("training_dynamics", "gradient_stats", key)
         try:
-            incomplete = data is None
             if data is None:
                 n = 5000
                 np.random.seed(1)
@@ -415,7 +404,6 @@ class TrainingDynamicsPlotter:
             ax.set_xlabel("Training Steps")
             ax.set_ylabel("Gradient Norm (log scale)")
             title = "Gradient Norms Over Time"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=8, ncol=2)
 
@@ -436,7 +424,6 @@ class TrainingDynamicsPlotter:
         key = "gradient_flow_heatmap"
         out = PLOT_DIRS["gradient_stats"] / plot_filename("training_dynamics", "gradient_stats", key)
         try:
-            incomplete = data is None
             layer_names = (
                 ["embed_tokens"]
                 + [f"layer_{i}" for i in range(16)]
@@ -465,7 +452,6 @@ class TrainingDynamicsPlotter:
             ax.set_xlabel("Training Step (Checkpoint)")
             ax.set_ylabel("Model Layer")
             title = "Gradient Flow Heatmap (log₁₀ scale)"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/gradient_stats/grad_flow_heatmap", step)
@@ -485,7 +471,6 @@ class TrainingDynamicsPlotter:
         key = "gradient_clipping_frequency"
         out = PLOT_DIRS["gradient_stats"] / plot_filename("training_dynamics", "gradient_stats", key)
         try:
-            incomplete = data is None
             n_epochs = 10
             if data is None:
                 np.random.seed(3)
@@ -508,7 +493,6 @@ class TrainingDynamicsPlotter:
             ax.set_xlabel("Epoch")
             ax.set_ylabel("Clipping Frequency (%)")
             title = "Gradient Clipping Frequency per Epoch"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -533,7 +517,6 @@ class TrainingDynamicsPlotter:
         key = "loss_convergence_rate"
         out = PLOT_DIRS["convergence"] / plot_filename("training_dynamics", "convergence", key)
         try:
-            incomplete = data is None
             if data is None:
                 n = 3000
                 s1_steps = np.arange(1, 2000)
@@ -586,7 +569,6 @@ class TrainingDynamicsPlotter:
             ax.set_xlabel("Training Steps (log scale)")
             ax.set_ylabel("Validation Loss (log scale)")
             title = "Loss Convergence Rate (Power-Law Fit)"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -607,7 +589,6 @@ class TrainingDynamicsPlotter:
         key = "training_efficiency_metrics"
         out = PLOT_DIRS["convergence"] / plot_filename("training_dynamics", "convergence", key)
         try:
-            incomplete = data is None
             if data is None:
                 n = 5000
                 time_h = np.linspace(0, 12, n)
@@ -635,7 +616,6 @@ class TrainingDynamicsPlotter:
             ax1.set_ylabel("Loss (log scale)")
             ax2.set_ylabel("Cumulative Tokens (Billions)")
             title = "Training Efficiency: Loss vs Wall-Clock Time vs Tokens"
-            if incomplete:
             ax1.set_title(title, fontweight="bold")
 
             lines1, labels1 = ax1.get_legend_handles_labels()
@@ -659,7 +639,6 @@ class TrainingDynamicsPlotter:
         key = "loss_vs_tokens"
         out = PLOT_DIRS["loss_curves"] / plot_filename("training_dynamics", "loss_curves", key, step=step)
         try:
-            incomplete = data is None
             if data is None:
                 n = 500
                 np.random.seed(7)
@@ -716,7 +695,6 @@ class TrainingDynamicsPlotter:
         key = "loss_spike_detection"
         out = PLOT_DIRS["loss_curves"] / plot_filename("training_dynamics", "loss_curves", key, step=step)
         try:
-            incomplete = data is None
             if data is None:
                 n = 800; np.random.seed(8)
                 steps  = np.arange(n)
@@ -757,7 +735,6 @@ class TrainingDynamicsPlotter:
         key = "gradient_clipping_rate_line"
         out = PLOT_DIRS["gradient_stats"] / plot_filename("training_dynamics", "gradient_stats", key, step=step)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(9); epochs = np.arange(1, 11)
                 s1 = np.clip(55 - epochs * 4 + np.random.normal(0, 3, 10), 5, 80)
@@ -791,7 +768,6 @@ class TrainingDynamicsPlotter:
         key = "tokens_to_convergence"
         out = PLOT_DIRS["convergence"] / plot_filename("training_dynamics", "convergence", key, step=step)
         try:
-            incomplete = data is None
             thresholds = [4.0, 3.0, 2.5, 2.0, 1.8, 1.5]
             if data is None:
                 data = {"thresholds": thresholds, "tokens_needed_m": [5, 18, 40, 100, 200, 500]}
@@ -824,7 +800,6 @@ class TrainingDynamicsPlotter:
         key = "energy_vs_steps"
         out = PLOT_DIRS["energy_metrics"] / plot_filename("training_dynamics", "energy_metrics", key, step=step)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(55); n = 200
                 s1 = np.arange(n); s2 = np.arange(n)
@@ -861,7 +836,6 @@ class TrainingDynamicsPlotter:
         key = "co2_vs_steps"
         out = PLOT_DIRS["co2_metrics"] / plot_filename("training_dynamics", "co2_metrics", key, step=step)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(56); n = 200
                 s1 = np.arange(n); s2 = np.arange(n)
@@ -898,7 +872,6 @@ class TrainingDynamicsPlotter:
         key = "energy_per_token"
         out = PLOT_DIRS["energy_metrics"] / plot_filename("training_dynamics", "energy_metrics", key, step=step)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(57); n = 100
                 steps = np.arange(1, n + 1) * 10
@@ -928,7 +901,6 @@ class TrainingDynamicsPlotter:
         key = "stage_energy_comparison"
         out = PLOT_DIRS["energy_metrics"] / plot_filename("training_dynamics", "energy_metrics", key, step=step)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(58)
                 n1, n2 = 150, 250

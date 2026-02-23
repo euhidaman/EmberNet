@@ -50,7 +50,6 @@ class ExpertAnalysisPlotter:
         key = "expert_selection_heatmap"
         out = PLOT_DIRS["routing_patterns"] / plot_filename("expert_analysis", "routing_patterns", key)
         try:
-            incomplete = data is None
             n_ckpts = 10
             if data is None:
                 np.random.seed(10)
@@ -73,7 +72,6 @@ class ExpertAnalysisPlotter:
             ax.set_xlabel("Training Checkpoint")
             ax.set_ylabel("Expert")
             title = "Expert Selection Frequency over Training"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/routing_patterns/selection_heatmap", step)
@@ -87,7 +85,6 @@ class ExpertAnalysisPlotter:
         key = "expert_cooccurrence_matrix"
         out = PLOT_DIRS["routing_patterns"] / plot_filename("expert_analysis", "routing_patterns", key)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(11)
                 mat = np.random.uniform(0.01, 0.3, (N_EXPERTS, N_EXPERTS))
@@ -123,7 +120,6 @@ class ExpertAnalysisPlotter:
         key = "expert_routing_by_dataset"
         out = PLOT_DIRS["routing_patterns"] / plot_filename("expert_analysis", "routing_patterns", key)
         try:
-            incomplete = data is None
             n_ds = len(ALL_DATASETS)
             if data is None:
                 np.random.seed(12)
@@ -144,7 +140,6 @@ class ExpertAnalysisPlotter:
             ax.set_ylabel("% Tokens Routed")
             ax.set_ylim(0, 100)
             title = "Expert Routing by Dataset"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend(ncol=4, fontsize=8, loc="upper right")
 
@@ -171,7 +166,6 @@ class ExpertAnalysisPlotter:
                 import plotly.graph_objects as go
                 import plotly.io as pio
 
-                incomplete = data is None
                 if data is None:
                     np.random.seed(13)
                     token_flows = np.random.dirichlet(np.ones(N_EXPERTS), size=8)
@@ -199,7 +193,6 @@ class ExpertAnalysisPlotter:
                               color=[c + "60" for c in link_colors]),
                 ))
                 title = "Token Routing Sankey (Snapshot)"
-                if incomplete:
                     title += " [Incomplete]"
                 fig_sankey.update_layout(title_text=title, font_size=11, height=500)
                 pio.write_image(fig_sankey, str(out), width=1200, height=600, scale=2)
@@ -227,7 +220,6 @@ class ExpertAnalysisPlotter:
         key = "expert_specialization_index"
         out = PLOT_DIRS["specialization_metrics"] / plot_filename("expert_analysis", "specialization_metrics", key)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(20)
                 n = 5000
@@ -254,7 +246,6 @@ class ExpertAnalysisPlotter:
             ax.set_xlabel("Training Steps")
             ax.set_ylabel("Specialization Index (0=uniform, 1=perfect)")
             title = "Expert Specialization Index"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=8, ncol=2)
             ax.set_ylim(0, 1.05)
@@ -270,7 +261,6 @@ class ExpertAnalysisPlotter:
         key = "expert_weight_sparsity_grid"
         out = PLOT_DIRS["specialization_metrics"] / plot_filename("expert_analysis", "specialization_metrics", key)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(21)
                 # Synthetic ternary distributions per expert
@@ -308,7 +298,6 @@ class ExpertAnalysisPlotter:
                     ax.legend(fontsize=7)
 
             title = "Expert Ternary Weight Distributions (Initial vs Final)"
-            if incomplete:
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/specialization_metrics/weight_sparsity_grid", step)
@@ -322,7 +311,6 @@ class ExpertAnalysisPlotter:
         key = "expert_output_variance_boxplot"
         out = PLOT_DIRS["specialization_metrics"] / plot_filename("expert_analysis", "specialization_metrics", key)
         try:
-            incomplete = data is None
             domains = list(DATASET_DOMAINS.keys())
             if data is None:
                 np.random.seed(22)
@@ -351,7 +339,6 @@ class ExpertAnalysisPlotter:
                     ax.set_ylabel("Output Activation Variance")
 
             title = "Expert Output Variance by Domain"
-            if incomplete:
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/specialization_metrics/output_variance", step)
@@ -369,7 +356,6 @@ class ExpertAnalysisPlotter:
         key = "expert_load_balancing"
         out = PLOT_DIRS["expert_utilization"] / plot_filename("expert_analysis", "expert_utilization", key)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(30)
                 n = 5000
@@ -390,7 +376,6 @@ class ExpertAnalysisPlotter:
             ax.set_xlabel("Training Steps")
             ax.set_ylabel("Load Imbalance Coefficient\n(std / mean usage)")
             title = "Expert Load Balancing"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -405,7 +390,6 @@ class ExpertAnalysisPlotter:
         key = "expert_usage_violin"
         out = PLOT_DIRS["expert_utilization"] / plot_filename("expert_analysis", "expert_utilization", key)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(31)
                 usage_data = {
@@ -436,7 +420,6 @@ class ExpertAnalysisPlotter:
             ax.axhline(100 / N_EXPERTS, color="black", ls="--", lw=1.5, label="Ideal uniform")
             ax.legend()
             title = "Expert Token Usage Distribution"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/expert_utilization/usage_violin", step)
@@ -450,7 +433,6 @@ class ExpertAnalysisPlotter:
         key = "dead_expert_detection"
         out = PLOT_DIRS["expert_utilization"] / plot_filename("expert_analysis", "expert_utilization", key)
         try:
-            incomplete = data is None
             n_ckpts = 10
             if data is None:
                 np.random.seed(32)
@@ -475,7 +457,6 @@ class ExpertAnalysisPlotter:
             cbar = fig.colorbar(im, ax=ax, ticks=[0, 1])
             cbar.set_ticklabels(["Dead (≤1%)", "Active (>1%)"])
             title = "Dead Expert Detection"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/expert_utilization/dead_expert_heatmap", step)
@@ -506,7 +487,6 @@ class ExpertAnalysisPlotter:
         key = "per_expert_spider_charts"
         out = PLOT_DIRS["spider_charts"] / plot_filename("expert_analysis", "spider_charts", key)
         try:
-            incomplete = data is None
             domains = EXPERT_NAMES  # axes = domain names = expert names
             N = len(domains)
             angles = np.linspace(0, 2 * np.pi, N, endpoint=False)
@@ -549,7 +529,6 @@ class ExpertAnalysisPlotter:
                 ax.set_title(EXPERT_LABELS[name], fontsize=9, fontweight="bold", pad=10)
 
             title = "Per-Expert Domain Proficiency"
-            if incomplete:
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold", y=1.01)
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/spider_charts/per_expert", step)
@@ -563,7 +542,6 @@ class ExpertAnalysisPlotter:
         key = "comparative_spider_chart"
         out = PLOT_DIRS["spider_charts"] / plot_filename("expert_analysis", "spider_charts", key)
         try:
-            incomplete = data is None
             domains = EXPERT_NAMES
             N = len(domains)
             angles = np.linspace(0, 2 * np.pi, N, endpoint=False)
@@ -594,7 +572,6 @@ class ExpertAnalysisPlotter:
 
             ax.legend(bbox_to_anchor=(1.35, 1.1), fontsize=8)
             title = "Comparative Expert Spider Chart – All Experts"
-            if incomplete:
             ax.set_title(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold", pad=20)
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/spider_charts/comparative", step)
@@ -608,7 +585,6 @@ class ExpertAnalysisPlotter:
         key = "spider_temporal_evolution"
         out = PLOT_DIRS["spider_charts"] / plot_filename("expert_analysis", "spider_charts", key)
         try:
-            incomplete = data is None
             domains = EXPERT_NAMES
             N = len(domains)
             angles = np.linspace(0, 2 * np.pi, N, endpoint=False)
@@ -645,7 +621,6 @@ class ExpertAnalysisPlotter:
                 ax.set_title(ckpt_labels[ci], fontsize=10, fontweight="bold", pad=8)
 
             title = "Spider Chart Temporal Evolution (Expert Specialization)"
-            if incomplete:
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/spider_charts/temporal_evolution", step)
@@ -663,7 +638,6 @@ class ExpertAnalysisPlotter:
         key = "expert_usage_stacked_area"
         out = PLOT_DIRS["expert_utilization"] / plot_filename("expert_analysis", "expert_utilization", key)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(30)
                 T = 200
@@ -710,7 +684,6 @@ class ExpertAnalysisPlotter:
         key = "routing_entropy_over_time"
         out = PLOT_DIRS["routing_patterns"] / plot_filename("expert_analysis", "routing_patterns", key)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(31)
                 T = 300

@@ -43,7 +43,6 @@ class PerformanceMetricsPlotter:
         key = "per_dataset_accuracy_curves"
         out = PLOT_DIRS["accuracy_curves"] / plot_filename("performance", "accuracy_curves", key)
         try:
-            incomplete = data is None
             n_steps = 5000
             if data is None:
                 np.random.seed(120)
@@ -72,7 +71,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylabel("Accuracy (%)")
             ax.set_ylim(0, 100)
             title = "Per-Dataset Accuracy Progression"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=6, ncol=3, bbox_to_anchor=(1.01, 1), loc="upper left")
 
@@ -87,7 +85,6 @@ class PerformanceMetricsPlotter:
         key = "domain_aggregated_accuracy"
         out = PLOT_DIRS["accuracy_curves"] / plot_filename("performance", "accuracy_curves", key)
         try:
-            incomplete = data is None
             n_steps = 5000
             domains = list(DATASET_DOMAINS.keys())
             if data is None:
@@ -115,7 +112,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylabel("Average Accuracy (%)")
             ax.set_ylim(0, 100)
             title = "Domain-Aggregated Accuracy"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -130,7 +126,6 @@ class PerformanceMetricsPlotter:
         key = "per_expert_target_accuracy"
         out = PLOT_DIRS["accuracy_curves"] / plot_filename("performance", "accuracy_curves", key)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(122)
                 target_acc = np.random.uniform(70, 92, len(EXPERT_NAMES))
@@ -157,7 +152,6 @@ class PerformanceMetricsPlotter:
                 ax.text(i, 2, name.replace("_", "\n"), ha="center", fontsize=5.5, rotation=0)
 
             title = "Per-Expert Accuracy: Target Domain vs Others"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -176,7 +170,6 @@ class PerformanceMetricsPlotter:
         key = "validation_perplexity_over_training"
         out = PLOT_DIRS["perplexity_progression"] / plot_filename("performance", "perplexity", key)
         try:
-            incomplete = data is None
             domains = list(DATASET_DOMAINS.keys())
             if data is None:
                 np.random.seed(130)
@@ -204,7 +197,6 @@ class PerformanceMetricsPlotter:
             ax.set_xlabel("Training Steps")
             ax.set_ylabel("Perplexity (log scale)")
             title = "Validation Perplexity over Training"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=8)
 
@@ -219,7 +211,6 @@ class PerformanceMetricsPlotter:
         key = "perplexity_by_token_position"
         out = PLOT_DIRS["perplexity_progression"] / plot_filename("performance", "perplexity", key)
         try:
-            incomplete = data is None
             seq_len = 2048
             if data is None:
                 np.random.seed(131)
@@ -249,7 +240,6 @@ class PerformanceMetricsPlotter:
             ax.set_xlabel("Token Position in Sequence")
             ax.set_ylabel("Average Perplexity")
             title = "Perplexity by Token Position"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -268,7 +258,6 @@ class PerformanceMetricsPlotter:
         key = "benchmark_accuracy_comparison"
         out = PLOT_DIRS["benchmark_comparisons"] / plot_filename("performance", "benchmark", key)
         try:
-            incomplete = data is None
             benchmarks = ["TextVQA", "DocVQA", "ChartQA", "VQAv2", "ScienceQA", "A-OKVQA", "MathVista"]
             models     = ["EmberNet", "SmolVLM", "MobileVLM", "Baseline"]
             if data is None:
@@ -299,7 +288,6 @@ class PerformanceMetricsPlotter:
             ax.set_ylabel("Accuracy (%)")
             ax.set_ylim(0, 100)
             title = "Benchmark Accuracy: EmberNet vs Baselines"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -314,7 +302,6 @@ class PerformanceMetricsPlotter:
         key = "model_size_vs_performance"
         out = PLOT_DIRS["benchmark_comparisons"] / plot_filename("performance", "benchmark", key)
         try:
-            incomplete = data is None
             if data is None:
                 models_info = {
                     "EmberNet":   (135, 72.5, "#d62728", "*"),
@@ -346,7 +333,6 @@ class PerformanceMetricsPlotter:
             ax.set_xlabel("Model Size (MB)")
             ax.set_ylabel("Average Accuracy across Benchmarks (%)")
             title = "Model Size vs Performance Trade-off"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -361,7 +347,6 @@ class PerformanceMetricsPlotter:
         key = "inference_speed_comparison"
         out = PLOT_DIRS["benchmark_comparisons"] / plot_filename("performance", "benchmark", key)
         try:
-            incomplete = data is None
             devices = ["CPU", "GPU (RTX 3090)", "Edge (Raspberry Pi)"]
             models  = ["EmberNet", "SmolVLM", "MobileVLM"]
             if data is None:
@@ -397,7 +382,6 @@ class PerformanceMetricsPlotter:
             ax.set_xticklabels(devices, fontsize=9)
             ax.set_ylabel("Tokens / Second")
             title = "Inference Speed Comparison"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -412,7 +396,6 @@ class PerformanceMetricsPlotter:
         key = "inference_energy_distribution"
         out = PLOT_DIRS["efficiency_tradeoffs"] / plot_filename("performance", "efficiency", key)
         try:
-            incomplete = data is None
             task_types = ["OCR", "Chart", "Document", "Scene", "Generic VQA"]
             if data is None:
                 np.random.seed(150)
@@ -449,7 +432,6 @@ class PerformanceMetricsPlotter:
         key = "accuracy_vs_energy_pareto"
         out = PLOT_DIRS["efficiency_tradeoffs"] / plot_filename("performance", "efficiency", key)
         try:
-            incomplete = data is None
             models = ["EmberNet", "SmolVLM-500M", "MobileVLM-3B", "LLaVA-7B", "Qwen-VL-7B"]
             if data is None:
                 np.random.seed(151)
@@ -509,7 +491,6 @@ class PerformanceMetricsPlotter:
         key = "model_efficiency_tradeoff"
         out = PLOT_DIRS["efficiency_tradeoffs"] / plot_filename("performance", "efficiency", key)
         try:
-            incomplete = data is None
             if data is None:
                 models_info = {
                     "EmberNet":       {"size_mb": 420,  "acc": 72.5, "energy_mwh": 0.8},

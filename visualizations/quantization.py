@@ -42,7 +42,6 @@ class QuantizationPlotter:
         key = "ternary_weight_histogram"
         out = PLOT_DIRS["weight_distributions"] / plot_filename("quantization", "weight_distributions", key)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(70)
                 fp16_weights   = np.random.normal(0, 0.35, 50000)
@@ -73,7 +72,6 @@ class QuantizationPlotter:
             ax2.set_title(f"Ternary Weights W_q\nSparsity = {sparsity:.1f}%", fontweight="bold")
 
             title = "Weight Distributions: FP16 vs Ternary"
-            if incomplete:
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/quantization/weight_distributions/before_after_hist", step)
@@ -87,7 +85,6 @@ class QuantizationPlotter:
         key = "layerwise_weight_sparsity"
         out = PLOT_DIRS["weight_distributions"] / plot_filename("quantization", "weight_distributions", key)
         try:
-            incomplete = data is None
             layers = (
                 ["embed"] + [f"L{i}" for i in range(16)] + ["lm_head"]
             )
@@ -113,7 +110,6 @@ class QuantizationPlotter:
             ax.set_ylabel("Sparsity (% zeros)")
             ax.set_ylim(0, 60)
             title = "Layer-wise Weight Sparsity"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -128,7 +124,6 @@ class QuantizationPlotter:
         key = "weight_magnitude_decay"
         out = PLOT_DIRS["weight_distributions"] / plot_filename("quantization", "weight_distributions", key)
         try:
-            incomplete = data is None
             layer_types = ["attention", "FFN", "projector"]
             layer_colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
             if data is None:
@@ -153,7 +148,6 @@ class QuantizationPlotter:
             ax.set_xlabel("Training Steps")
             ax.set_ylabel("Average |weight| (before quantization)")
             title = "Weight Magnitude Decay Over Training"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -172,7 +166,6 @@ class QuantizationPlotter:
         key = "4bit_activation_distribution"
         out = PLOT_DIRS["activation_histograms"] / plot_filename("quantization", "activations", key)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(80)
                 fp16_act = np.random.normal(0, 2.5, 100000)
@@ -193,7 +186,6 @@ class QuantizationPlotter:
             ax.set_xlabel("Activation Value")
             ax.set_ylabel("Density")
             title = f"Activation Distribution: FP16 vs 4-bit  (RMSE={rmse:.4f})"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.axvline(-8, color="red", ls=":", lw=1.2, label="4-bit clip boundary")
             ax.axvline(7,  color="red", ls=":", lw=1.2)
@@ -210,7 +202,6 @@ class QuantizationPlotter:
         key = "activation_clipping_frequency"
         out = PLOT_DIRS["activation_histograms"] / plot_filename("quantization", "activations", key)
         try:
-            incomplete = data is None
             if data is None:
                 np.random.seed(81)
                 n = 5000
@@ -230,7 +221,6 @@ class QuantizationPlotter:
             ax.set_xlabel("Training Steps")
             ax.set_ylabel("Activation Clipping Frequency (%)")
             title = "Activation Clipping Frequency (outside [-8, 7])"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -245,7 +235,6 @@ class QuantizationPlotter:
         key = "layerwise_activation_scale"
         out = PLOT_DIRS["activation_histograms"] / plot_filename("quantization", "activations", key)
         try:
-            incomplete = data is None
             layers = ["embed"] + [f"L{i}" for i in range(16)] + ["lm_head"]
             if data is None:
                 np.random.seed(82)
@@ -266,7 +255,6 @@ class QuantizationPlotter:
             ax.set_xticklabels(layers, rotation=45, ha="right", fontsize=8)
             ax.set_ylabel("Activation Magnitude (pre-quantization)")
             title = "Layer-wise Activation Scale"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/quantization/activations/scale_boxplot", step)
@@ -284,7 +272,6 @@ class QuantizationPlotter:
         key = "model_size_breakdown"
         out = PLOT_DIRS["bitwidth_efficiency"] / plot_filename("quantization", "bitwidth", key)
         try:
-            incomplete = data is None
             components = ["Vision\nEncoder", "Projector", "Decoder", "Total"]
             if data is None:
                 fp16_mb    = np.array([400.0,  20.0, 350.0, 770.0])
@@ -312,7 +299,6 @@ class QuantizationPlotter:
             ax.set_xticklabels(components)
             ax.set_ylabel("Memory (MB)")
             title = "Model Size Breakdown by Component"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -327,7 +313,6 @@ class QuantizationPlotter:
         key = "effective_bitwidth_per_layer"
         out = PLOT_DIRS["bitwidth_efficiency"] / plot_filename("quantization", "bitwidth", key)
         try:
-            incomplete = data is None
             layers = ["embed"] + [f"L{i}" for i in range(16)] + ["lm_head"]
             if data is None:
                 np.random.seed(90)
@@ -349,7 +334,6 @@ class QuantizationPlotter:
             ax.set_xticklabels(layers, rotation=45, ha="right", fontsize=8)
             ax.set_ylabel("Effective bits per parameter")
             title = "Effective Bitwidth per Layer  (H(p_{-1}, p_{0}, p_{+1}))"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -364,7 +348,6 @@ class QuantizationPlotter:
         key = "quantization_pareto"
         out = PLOT_DIRS["bitwidth_efficiency"] / plot_filename("quantization", "bitwidth", key)
         try:
-            incomplete = data is None
             if data is None:
                 methods  = ["FP32", "FP16", "Ternary", "Binary"]
                 sizes_mb = [1540.0, 770.0, 135.0, 90.0]
@@ -393,7 +376,6 @@ class QuantizationPlotter:
             ax.set_xlabel("Model Size (MB)")
             ax.set_ylabel("Validation Perplexity (lower is better)")
             title = "Quantization Pareto: Size vs Perplexity"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 

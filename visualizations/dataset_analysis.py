@@ -43,7 +43,6 @@ class DatasetAnalysisPlotter:
         key = "token_distribution_per_dataset"
         out = PLOT_DIRS["token_statistics"] / plot_filename("dataset_analysis", "token_statistics", key)
         try:
-            incomplete = data is None
             n_ds = len(ALL_DATASETS)
             if data is None:
                 np.random.seed(100)
@@ -63,7 +62,6 @@ class DatasetAnalysisPlotter:
             ax.set_xticklabels(datasets, rotation=45, ha="right", fontsize=8)
             ax.set_ylabel("Total Tokens (Millions)")
             title = "Token Distribution per Dataset"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -85,7 +83,6 @@ class DatasetAnalysisPlotter:
         key = "sequence_length_violin"
         out = PLOT_DIRS["token_statistics"] / plot_filename("dataset_analysis", "token_statistics", key)
         try:
-            incomplete = data is None
             if data is None:
                 import pandas as pd
                 np.random.seed(101)
@@ -112,7 +109,6 @@ class DatasetAnalysisPlotter:
             ax.set_xlabel("Dataset")
             ax.set_ylabel("Sequence Length (tokens)")
             title = "Sequence Length Distribution per Dataset"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/token_statistics/seq_length_violin", step)
@@ -126,7 +122,6 @@ class DatasetAnalysisPlotter:
         key = "cumulative_token_exposure"
         out = PLOT_DIRS["token_statistics"] / plot_filename("dataset_analysis", "token_statistics", key)
         try:
-            incomplete = data is None
             if data is None:
                 n1, n2 = 2000, 3000
                 steps  = np.arange(n1 + n2)
@@ -155,7 +150,6 @@ class DatasetAnalysisPlotter:
             ax.set_xlabel("Training Steps")
             ax.set_ylabel("Cumulative Tokens (Billions)")
             title = "Cumulative Token Exposure by Training Stage"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
@@ -174,7 +168,6 @@ class DatasetAnalysisPlotter:
         key = "domain_distribution_pie"
         out = PLOT_DIRS["domain_distributions"] / plot_filename("dataset_analysis", "domain_distributions", key)
         try:
-            incomplete = data is None
             if data is None:
                 domain_tok = {d: np.random.uniform(0.5, 3.0) for d in DATASET_DOMAINS}
                 data = {"domain_tokens_B": domain_tok}
@@ -194,7 +187,6 @@ class DatasetAnalysisPlotter:
             for t in texts:
                 t.set_fontsize(9)
             title = "Domain Token Distribution"
-            if incomplete:
             ax.set_title(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold", pad=15)
 
             out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/domain_distributions/domain_pie", step)
@@ -208,7 +200,6 @@ class DatasetAnalysisPlotter:
         key = "dataset_mixing_schedule"
         out = PLOT_DIRS["domain_distributions"] / plot_filename("dataset_analysis", "domain_distributions", key)
         try:
-            incomplete = data is None
             n_steps = 3000
             n_ds    = len(ALL_DATASETS)
             if data is None:
@@ -246,7 +237,6 @@ class DatasetAnalysisPlotter:
             ax.set_xlabel("Training Steps (Stage 2)")
             ax.set_ylabel("Batch Composition (%)")
             title = "Dataset Mixing Schedule (Curriculum Learning)"
-            if incomplete:
             ax.set_title(title, fontweight="bold")
             ax.legend(bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, ncol=2)
 
@@ -261,7 +251,6 @@ class DatasetAnalysisPlotter:
         key = "expert_dataset_alignment_matrix"
         out = PLOT_DIRS["domain_distributions"] / plot_filename("dataset_analysis", "domain_distributions", key)
         try:
-            incomplete = data is None
             n_experts = len(EXPERT_NAMES)
             n_ds      = len(ALL_DATASETS)
             if data is None:
@@ -293,7 +282,6 @@ class DatasetAnalysisPlotter:
             ax2.set_xticklabels(ALL_DATASETS, rotation=45, ha="right", fontsize=6)
 
             title = "Expert-Dataset Alignment: Designed vs Learned"
-            if incomplete:
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
             out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/domain_distributions/expert_dataset_alignment", step)
@@ -311,7 +299,6 @@ class DatasetAnalysisPlotter:
         key = "representative_samples_grid"
         out = PLOT_DIRS["sample_visualizations"] / plot_filename("dataset_analysis", "sample_visualizations", key)
         try:
-            incomplete = data is None
             n_rows, n_cols = 4, 5
             n_samples = n_rows * n_cols  # exactly 20
 
@@ -334,7 +321,6 @@ class DatasetAnalysisPlotter:
                 ax.set_yticks([])
 
             title = "Representative Samples (one per dataset)"
-            if incomplete:
                 title += "  [Incomplete – placeholder tiles]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
@@ -349,7 +335,6 @@ class DatasetAnalysisPlotter:
         key = "failure_case_analysis"
         out = PLOT_DIRS["sample_visualizations"] / plot_filename("dataset_analysis", "sample_visualizations", key)
         try:
-            incomplete = data is None
             failure_types = [
                 "OCR error", "Spatial error", "Math error", "Diagram error",
                 "Counting error", "Chart error", "Reasoning error", "Knowledge error",
@@ -366,7 +351,6 @@ class DatasetAnalysisPlotter:
                 ax.set_yticks([])
 
             title = "Failure Case Analysis"
-            if incomplete:
                 title += "  [Incomplete – placeholder tiles]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
