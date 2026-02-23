@@ -250,24 +250,37 @@ class EmberNetLMMS(lmms):
             # (cambrians, vila, qwen_vl, vllm, etc.).
             visuals: list = []
             if callable(doc_to_visual):
-                try:
-                    doc = self.task_dict[task][split][doc_id]
-                    visuals = doc_to_visual(doc) or []
-                except Exception as _ve:
-                    logger.warning(f"[EmberNet] doc_to_visual error (doc {doc_id}): {_ve}")
-                    visuals = []
+                raw_doc = self.task_dict[task][split][doc_id]
+                visuals = doc_to_visual(raw_doc) or []
+                if not visuals:
+                    # doc_to_visual returned nothing — try common image field names
+                    # directly from the dataset doc as a last resort.
+                    for key in ("image", "img", "images", "figure", "picture"):
+                        _img = raw_doc.get(key) if isinstance(raw_doc, dict) else None
+                        if _img is not None:
+                            visuals = _img if isinstance(_img, list) else [_img]
+                            logger.info(
+                                f"[EmberNet] doc_to_visual returned [] for doc {doc_id}; "
+                                f"recovered image from doc['{key}']"
+                            )
+                            break
+                    if not visuals:
+                        raise RuntimeError(
+                            f"[EmberNet] doc {doc_id} (task={task}, split={split}): "
+                            f"doc_to_visual returned no images and no fallback image key found. "
+                            f"doc keys={list(raw_doc.keys()) if isinstance(raw_doc, dict) else type(raw_doc)}"
+                        )
             elif isinstance(doc_to_visual, (list, tuple)):
                 visuals = list(doc_to_visual)
-
-            if not visuals:
-                # Fallback: pull image field directly from the doc dict
-                try:
-                    doc = self.task_dict[task][split][doc_id]
-                    _img = doc.get('image') or doc.get('img') or doc.get('images')
-                    if _img is not None:
-                        visuals = _img if isinstance(_img, list) else [_img]
-                except Exception:
-                    pass
+                if not visuals:
+                    raise RuntimeError(
+                        f"[EmberNet] doc {doc_id}: doc_to_visual is an empty list/tuple"
+                    )
+            else:
+                raise RuntimeError(
+                    f"[EmberNet] doc {doc_id}: doc_to_visual is neither callable nor a list "
+                    f"(got {type(doc_to_visual)}). Check that the task YAML defines doc_to_visual."
+                )
 
             # --- Guard: gen_kwargs must be a dict ---
             if not isinstance(gen_kwargs, dict):
@@ -287,26 +300,16 @@ class EmberNetLMMS(lmms):
             if not prompt:
                 prompt = "Describe the image."
 
-            try:
-                with torch.inference_mode():
-                    response = self._model.generate(
-                        image=image,
-                        prompt=prompt,
-                        max_new_tokens=max_new,
-                        temperature=temp if temp > 0 else None,
-                        top_p=top_p if temp > 0 else None,
-                        do_sample=(temp > 0),
-                    )
-                response = response.strip() if isinstance(response, str) else ""
-            except Exception as e:
-                logger.warning(f"[EmberNet] generate error (doc {doc_id}): {e}")
-                if image is None:
-                    logger.warning(
-                        f"[EmberNet] image was None — task={task}, split={split}, "
-                        f"doc_id={doc_id}, doc_to_visual type={type(doc_to_visual).__name__}, "
-                        f"task_dict has task={task in (self.task_dict or {})}"
-                    )
-                response = ""
+            with torch.inference_mode():
+                response = self._model.generate(
+                    image=image,
+                    prompt=prompt,
+                    max_new_tokens=max_new,
+                    temperature=temp if temp > 0 else None,
+                    top_p=top_p if temp > 0 else None,
+                    do_sample=(temp > 0),
+                )
+            response = response.strip() if isinstance(response, str) else ""
 
             results.append(response)
 
