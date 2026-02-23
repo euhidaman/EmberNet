@@ -75,7 +75,7 @@ class DatasetAnalysisPlotter:
                 if cum < len(datasets):
                     ax.axvline(cum - 0.5, color="black", lw=1.5, ls="--", alpha=0.4)
 
-            _save_and_log(fig, out, self.logger, "plots/dataset_analysis/token_statistics/token_distribution", step)
+            out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/token_statistics/token_distribution", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -117,7 +117,7 @@ class DatasetAnalysisPlotter:
                 title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/dataset_analysis/token_statistics/seq_length_violin", step)
+            out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/token_statistics/seq_length_violin", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -162,7 +162,7 @@ class DatasetAnalysisPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/dataset_analysis/token_statistics/cumulative_tokens", step)
+            out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/token_statistics/cumulative_tokens", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -201,7 +201,7 @@ class DatasetAnalysisPlotter:
                 title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold", pad=15)
 
-            _save_and_log(fig, out, self.logger, "plots/dataset_analysis/domain_distributions/domain_pie", step)
+            out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/domain_distributions/domain_pie", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -255,7 +255,7 @@ class DatasetAnalysisPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend(bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, ncol=2)
 
-            _save_and_log(fig, out, self.logger, "plots/dataset_analysis/domain_distributions/mixing_schedule", step)
+            out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/domain_distributions/mixing_schedule", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -302,7 +302,7 @@ class DatasetAnalysisPlotter:
                 title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/dataset_analysis/domain_distributions/expert_dataset_alignment", step)
+            out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/domain_distributions/expert_dataset_alignment", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -344,7 +344,7 @@ class DatasetAnalysisPlotter:
                 title += "  [Incomplete – placeholder tiles]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/dataset_analysis/sample_visualizations/sample_grid", step)
+            out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/sample_visualizations/sample_grid", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -376,7 +376,7 @@ class DatasetAnalysisPlotter:
                 title += "  [Incomplete – placeholder tiles]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/dataset_analysis/sample_visualizations/failure_cases", step)
+            out = _save_and_log(fig, out, self.logger, "plots/dataset_analysis/sample_visualizations/failure_cases", step)
             self._generated.append(out)
             return out
         except Exception as e:

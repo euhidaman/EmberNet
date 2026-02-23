@@ -44,6 +44,12 @@ from typing import Optional, Union, List, Dict, Any
 
 import torch
 
+try:
+    from codecarbon import EmissionsTracker as _EmissionsTracker
+    _HAS_CODECARBON = True
+except ImportError:
+    _HAS_CODECARBON = False
+
 # Add parent directory for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -400,66 +406,87 @@ def interactive_cli():
     model = EmberVLM()
     current_image_path = None
 
-    while True:
+    _cc_tracker = None
+    if _HAS_CODECARBON:
         try:
-            user_input = input("You: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print("\nGoodbye!")
-            break
+            _cc_tracker = _EmissionsTracker(
+                project_name="EmberNet_inference",
+                log_level="error",
+                save_to_file=False,
+            )
+            _cc_tracker.start()
+        except Exception:
+            _cc_tracker = None
 
-        if not user_input:
-            continue
-
-        if user_input.startswith("/"):
-            cmd_parts = user_input.split(maxsplit=1)
-            cmd = cmd_parts[0].lower()
-            arg = cmd_parts[1] if len(cmd_parts) > 1 else ""
-
-            if cmd == "/quit":
-                print("Goodbye!")
-                break
-            elif cmd == "/clear":
-                model.clear_history()
-                current_image_path = None
-                print("Conversation cleared.")
-            elif cmd == "/load":
-                if arg and Path(arg).exists():
-                    current_image_path = arg
-                    print(f"Loaded: {arg}")
-                else:
-                    print(f"File not found: {arg}")
-            elif cmd == "/describe":
-                if current_image_path:
-                    response = model.describe(current_image_path)
-                    print(f"Assistant: {response}")
-                else:
-                    print("No image loaded. Use /load <path> first.")
-            elif cmd == "/ocr":
-                if current_image_path:
-                    response = model.ocr(current_image_path)
-                    print(f"Assistant: {response}")
-                else:
-                    print("No image loaded. Use /load <path> first.")
-            elif cmd == "/chart":
-                if current_image_path:
-                    response = model.analyze_chart(current_image_path)
-                    print(f"Assistant: {response}")
-                else:
-                    print("No image loaded. Use /load <path> first.")
-            else:
-                print(f"Unknown command: {cmd}")
-        else:
-            # Regular chat
+    try:
+        while True:
             try:
-                if current_image_path and model._current_image is None:
-                    response = model.chat(image=current_image_path, prompt=user_input)
+                user_input = input("You: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\nGoodbye!")
+                break
+
+            if not user_input:
+                continue
+
+            if user_input.startswith("/"):
+                cmd_parts = user_input.split(maxsplit=1)
+                cmd = cmd_parts[0].lower()
+                arg = cmd_parts[1] if len(cmd_parts) > 1 else ""
+
+                if cmd == "/quit":
+                    print("Goodbye!")
+                    break
+                elif cmd == "/clear":
+                    model.clear_history()
+                    current_image_path = None
+                    print("Conversation cleared.")
+                elif cmd == "/load":
+                    if arg and Path(arg).exists():
+                        current_image_path = arg
+                        print(f"Loaded: {arg}")
+                    else:
+                        print(f"File not found: {arg}")
+                elif cmd == "/describe":
+                    if current_image_path:
+                        response = model.describe(current_image_path)
+                        print(f"Assistant: {response}")
+                    else:
+                        print("No image loaded. Use /load <path> first.")
+                elif cmd == "/ocr":
+                    if current_image_path:
+                        response = model.ocr(current_image_path)
+                        print(f"Assistant: {response}")
+                    else:
+                        print("No image loaded. Use /load <path> first.")
+                elif cmd == "/chart":
+                    if current_image_path:
+                        response = model.analyze_chart(current_image_path)
+                        print(f"Assistant: {response}")
+                    else:
+                        print("No image loaded. Use /load <path> first.")
                 else:
-                    response = model.chat(prompt=user_input)
-                print(f"Assistant: {response}")
-            except ValueError as e:
-                print(f"Error: {e}")
-            except Exception as e:
-                print(f"Error during generation: {e}")
+                    print(f"Unknown command: {cmd}")
+            else:
+                # Regular chat
+                try:
+                    if current_image_path and model._current_image is None:
+                        response = model.chat(image=current_image_path, prompt=user_input)
+                    else:
+                        response = model.chat(prompt=user_input)
+                    print(f"Assistant: {response}")
+                except ValueError as e:
+                    print(f"Error: {e}")
+                except Exception as e:
+                    print(f"Error during generation: {e}")
+    finally:
+        if _cc_tracker is not None:
+            try:
+                _emissions_kg = _cc_tracker.stop()
+                _kwh = float(_cc_tracker.final_emissions_data.energy_consumed)
+                print(f"\n[energy] Session: {_kwh:.4f} kWh  |  CO\u2082: {_emissions_kg:.6f} kg")
+            except Exception:
+                pass
 
 
 def main():
@@ -487,10 +514,24 @@ def main():
     elif args.interactive:
         interactive_cli()
     elif args.image and args.prompt:
-        # Single inference
+        # Single inference with optional energy tracking
+        _cc = None
+        if _HAS_CODECARBON:
+            try:
+                _cc = _EmissionsTracker(project_name="EmberNet_inference", log_level="error", save_to_file=False)
+                _cc.start()
+            except Exception:
+                _cc = None
         model = EmberVLM(model_path=args.model, device=args.device)
         response = model.chat(image=args.image, prompt=args.prompt)
         print(f"Response: {response}")
+        if _cc is not None:
+            try:
+                _em = _cc.stop()
+                _kw = float(_cc.final_emissions_data.energy_consumed)
+                print(f"[energy] {_kw:.4f} kWh  |  CO\u2082: {_em:.6f} kg")
+            except Exception:
+                pass
     else:
         # Default to interactive
         interactive_cli()

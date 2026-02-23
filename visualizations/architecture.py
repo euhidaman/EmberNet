@@ -101,7 +101,7 @@ class ArchitecturePlotter:
             ax.legend(handles=legend_items, loc="lower left", fontsize=8)
             ax.set_title("EmberNet Architecture Overview", fontsize=14, fontweight="bold", pad=10)
 
-            _save_and_log(fig, out, self.logger, "plots/architecture/model_diagrams/full_flowchart", step)
+            out = _save_and_log(fig, out, self.logger, "plots/architecture/model_diagrams/full_flowchart", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -164,7 +164,7 @@ class ArchitecturePlotter:
             arr(11.5, 4.5, 12.5 - 1.0, 4.5)
 
             ax.set_title("MoE FFN Layer – Detailed Data Flow", fontsize=14, fontweight="bold")
-            _save_and_log(fig, out, self.logger, "plots/architecture/model_diagrams/moe_layer_detail", step)
+            out = _save_and_log(fig, out, self.logger, "plots/architecture/model_diagrams/moe_layer_detail", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -208,7 +208,7 @@ class ArchitecturePlotter:
             fig.colorbar(im, ax=axes[2], ticks=[-1, 0, 1])
 
             fig.suptitle("BitNet b1.58 Quantization Flow", fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
-            _save_and_log(fig, out, self.logger, "plots/architecture/model_diagrams/bitlinear_quant_flow", step)
+            out = _save_and_log(fig, out, self.logger, "plots/architecture/model_diagrams/bitlinear_quant_flow", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -251,7 +251,7 @@ class ArchitecturePlotter:
             fig.colorbar(im, ax=ax, label="Attention weight")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/architecture/attention_maps/cross_modal", step)
+            out = _save_and_log(fig, out, self.logger, "plots/architecture/attention_maps/cross_modal", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -286,7 +286,7 @@ class ArchitecturePlotter:
             if incomplete:
                 title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
-            _save_and_log(fig, out, self.logger, "plots/architecture/attention_maps/layerwise_grid", step)
+            out = _save_and_log(fig, out, self.logger, "plots/architecture/attention_maps/layerwise_grid", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -319,7 +319,7 @@ class ArchitecturePlotter:
             ax.set_title(title, fontweight="bold")
             ax.set_xticks(layers)
 
-            _save_and_log(fig, out, self.logger, "plots/architecture/attention_maps/avg_attn_distance", step)
+            out = _save_and_log(fig, out, self.logger, "plots/architecture/attention_maps/avg_attn_distance", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -405,7 +405,7 @@ class ArchitecturePlotter:
             ax.set_title(title, fontweight="bold")
             fig.colorbar(im, ax=ax, label="Routing Probability")
 
-            _save_and_log(fig, out, self.logger, "plots/architecture/token_flow/expert_activation_timeline", step)
+            out = _save_and_log(fig, out, self.logger, "plots/architecture/token_flow/expert_activation_timeline", step)
             self._generated.append(out)
             return out
         except Exception as e:

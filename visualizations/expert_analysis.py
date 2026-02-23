@@ -77,7 +77,7 @@ class ExpertAnalysisPlotter:
                 title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/expert_analysis/routing_patterns/selection_heatmap", step)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/routing_patterns/selection_heatmap", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -113,7 +113,7 @@ class ExpertAnalysisPlotter:
             )
             plt.xticks(rotation=45, ha="right")
 
-            _save_and_log(fig, out, self.logger, "plots/expert_analysis/routing_patterns/cooccurrence", step)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/routing_patterns/cooccurrence", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -157,7 +157,7 @@ class ExpertAnalysisPlotter:
                 if cum < n_ds:
                     ax.axvline(cum - 0.5, color="black", lw=1.2, ls="--", alpha=0.5)
 
-            _save_and_log(fig, out, self.logger, "plots/expert_analysis/routing_patterns/routing_by_dataset", step)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/routing_patterns/routing_by_dataset", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -262,7 +262,7 @@ class ExpertAnalysisPlotter:
             ax.legend(fontsize=8, ncol=2)
             ax.set_ylim(0, 1.05)
 
-            _save_and_log(fig, out, self.logger, "plots/expert_analysis/specialization_metrics/specialization_index", step)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/specialization_metrics/specialization_index", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -315,7 +315,7 @@ class ExpertAnalysisPlotter:
                 title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/expert_analysis/specialization_metrics/weight_sparsity_grid", step)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/specialization_metrics/weight_sparsity_grid", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -359,7 +359,7 @@ class ExpertAnalysisPlotter:
                 title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/expert_analysis/specialization_metrics/output_variance", step)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/specialization_metrics/output_variance", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -400,7 +400,7 @@ class ExpertAnalysisPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/expert_analysis/expert_utilization/load_balancing", step)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/expert_utilization/load_balancing", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -446,7 +446,7 @@ class ExpertAnalysisPlotter:
                 title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/expert_analysis/expert_utilization/usage_violin", step)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/expert_utilization/usage_violin", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -486,7 +486,7 @@ class ExpertAnalysisPlotter:
                 title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/expert_analysis/expert_utilization/dead_expert_heatmap", step)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/expert_utilization/dead_expert_heatmap", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -561,7 +561,7 @@ class ExpertAnalysisPlotter:
                 title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold", y=1.01)
 
-            _save_and_log(fig, out, self.logger, "plots/expert_analysis/spider_charts/per_expert", step)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/spider_charts/per_expert", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -607,7 +607,7 @@ class ExpertAnalysisPlotter:
                 title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold", pad=20)
 
-            _save_and_log(fig, out, self.logger, "plots/expert_analysis/spider_charts/comparative", step)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/spider_charts/comparative", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -659,9 +659,111 @@ class ExpertAnalysisPlotter:
                 title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/expert_analysis/spider_charts/temporal_evolution", step)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/spider_charts/temporal_evolution", step)
             self._generated.append(out)
             return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    # ------------------------------------------------------------------
+    # 2.5  Research-grade: stacked-area usage and routing entropy
+    # ------------------------------------------------------------------
+
+    def plot_expert_usage_stacked_area(self, data=None, step=None) -> Path:
+        """Plot: Expert Usage over Time – Stacked Area (MoE paper style)."""
+        key = "expert_usage_stacked_area"
+        out = PLOT_DIRS["expert_utilization"] / plot_filename("expert_analysis", "expert_utilization", key)
+        try:
+            incomplete = data is None
+            if data is None:
+                np.random.seed(30)
+                T = 200
+                steps = np.arange(T) * 10
+                # Simulate experts starting uniform and specializing
+                probs = np.zeros((N_EXPERTS, T))
+                for i in range(N_EXPERTS):
+                    target = 1.0 / N_EXPERTS + (np.random.rand() - 0.5) * 0.06
+                    probs[i] = np.clip(
+                        target + (np.random.rand() - 0.5) * 0.02,
+                        0.05, 0.4,
+                    )
+                probs /= probs.sum(axis=0, keepdims=True)
+                data = {"steps": steps, "expert_probs": probs}
+
+            steps       = np.asarray(data["steps"])
+            expert_probs = np.asarray(data["expert_probs"])  # (N_experts, T)
+            mode_tag    = data.get("mode_tag", "")
+
+            fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
+            ax.stackplot(
+                steps,
+                [expert_probs[i] * 100 for i in range(N_EXPERTS)],
+                labels=[EXPERT_LABELS[e] for e in EXPERT_NAMES],
+                colors=_COLORS,
+                alpha=0.85,
+            )
+            ax.axhline(100.0 / N_EXPERTS, color="white", lw=1.0, ls="--",
+                       alpha=0.6, label="uniform (1/8)")
+            ax.set_xlabel("Training Step")
+            ax.set_ylabel("% of Tokens Routed to Expert")
+            ax.set_ylim(0, 100)
+            title = "Expert Token Utilization Over Training (Stacked Area)"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            ax.set_title(title, fontweight="bold")
+            ax.legend(fontsize=7, ncol=2, bbox_to_anchor=(1.01, 1), loc="upper left")
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/expert_utilization/stacked_area_usage", step)
+            self._generated.append(out); return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    def plot_routing_entropy_over_time(self, data=None, step=None) -> Path:
+        """Plot: Routing Entropy over Training (line with confidence band)."""
+        key = "routing_entropy_over_time"
+        out = PLOT_DIRS["routing_patterns"] / plot_filename("expert_analysis", "routing_patterns", key)
+        try:
+            incomplete = data is None
+            if data is None:
+                np.random.seed(31)
+                T = 300
+                steps = np.arange(T) * 10
+                max_entropy = np.log(N_EXPERTS)
+                # Starts near max (uniform/unconfident), drops to ~50% of max
+                base = max_entropy * (0.95 - 0.45 * (1 - np.exp(-steps / 1500)))
+                noise = np.random.normal(0, 0.02, T)
+                entropy = np.clip(base + noise, 0.1, max_entropy)
+                data = {"steps": steps, "entropy": entropy}
+
+            steps    = np.asarray(data["steps"])
+            entropy  = np.asarray(data["entropy"])
+            mode_tag = data.get("mode_tag", "")
+            max_ent  = np.log(N_EXPERTS)
+            # Confidence band via sliding std
+            window   = max(10, len(steps) // 20)
+            roll_std = np.array([
+                entropy[max(0, i - window // 2): i + window // 2].std() + 0.01
+                for i in range(len(entropy))
+            ])
+
+            fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
+            ax.plot(steps, entropy, color="#e377c2", lw=VIZ_CONFIG["lw_main"],
+                    label="Routing entropy")
+            ax.fill_between(steps, np.clip(entropy - roll_std, 0, None),
+                            entropy + roll_std, color="#e377c2", alpha=0.20)
+            ax.axhline(max_ent, color="gray", lw=1.0, ls="--",
+                       label=f"Max entropy (uniform, {max_ent:.2f})")
+            ax.axhline(max_ent * 0.5, color="gray", lw=0.8, ls=":",
+                       label=f"50% of max entropy")
+            ax.set_xlabel("Training Step")
+            ax.set_ylabel("Routing Entropy (nats)")
+            ax.set_ylim(0, max_ent * 1.1)
+            title = "Expert Routing Entropy over Training"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            ax.set_title(title, fontweight="bold")
+            ax.legend(fontsize=9)
+            out = _save_and_log(fig, out, self.logger, "plots/expert_analysis/routing_patterns/routing_entropy_over_time", step)
+            self._generated.append(out); return out
         except Exception as e:
             log_plot_error(key, e); plt.close("all"); return out
 
@@ -671,19 +773,22 @@ class ExpertAnalysisPlotter:
     def generate_all(self, data=None, step=None) -> List[Path]:
         d = data or {}
         methods = [
-            (self.plot_expert_selection_heatmap, d.get("selection_freq")),
-            (self.plot_cooccurrence_matrix,      d.get("cooccurrence")),
-            (self.plot_routing_by_dataset,       d.get("routing_by_dataset")),
-            (self.plot_routing_sankey_snapshot,  d.get("sankey")),
-            (self.plot_specialization_index,     d.get("specialization_index")),
-            (self.plot_weight_sparsity_grid,     d.get("weight_sparsity")),
-            (self.plot_output_variance_boxplot,  d.get("output_variance")),
-            (self.plot_load_balancing,           d.get("load_balancing")),
-            (self.plot_usage_violin,             d.get("usage_violin")),
-            (self.plot_dead_expert_heatmap,      d.get("dead_expert")),
-            (self.plot_per_expert_spider_charts, d.get("per_expert_spider")),
-            (self.plot_comparative_spider,       d.get("comparative_spider")),
-            (self.plot_spider_temporal,          d.get("spider_temporal")),
+            (self.plot_expert_selection_heatmap,   d.get("selection_freq")),
+            (self.plot_cooccurrence_matrix,        d.get("cooccurrence")),
+            (self.plot_routing_by_dataset,         d.get("routing_by_dataset")),
+            (self.plot_routing_sankey_snapshot,    d.get("sankey")),
+            (self.plot_specialization_index,       d.get("specialization_index")),
+            (self.plot_weight_sparsity_grid,       d.get("weight_sparsity")),
+            (self.plot_output_variance_boxplot,    d.get("output_variance")),
+            (self.plot_load_balancing,             d.get("load_balancing")),
+            (self.plot_usage_violin,               d.get("usage_violin")),
+            (self.plot_dead_expert_heatmap,        d.get("dead_expert")),
+            (self.plot_per_expert_spider_charts,   d.get("per_expert_spider")),
+            (self.plot_comparative_spider,         d.get("comparative_spider")),
+            (self.plot_spider_temporal,            d.get("spider_temporal")),
+            # --- new research-grade plots ---
+            (self.plot_expert_usage_stacked_area,  d.get("stacked_area")),
+            (self.plot_routing_entropy_over_time,  d.get("routing_entropy")),
         ]
         paths = []
         for fn, dat in methods:

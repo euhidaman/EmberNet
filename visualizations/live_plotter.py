@@ -65,20 +65,24 @@ class LivePlotter:
     output_dir   : training stage output dir; plots go to {output_dir}/plots/
     stage        : 1 or 2
     plot_interval: generate plots every this many optimizer steps
-                   (default 500 for main, set 50 for --trial)
+                   (default 50 for TRIAL, 200 for MAIN)
+    is_trial     : True when running in --trial mode  (adds label, higher freq)
     """
 
     def __init__(
         self,
         output_dir: str,
         stage: int,
-        plot_interval: int = 500,
+        plot_interval: int = 200,
         disabled: bool = False,
+        is_trial: bool = False,
     ):
-        self.output_dir   = Path(output_dir)
-        self.stage        = stage
-        self.plot_interval = max(1, plot_interval)
-        self.disabled     = disabled
+        self.output_dir    = Path(output_dir)
+        self.stage         = stage
+        self.is_trial      = is_trial
+        # In trial mode, default to a tighter interval (every 50 steps max)
+        self.plot_interval = max(1, min(plot_interval, 50) if is_trial else plot_interval)
+        self.disabled      = disabled
 
         self.plots_dir = self.output_dir / "plots"
 
@@ -90,6 +94,7 @@ class LivePlotter:
                 _make_dirs(self.plots_dir)
                 print(f"  [viz] Plots directory : {self.plots_dir.resolve()}")
                 print(f"  [viz] Plot interval   : every {self.plot_interval} steps")
+                print(f"  [viz] Trial mode      : {is_trial}")
             except Exception as e:
                 print(f"  [viz] Disabled — {e}")
                 self.disabled = True
@@ -101,9 +106,17 @@ class LivePlotter:
         self._grad_norms:   List[float] = []
         self._clipped:      List[float] = []          # 1.0 if step was clipped
         self._expert_probs: List[np.ndarray] = []     # shape (8,) per step when available
+        self._routing_entropy: List[float] = []       # Shannon entropy per step
+        self._energy_kwh:   List[float] = []          # cumulative kWh per step (if tracked)
+        self._co2_kg:       List[float] = []          # cumulative kg CO₂ per step (if tracked)
 
         # index into per-step lists at which each epoch ended
         self._epoch_ends: List[int] = []
+
+    @property
+    def _cur_step(self) -> int:
+        """Most-recently recorded global step (0 if nothing recorded yet)."""
+        return self._steps[-1] if self._steps else 0
 
     # ------------------------------------------------------------------
     # Public API called from train.py
@@ -117,6 +130,9 @@ class LivePlotter:
         grad_norm: float = 0.0,
         clipped: bool = False,
         expert_probs=None,
+        routing_entropy: float = 0.0,
+        energy_kwh: float = 0.0,
+        co2_kg: float = 0.0,
     ):
         """Accumulate metrics; trigger periodic plots every plot_interval steps."""
         if self.disabled:
@@ -127,6 +143,9 @@ class LivePlotter:
         self._lrs.append(float(lr))
         self._grad_norms.append(float(grad_norm))
         self._clipped.append(1.0 if clipped else 0.0)
+        self._routing_entropy.append(float(routing_entropy))
+        self._energy_kwh.append(float(energy_kwh))
+        self._co2_kg.append(float(co2_kg))
         if expert_probs is not None:
             arr = np.asarray(expert_probs, dtype=float)
             if arr.shape == (8,):
@@ -144,6 +163,10 @@ class LivePlotter:
         self._plot_core(label=f"epoch {epoch}")
         if self._expert_probs:
             self._plot_expert_heatmap()
+        if len(self._routing_entropy) >= 2:
+            self._plot_routing_entropy()
+        if self._expert_probs:
+            self._plot_expert_stacked_area()
         self._print_summary(f"Epoch {epoch}")
 
     def plot_final(self, stage: int):
@@ -156,11 +179,32 @@ class LivePlotter:
         if self._expert_probs:
             self._plot_expert_heatmap()
             self._plot_expert_specialisation()
+            self._plot_expert_stacked_area()
+        if len(self._routing_entropy) >= 2:
+            self._plot_routing_entropy()
+        if any(e > 0 for e in self._energy_kwh):
+            self._plot_energy_curve()
         self._print_summary("Final", final=True)
 
     # ------------------------------------------------------------------
     # Core chart generation (direct matplotlib — always reliable)
     # ------------------------------------------------------------------
+
+    def _savefig(self, fig, plot_dir: "Path", semantic_key: str, dpi: int = 150):
+        """Write step-specific archive + latest snapshot, then close the figure."""
+        import matplotlib.pyplot as plt
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        fig.tight_layout()
+        # Step-specific archive
+        step_path = plot_dir / f"plot-step-{self._cur_step}-{semantic_key}.png"
+        fig.savefig(step_path, dpi=dpi, bbox_inches="tight")
+        # Always-latest convenience copy
+        latest_path = plot_dir / f"{semantic_key}-latest.png"
+        fig.savefig(latest_path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+
+    def _mode_suffix(self) -> str:
+        return "  (TRIAL MODE)" if self.is_trial else ""
 
     def _plot_core(self, label: str = ""):
         """Plot loss curve, LR schedule, and gradient norms."""
@@ -184,54 +228,59 @@ class LivePlotter:
         if len(losses) >= 5:
             ax.plot(steps, _smooth(losses, window=20), color="#1f77b4",
                     linewidth=2.0, label="smoothed (EMA-20)")
+            # Shaded confidence band (sliding EMA std)
+            smooth_vals = _smooth(losses, window=20)
+            noise  = np.abs(losses - smooth_vals)
+            std_band = _smooth(noise, window=20)
+            ax.fill_between(steps,
+                            np.clip(smooth_vals - std_band, 0, None),
+                            smooth_vals + std_band,
+                            color="#1f77b4", alpha=0.12, label="±1σ band")
         ax.set_xlabel("Optimizer Step")
         ax.set_ylabel("Loss")
-        ax.set_title(f"Training Loss — Stage {self.stage}  ({label})")
+        ax.set_title(f"Training Loss — Stage {self.stage}  ({label}){self._mode_suffix()}")
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
         _add_epoch_markers(ax, steps, self._epoch_ends)
-        fig.tight_layout()
         out = self.plots_dir / "training_dynamics" / "loss_curves"
-        out.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out / "loss_curve.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        self._savefig(fig, out, "loss_curve")
 
     def _save_lr_curve(self, steps: np.ndarray, lrs: np.ndarray, label: str = ""):
         import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(10, 3))
-        ax.plot(steps, lrs, color="#ff7f0e", linewidth=1.5)
+        ax.semilogy(steps, np.clip(lrs, 1e-10, None), color="#ff7f0e", linewidth=1.5)
         ax.set_xlabel("Optimizer Step")
-        ax.set_ylabel("Learning Rate")
-        ax.set_title(f"LR Schedule — Stage {self.stage}  ({label})")
+        ax.set_ylabel("Learning Rate (log)")
+        ax.set_title(f"LR Schedule — Stage {self.stage}  ({label}){self._mode_suffix()}")
         ax.grid(True, alpha=0.3)
         _add_epoch_markers(ax, steps, self._epoch_ends)
-        fig.tight_layout()
         out = self.plots_dir / "training_dynamics" / "learning_rates"
-        out.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out / "lr_schedule.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        self._savefig(fig, out, "lr_schedule")
 
     def _save_grad_norms(self, steps: np.ndarray, gnorms: np.ndarray, label: str = ""):
         if not gnorms.any():
             return
         import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(10, 3))
-        ax.plot(steps, gnorms, color="#9467bd", linewidth=0.8, alpha=0.6, label="raw")
+        ax.semilogy(steps, np.clip(gnorms, 1e-8, None), color="#9467bd",
+                    linewidth=0.8, alpha=0.6, label="raw")
         if len(gnorms) >= 5:
-            ax.plot(steps, _smooth(gnorms, window=10), color="#7b2d8b",
-                    linewidth=1.8, label="smoothed")
+            ax.semilogy(steps, np.clip(_smooth(gnorms, window=10), 1e-8, None),
+                        color="#7b2d8b", linewidth=1.8, label="smoothed")
         ax.axhline(1.0, color="red", linestyle="--", linewidth=1.0, label="clip=1.0")
+        # Mark spikes
+        med = float(np.median(gnorms))
+        spk = gnorms > 3 * med
+        if spk.any():
+            ax.scatter(steps[spk], gnorms[spk], color="red", s=15, zorder=5)
         ax.set_xlabel("Optimizer Step")
-        ax.set_ylabel("Gradient Norm")
-        ax.set_title(f"Gradient Norms — Stage {self.stage}  ({label})")
+        ax.set_ylabel("Grad Norm (log)")
+        ax.set_title(f"Gradient Norms — Stage {self.stage}  ({label}){self._mode_suffix()}")
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
         _add_epoch_markers(ax, steps, self._epoch_ends)
-        fig.tight_layout()
         out = self.plots_dir / "training_dynamics" / "gradient_stats"
-        out.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out / "grad_norms.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        self._savefig(fig, out, "grad_norms")
 
     def _save_expert_bar(self):
         """Mean expert utilization bar chart (latest snapshot)."""
@@ -239,21 +288,17 @@ class LivePlotter:
         probs = np.mean(self._expert_probs, axis=0)  # shape (8,)
         fig, ax = plt.subplots(figsize=(9, 4))
         bars = ax.bar(_EXPERT_LABELS, probs, color=_EXPERT_COLORS, edgecolor="white")
-        # ideal uniform line
         ax.axhline(1.0 / 8, color="black", linestyle="--", linewidth=1.0, label="uniform (1/8)")
         for bar, v in zip(bars, probs):
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.002,
                     f"{v:.3f}", ha="center", va="bottom", fontsize=8)
         ax.set_ylabel("Mean Routing Probability")
-        ax.set_title(f"Expert Utilization — Stage {self.stage} (mean over all recorded steps)")
+        ax.set_title(f"Expert Utilization — Stage {self.stage}{self._mode_suffix()}")
         ax.legend(fontsize=9)
         ax.set_ylim(0, max(probs.max() * 1.25, 0.2))
         ax.grid(True, axis="y", alpha=0.3)
-        fig.tight_layout()
         out = self.plots_dir / "expert_analysis" / "expert_utilization"
-        out.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out / "expert_utilization.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        self._savefig(fig, out, "expert_utilization")
 
     def _plot_expert_heatmap(self):
         """Expert usage heatmap: 8 experts × N epochs."""
@@ -293,12 +338,10 @@ class LivePlotter:
             for r in range(8):
                 for c in range(n_epochs):
                     ax.text(c, r, f"{matrix[r,c]:.3f}", ha="center", va="center", fontsize=7)
-        ax.set_title(f"Expert Selection Heatmap — Stage {self.stage}")
+        ax.set_title(f"Expert Selection Heatmap — Stage {self.stage}{self._mode_suffix()}")
         fig.tight_layout()
         out = self.plots_dir / "expert_analysis" / "routing_patterns"
-        out.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out / "expert_heatmap.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        self._savefig(fig, out, "expert_heatmap")
 
     def _plot_loss_distribution(self):
         """Histogram of loss values across the entire training run."""
@@ -311,14 +354,11 @@ class LivePlotter:
                    label=f"median={np.median(losses):.3f}")
         ax.set_xlabel("Loss")
         ax.set_ylabel("Count")
-        ax.set_title(f"Loss Distribution — Stage {self.stage}")
+        ax.set_title(f"Loss Distribution — Stage {self.stage}{self._mode_suffix()}")
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
-        fig.tight_layout()
         out = self.plots_dir / "training_dynamics" / "convergence"
-        out.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out / "loss_distribution.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        self._savefig(fig, out, "loss_distribution")
 
     def _plot_clipping_rate(self):
         """Gradient clipping frequency per epoch."""
@@ -333,16 +373,19 @@ class LivePlotter:
             prev = end
         epochs = np.arange(1, len(clip_rates) + 1)
         fig, ax = plt.subplots(figsize=(8, 3))
-        ax.bar(epochs, clip_rates, color="#d62728", alpha=0.8)
+        ax.plot(epochs, clip_rates, color="#d62728", lw=2.0, marker="o", ms=5,
+                label="Clipping rate")
+        ax.fill_between(epochs,
+                        np.array(clip_rates) * 0.85,
+                        np.array(clip_rates) * 1.15,
+                        color="#d62728", alpha=0.15)
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Clipping Rate (%)")
-        ax.set_title(f"Gradient Clipping Frequency — Stage {self.stage}")
+        ax.set_title(f"Gradient Clipping Frequency — Stage {self.stage}{self._mode_suffix()}")
+        ax.legend(fontsize=9)
         ax.grid(True, axis="y", alpha=0.3)
-        fig.tight_layout()
         out = self.plots_dir / "training_dynamics" / "gradient_stats"
-        out.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out / "clipping_rate.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        self._savefig(fig, out, "clipping_rate")
 
     def _plot_expert_specialisation(self):
         """Per-expert coefficient-of-variation across time (shows specialisation)."""
@@ -352,13 +395,92 @@ class LivePlotter:
         fig, ax = plt.subplots(figsize=(9, 4))
         ax.bar(_EXPERT_LABELS, cv, color=_EXPERT_COLORS, edgecolor="white")
         ax.set_ylabel("Coefficient of Variation")
-        ax.set_title(f"Expert Specialisation Index — Stage {self.stage}")
+        ax.set_title(f"Expert Specialisation Index — Stage {self.stage}{self._mode_suffix()}")
         ax.grid(True, axis="y", alpha=0.3)
-        fig.tight_layout()
         out = self.plots_dir / "expert_analysis" / "specialization_metrics"
-        out.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out / "expert_specialisation.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        self._savefig(fig, out, "expert_specialisation")
+
+    # ------------------------------------------------------------------
+    # New: routing entropy, stacked-area expert usage, energy curve
+    # ------------------------------------------------------------------
+
+    def _plot_routing_entropy(self):
+        """Routing entropy over training steps (line + shaded band)."""
+        import matplotlib.pyplot as plt
+        if len(self._routing_entropy) < 2:
+            return
+        steps   = np.array(self._steps[:len(self._routing_entropy)], dtype=float)
+        entropy = np.array(self._routing_entropy, dtype=float)
+        window  = max(5, len(steps) // 20)
+        roll_s  = np.array([
+            entropy[max(0, i - window // 2): i + window // 2].std() + 0.01
+            for i in range(len(entropy))
+        ])
+        import math
+        max_ent = math.log(8)   # log(N_EXPERTS)
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.plot(steps, entropy, color="#e377c2", lw=1.8, label="Routing entropy")
+        ax.fill_between(steps, np.clip(entropy - roll_s, 0, None), entropy + roll_s,
+                        color="#e377c2", alpha=0.20)
+        ax.axhline(max_ent, color="gray", lw=1.0, ls="--",
+                   label=f"Max entropy ({max_ent:.2f})")
+        ax.set_xlabel("Optimizer Step")
+        ax.set_ylabel("Entropy (nats)")
+        ax.set_ylim(0, max_ent * 1.1)
+        ax.set_title(f"Router Entropy — Stage {self.stage}{self._mode_suffix()}")
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+        out = self.plots_dir / "expert_analysis" / "routing_patterns"
+        self._savefig(fig, out, "routing_entropy")
+
+    def _plot_expert_stacked_area(self):
+        """Stacked area chart of expert token-routing shares over time."""
+        import matplotlib.pyplot as plt
+        if not self._expert_probs:
+            return
+        steps  = np.array(self._steps[:len(self._expert_probs)], dtype=float)
+        matrix = np.array(self._expert_probs)   # (T, 8)
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.stackplot(
+            steps,
+            [matrix[:, i] * 100 for i in range(8)],
+            labels=_EXPERT_LABELS,
+            colors=_EXPERT_COLORS,
+            alpha=0.85,
+        )
+        ax.set_xlabel("Optimizer Step")
+        ax.set_ylabel("% Tokens Routed")
+        ax.set_ylim(0, 100)
+        ax.set_title(f"Expert Token Routing (Stacked) — Stage {self.stage}{self._mode_suffix()}")
+        ax.legend(fontsize=7, ncol=2, bbox_to_anchor=(1.01, 1), loc="upper left")
+        ax.grid(True, axis="x", alpha=0.2)
+        out = self.plots_dir / "expert_analysis" / "expert_utilization"
+        self._savefig(fig, out, "expert_stacked_area")
+
+    def _plot_energy_curve(self):
+        """Cumulative energy and CO₂ over training steps (dual-axis line)."""
+        import matplotlib.pyplot as plt
+        if not any(e > 0 for e in self._energy_kwh):
+            return
+        steps   = np.array(self._steps[:len(self._energy_kwh)], dtype=float)
+        energy  = np.array(self._energy_kwh, dtype=float)
+        co2     = np.array(self._co2_kg[:len(steps)], dtype=float)
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.plot(steps, energy, color="#2ca02c", lw=2.0, label="Cumul. energy (kWh)")
+        ax.fill_between(steps, 0, energy, color="#2ca02c", alpha=0.15)
+        ax2 = ax.twinx()
+        if co2.any():
+            ax2.plot(steps, co2, color="#555555", lw=1.2, ls="--", label="Cumul. CO₂ (kg)")
+        ax.set_xlabel("Optimizer Step")
+        ax.set_ylabel("Cumulative Energy (kWh)", color="#2ca02c")
+        ax2.set_ylabel("Cumulative CO₂ (kg)", color="#555555")
+        ax.set_title(f"Training Energy — Stage {self.stage}{self._mode_suffix()}")
+        l1, ll1 = ax.get_legend_handles_labels()
+        l2, ll2 = ax2.get_legend_handles_labels()
+        ax.legend(l1 + l2, ll1 + ll2, fontsize=9)
+        ax.grid(True, alpha=0.3)
+        out = self.plots_dir / "efficiency"
+        self._savefig(fig, out, "energy_curve")
 
     # ------------------------------------------------------------------
     # Utilities
@@ -396,6 +518,9 @@ def _make_dirs(plots_dir: Path):
         "expert_analysis/routing_patterns",
         "expert_analysis/expert_utilization",
         "expert_analysis/specialization_metrics",
+        "efficiency/energy_metrics",
+        "efficiency/co2_metrics",
+        "efficiency/efficiency_tradeoffs",
     ]:
         (plots_dir / sub).mkdir(parents=True, exist_ok=True)
 

@@ -77,7 +77,7 @@ class PerformanceMetricsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=6, ncol=3, bbox_to_anchor=(1.01, 1), loc="upper left")
 
-            _save_and_log(fig, out, self.logger, "plots/performance_metrics/accuracy_curves/per_dataset", step)
+            out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/accuracy_curves/per_dataset", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -121,7 +121,7 @@ class PerformanceMetricsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/performance_metrics/accuracy_curves/domain_accuracy", step)
+            out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/accuracy_curves/domain_accuracy", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -164,7 +164,7 @@ class PerformanceMetricsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/performance_metrics/accuracy_curves/per_expert_target_acc", step)
+            out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/accuracy_curves/per_expert_target_acc", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -212,7 +212,7 @@ class PerformanceMetricsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=8)
 
-            _save_and_log(fig, out, self.logger, "plots/performance_metrics/perplexity/val_perplexity", step)
+            out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/perplexity/val_perplexity", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -258,7 +258,7 @@ class PerformanceMetricsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/performance_metrics/perplexity/ppl_by_position", step)
+            out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/perplexity/ppl_by_position", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -309,7 +309,7 @@ class PerformanceMetricsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/performance_metrics/benchmark/accuracy_comparison", step)
+            out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/benchmark/accuracy_comparison", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -357,7 +357,7 @@ class PerformanceMetricsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/performance_metrics/benchmark/size_vs_performance", step)
+            out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/benchmark/size_vs_performance", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -409,23 +409,186 @@ class PerformanceMetricsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/performance_metrics/benchmark/inference_speed", step)
+            out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/benchmark/inference_speed", step)
             self._generated.append(out)
             return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    def plot_inference_energy_distribution(self, data=None, step=None) -> Path:
+        """Plot: Energy per Inference Query by Task Type (violin / boxplot)."""
+        key = "inference_energy_distribution"
+        out = PLOT_DIRS["efficiency_tradeoffs"] / plot_filename("performance", "efficiency", key)
+        try:
+            incomplete = data is None
+            task_types = ["OCR", "Chart", "Document", "Scene", "Generic VQA"]
+            if data is None:
+                np.random.seed(150)
+                energy_data = {t: np.abs(np.random.normal(
+                    np.random.uniform(0.0001, 0.0008), 0.0001, 30
+                )) for t in task_types}
+                data = {"task_types": task_types, "energy_joules": energy_data}
+
+            task_types  = data.get("task_types", task_types)
+            energy      = data.get("energy_joules", {})
+            mode_tag    = data.get("mode_tag", "")
+
+            vals = [energy.get(t, np.array([0.0])) * 1000 for t in task_types]  # → mJ
+            task_colors = plt.cm.Set2(np.linspace(0, 1, len(task_types)))
+
+            fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
+            vp = ax.violinplot(vals, positions=np.arange(len(task_types)),
+                               showmedians=True, showextrema=True)
+            for patch, c in zip(vp["bodies"], task_colors):
+                patch.set_facecolor(c); patch.set_alpha(0.7)
+            ax.set_xticks(np.arange(len(task_types)))
+            ax.set_xticklabels(task_types, rotation=20, ha="right")
+            ax.set_ylabel("Energy per Query (mJ)")
+            title = "Inference Energy Distribution by Task Type"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            ax.set_title(title, fontweight="bold")
+            out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/efficiency/inference_energy_distribution", step)
+            self._generated.append(out); return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    def plot_accuracy_vs_energy_pareto(self, data=None, step=None) -> Path:
+        """Plot: Accuracy vs Energy (Pareto frontier, emulating ML-systems efficiency papers)."""
+        key = "accuracy_vs_energy_pareto"
+        out = PLOT_DIRS["efficiency_tradeoffs"] / plot_filename("performance", "efficiency", key)
+        try:
+            incomplete = data is None
+            models = ["EmberNet", "SmolVLM-500M", "MobileVLM-3B", "LLaVA-7B", "Qwen-VL-7B"]
+            if data is None:
+                np.random.seed(151)
+                bench_data = {
+                    "EmberNet":       {"acc": 72.5, "energy_kwh": 0.0008},
+                    "SmolVLM-500M":   {"acc": 61.0, "energy_kwh": 0.0012},
+                    "MobileVLM-3B":   {"acc": 68.0, "energy_kwh": 0.0025},
+                    "LLaVA-7B":       {"acc": 78.0, "energy_kwh": 0.0060},
+                    "Qwen-VL-7B":     {"acc": 80.0, "energy_kwh": 0.0065},
+                }
+                data = {"models": models, "data": bench_data}
+
+            models    = data.get("models", models)
+            bdata     = data["data"]
+            mode_tag  = data.get("mode_tag", "")
+            model_colors = plt.cm.tab10(np.linspace(0, 0.9, len(models)))
+
+            fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
+            xs, ys = [], []
+            for m, c in zip(models, model_colors):
+                d = bdata.get(m, {})
+                e = d.get("energy_kwh", 0.001) * 1000  # → mWh
+                a = d.get("acc", 50.0)
+                xs.append(e); ys.append(a)
+                is_ember = m == "EmberNet"
+                ax.scatter(e, a, color=c, s=120 if is_ember else 70,
+                           zorder=5 if is_ember else 3,
+                           marker="*" if is_ember else "o",
+                           edgecolors="black" if is_ember else "none", lw=0.8,
+                           label=m)
+                ax.annotate(m, (e, a), textcoords="offset points",
+                            xytext=(6, 4), fontsize=8)
+
+            # Pareto frontier
+            pts  = sorted(zip(xs, ys))
+            best = []; front = -np.inf
+            for x_, y_ in pts:
+                if y_ > front: front = y_; best.append((x_, y_))
+            if len(best) >= 2:
+                px, py = zip(*best)
+                ax.step(px, py, where="post", color="black", lw=1.2, ls="--",
+                        alpha=0.5, label="Pareto frontier")
+
+            ax.set_xlabel("Energy per Benchmark (mWh)")
+            ax.set_ylabel("Average Accuracy (%)")
+            title = "Accuracy vs Energy – Efficiency Frontier"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            ax.set_title(title, fontweight="bold")
+            ax.legend(fontsize=8, ncol=2)
+            out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/efficiency/accuracy_vs_energy_pareto", step)
+            self._generated.append(out); return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    def plot_model_efficiency_tradeoff(self, data=None, step=None) -> Path:
+        """Plot: Model Size vs Accuracy vs Energy (bubble scatter, 3-dimensional)."""
+        key = "model_efficiency_tradeoff"
+        out = PLOT_DIRS["efficiency_tradeoffs"] / plot_filename("performance", "efficiency", key)
+        try:
+            incomplete = data is None
+            if data is None:
+                models_info = {
+                    "EmberNet":       {"size_mb": 420,  "acc": 72.5, "energy_mwh": 0.8},
+                    "SmolVLM-500M":   {"size_mb": 980,  "acc": 61.0, "energy_mwh": 1.2},
+                    "MobileVLM-3B":   {"size_mb": 6000, "acc": 68.0, "energy_mwh": 2.5},
+                    "LLaVA-7B":       {"size_mb": 14000,"acc": 78.0, "energy_mwh": 6.0},
+                    "Qwen-VL-7B":     {"size_mb": 15000,"acc": 80.0, "energy_mwh": 6.5},
+                }
+                data = {"models": models_info}
+
+            models_info = data.get("models", {})
+            mode_tag    = data.get("mode_tag", "")
+            cmap        = plt.cm.plasma
+
+            sizes_mb = np.array([v["size_mb"] for v in models_info.values()])
+            accs     = np.array([v["acc"]     for v in models_info.values()])
+            energies = np.array([v["energy_mwh"] for v in models_info.values()])
+            names    = list(models_info.keys())
+
+            # Color = energy (low=good=green, high=bad=red): use plasma colormap
+            norm_e   = (energies - energies.min()) / (energies.ptp() + 1e-9)
+            colors_  = cmap(norm_e)
+            # Bubble area ∝ energy (use fixed scaling)
+            bubble_s = (energies / energies.max() * 500 + 50)
+
+            fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
+            scatter = ax.scatter(sizes_mb, accs, s=bubble_s, c=colors_, alpha=0.8,
+                                 edgecolors="black", lw=0.7)
+            for name_, x_, y_, e_ in zip(names, sizes_mb, accs, energies):
+                is_e = name_ == "EmberNet"
+                ax.annotate(
+                    f"{name_}\n{e_:.1f}mWh",
+                    (x_, y_),
+                    textcoords="offset points",
+                    xytext=(8, 4 if not is_e else -14),
+                    fontsize=7,
+                    fontweight="bold" if is_e else "normal",
+                )
+            sm = plt.cm.ScalarMappable(cmap=cmap,
+                                        norm=plt.Normalize(energies.min(), energies.max()))
+            sm.set_array([])
+            fig.colorbar(sm, ax=ax, label="Energy per Benchmark (mWh)")
+            ax.set_xscale("log")
+            ax.set_xlabel("Model Size (MB, log scale)")
+            ax.set_ylabel("Average Accuracy (%)")
+            title = "Model Size × Accuracy × Energy Efficiency"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            ax.set_title(title, fontweight="bold")
+            out = _save_and_log(fig, out, self.logger, "plots/performance_metrics/efficiency/model_efficiency_tradeoff", step)
+            self._generated.append(out); return out
         except Exception as e:
             log_plot_error(key, e); plt.close("all"); return out
 
     def generate_all(self, data=None, step=None) -> List[Path]:
         d = data or {}
         methods = [
-            (self.plot_per_dataset_accuracy,     d.get("per_ds_acc")),
-            (self.plot_domain_accuracy,          d.get("domain_acc")),
+            (self.plot_per_dataset_accuracy,       d.get("per_ds_acc")),
+            (self.plot_domain_accuracy,            d.get("domain_acc")),
             (self.plot_per_expert_target_accuracy, d.get("expert_acc")),
-            (self.plot_perplexity_over_training, d.get("ppl")),
-            (self.plot_perplexity_by_position,   d.get("ppl_pos")),
-            (self.plot_benchmark_accuracy,       d.get("bench_acc")),
-            (self.plot_size_vs_performance,      d.get("size_perf")),
-            (self.plot_inference_speed,          d.get("speed")),
+            (self.plot_perplexity_over_training,   d.get("ppl")),
+            (self.plot_perplexity_by_position,     d.get("ppl_pos")),
+            (self.plot_benchmark_accuracy,         d.get("bench_acc")),
+            (self.plot_size_vs_performance,        d.get("size_perf")),
+            (self.plot_inference_speed,            d.get("speed")),
+            # --- new research-grade plots ---
+            (self.plot_inference_energy_distribution, d.get("infer_energy")),
+            (self.plot_accuracy_vs_energy_pareto,     d.get("acc_energy_pareto")),
+            (self.plot_model_efficiency_tradeoff,     d.get("efficiency_tradeoff")),
         ]
         paths = []
         for fn, dat in methods:

@@ -118,7 +118,7 @@ class TrainingDynamicsPlotter:
                 title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
             ax.legend(loc="upper right")
-            _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/multi_stage_loss", step)
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/multi_stage_loss", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -178,7 +178,7 @@ class TrainingDynamicsPlotter:
                 title2 += "  [Incomplete – placeholder data]"
             ax2.set_title(title2, fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/components", step)
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/components", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -234,7 +234,7 @@ class TrainingDynamicsPlotter:
                 if cum < len(datasets):
                     ax.axhline(cum, color="white", lw=2)
 
-            _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/per_dataset_heatmap", step)
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/per_dataset_heatmap", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -312,7 +312,7 @@ class TrainingDynamicsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend(ncol=2, fontsize=9)
 
-            _save_and_log(fig, out, self.logger, "plots/training_dynamics/learning_rates/bitnet_two_phase_lr", step)
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/learning_rates/bitnet_two_phase_lr", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -362,7 +362,7 @@ class TrainingDynamicsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/training_dynamics/learning_rates/per_group_lr", step)
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/learning_rates/per_group_lr", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -426,7 +426,7 @@ class TrainingDynamicsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=8, ncol=2)
 
-            _save_and_log(fig, out, self.logger, "plots/training_dynamics/gradient_stats/grad_norms", step)
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/gradient_stats/grad_norms", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -476,7 +476,7 @@ class TrainingDynamicsPlotter:
                 title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/training_dynamics/gradient_stats/grad_flow_heatmap", step)
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/gradient_stats/grad_flow_heatmap", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -521,7 +521,7 @@ class TrainingDynamicsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/training_dynamics/gradient_stats/clip_frequency", step)
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/gradient_stats/clip_frequency", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -600,7 +600,7 @@ class TrainingDynamicsPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/training_dynamics/convergence/convergence_rate", step)
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/convergence/convergence_rate", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -653,7 +653,7 @@ class TrainingDynamicsPlotter:
             lines2, labels2 = ax2.get_legend_handles_labels()
             ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
 
-            _save_and_log(fig, out, self.logger, "plots/training_dynamics/convergence/training_efficiency", step)
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/convergence/training_efficiency", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -662,22 +662,359 @@ class TrainingDynamicsPlotter:
             return out
 
     # ------------------------------------------------------------------
+    # 1.5  Research-grade: tokens, spikes, energy, CO₂
+    # ------------------------------------------------------------------
+
+    def plot_loss_vs_tokens(self, data: Optional[Dict] = None, step: Optional[int] = None) -> Path:
+        """Plot: Normalized Loss vs Cumulative Tokens (scaling-law style with shaded bands)."""
+        key = "loss_vs_tokens"
+        out = PLOT_DIRS["loss_curves"] / plot_filename("training_dynamics", "loss_curves", key, step=step)
+        try:
+            incomplete = data is None
+            if data is None:
+                n = 500
+                np.random.seed(7)
+                tokens_m = np.linspace(0.1, 50, n)
+                s1_mask  = tokens_m <= 20
+                tl = 4.0 * (tokens_m ** -0.35) + np.random.normal(0, 0.08, n)
+                vl = 3.9 * (tokens_m ** -0.33) + np.random.normal(0, 0.10, n)
+                tl = np.clip(tl, 0.5, None);  vl = np.clip(vl, 0.5, None)
+                win = 20
+                def _rstd(x):
+                    o = np.zeros_like(x)
+                    for i in range(len(x)):
+                        lo = max(0, i - win // 2); hi = min(len(x), i + win // 2)
+                        o[i] = x[lo:hi].std() + 0.02
+                    return o
+                data = {"tokens_m": tokens_m, "train_loss": tl, "train_std": _rstd(tl),
+                        "val_loss": vl, "val_std": _rstd(vl), "s1_mask": s1_mask}
+
+            tokens_m   = np.asarray(data["tokens_m"])
+            train_loss = np.asarray(data["train_loss"])
+            val_loss   = np.asarray(data["val_loss"])
+            train_std  = np.asarray(data.get("train_std", np.full_like(train_loss, 0.05)))
+            val_std    = np.asarray(data.get("val_std",   np.full_like(val_loss,   0.05)))
+            s1_mask    = data.get("s1_mask", np.ones(len(tokens_m), dtype=bool))
+            mode_tag   = data.get("mode_tag", "")
+
+            fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
+            for mask, c, lbl in [(s1_mask, STAGE_COLORS[1], "Stage 1"), (~s1_mask, STAGE_COLORS[2], "Stage 2")]:
+                if not np.any(mask): continue
+                t = tokens_m[mask]; tl_ = train_loss[mask]; ts = train_std[mask]
+                vl_ = val_loss[mask];  vs = val_std[mask]
+                ax.semilogy(t, tl_, color=c, lw=VIZ_CONFIG["lw_main"], label=f"Train ({lbl})")
+                ax.semilogy(t, vl_, color=c, lw=VIZ_CONFIG["lw_dashed"], ls="--", label=f"Val ({lbl})")
+                ax.fill_between(t, np.clip(tl_ - ts, 1e-3, None), tl_ + ts, color=c, alpha=0.12)
+                ax.fill_between(t, np.clip(vl_ - vs, 1e-3, None), vl_ + vs, color=c, alpha=0.08)
+
+            if (~np.asarray(s1_mask)).any():
+                sep_t = tokens_m[~np.asarray(s1_mask)][0]
+                ax.axvline(sep_t, color="black", lw=1.0, ls=":", label="Stage 1→2")
+
+            ax.set_xlabel("Cumulative Tokens (Millions)")
+            ax.set_ylabel("Loss (log scale)")
+            title = "Loss vs Cumulative Tokens"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            ax.set_title(title, fontweight="bold")
+            ax.legend(fontsize=9, ncol=2)
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/loss_vs_tokens", step)
+            self._generated.append(out); return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    def plot_loss_spike_detection(self, data: Optional[Dict] = None, step: Optional[int] = None) -> Path:
+        """Plot: Training Loss Stability with Spike Detection (rolling mean ± k·σ)."""
+        key = "loss_spike_detection"
+        out = PLOT_DIRS["loss_curves"] / plot_filename("training_dynamics", "loss_curves", key, step=step)
+        try:
+            incomplete = data is None
+            if data is None:
+                n = 800; np.random.seed(8)
+                steps  = np.arange(n)
+                losses = 3.5 * np.exp(-steps / 300) + 0.5 + np.random.normal(0, 0.05, n)
+                for sp in [60, 150, 300, 510]:
+                    if sp < n: losses[sp] += np.random.uniform(1.0, 2.5)
+                data = {"steps": steps, "losses": losses}
+
+            steps    = np.asarray(data["steps"])
+            losses   = np.asarray(data["losses"])
+            k        = float(data.get("spike_k", 2.5))
+            mode_tag = data.get("mode_tag", "")
+            window   = max(10, len(steps) // 40)
+            roll_m   = np.convolve(losses, np.ones(window) / window, mode="same")
+            roll_s   = np.array([losses[max(0, i - window // 2): i + window // 2].std()
+                                  for i in range(len(losses))])
+            spikes   = losses > (roll_m + k * roll_s)
+
+            fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
+            ax.plot(steps, losses,  color="steelblue", lw=0.8, alpha=0.55, label="Raw loss")
+            ax.plot(steps, roll_m,  color="navy",      lw=2.0,             label="Rolling mean")
+            ax.fill_between(steps, np.clip(roll_m - roll_s, 0, None), roll_m + k * roll_s,
+                            color="royalblue", alpha=0.12, label=f"±{k:.1f}σ band")
+            if spikes.any():
+                ax.scatter(steps[spikes], losses[spikes], color="crimson", s=40, zorder=5,
+                           label=f"Spikes (>{k:.1f}σ)")
+            ax.set_xlabel("Training Step"); ax.set_ylabel("Loss")
+            title = "Training Loss Stability – Spike Detection"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            ax.set_title(title, fontweight="bold"); ax.legend(fontsize=9)
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/loss_curves/loss_spike_detection", step)
+            self._generated.append(out); return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    def plot_gradient_clipping_line(self, data: Optional[Dict] = None, step: Optional[int] = None) -> Path:
+        """Plot: Gradient Clipping Rate Over Epochs (line + shaded area, research paper style)."""
+        key = "gradient_clipping_rate_line"
+        out = PLOT_DIRS["gradient_stats"] / plot_filename("training_dynamics", "gradient_stats", key, step=step)
+        try:
+            incomplete = data is None
+            if data is None:
+                np.random.seed(9); epochs = np.arange(1, 11)
+                s1 = np.clip(55 - epochs * 4 + np.random.normal(0, 3, 10), 5, 80)
+                s2 = np.clip(35 - epochs * 2 + np.random.normal(0, 3, 10), 2, 60)
+                data = {"epochs": epochs, "s1_clip_rate": s1, "s2_clip_rate": s2}
+
+            epochs   = np.asarray(data["epochs"])
+            s1_rate  = np.asarray(data.get("s1_clip_rate", np.zeros_like(epochs)))
+            s2_rate  = np.asarray(data.get("s2_clip_rate", np.zeros_like(epochs)))
+            mode_tag = data.get("mode_tag", "")
+
+            fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
+            ax.plot(epochs, s1_rate, color=STAGE_COLORS[1], lw=VIZ_CONFIG["lw_main"],
+                    marker="o", ms=5, label="Stage 1")
+            ax.fill_between(epochs, s1_rate * 0.85, s1_rate * 1.15, color=STAGE_COLORS[1], alpha=0.15)
+            ax.plot(epochs, s2_rate, color=STAGE_COLORS[2], lw=VIZ_CONFIG["lw_main"],
+                    marker="s", ms=5, label="Stage 2")
+            ax.fill_between(epochs, s2_rate * 0.85, s2_rate * 1.15, color=STAGE_COLORS[2], alpha=0.15)
+            ax.set_xlabel("Epoch"); ax.set_ylabel("Gradient Clipping Rate (%)")
+            ax.set_ylim(0, max(s1_rate.max(), s2_rate.max()) * 1.25)
+            title = "Gradient Clipping Rate by Epoch"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            ax.set_title(title, fontweight="bold"); ax.legend()
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/gradient_stats/gradient_clipping_rate_line", step)
+            self._generated.append(out); return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    def plot_tokens_to_convergence(self, data: Optional[Dict] = None, step: Optional[int] = None) -> Path:
+        """Plot: Tokens-to-Convergence at Loss Thresholds (staircase/step plot)."""
+        key = "tokens_to_convergence"
+        out = PLOT_DIRS["convergence"] / plot_filename("training_dynamics", "convergence", key, step=step)
+        try:
+            incomplete = data is None
+            thresholds = [4.0, 3.0, 2.5, 2.0, 1.8, 1.5]
+            if data is None:
+                data = {"thresholds": thresholds, "tokens_needed_m": [5, 18, 40, 100, 200, 500]}
+
+            thresholds = list(data.get("thresholds", thresholds))
+            tokens_m   = np.asarray(data["tokens_needed_m"])
+            mode_tag   = data.get("mode_tag", "")
+            x          = np.arange(len(thresholds))
+
+            fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
+            ax.step(x, tokens_m, where="post", color=STAGE_COLORS[2], lw=2.0, label="Tokens to threshold")
+            ax.scatter(x, tokens_m, color=STAGE_COLORS[2], s=60, zorder=5)
+            for i, (th, tok) in enumerate(zip(thresholds, tokens_m)):
+                ax.annotate(f"{tok:.0f}M", (i, tok), textcoords="offset points",
+                            xytext=(5, 5), fontsize=8)
+            ax.set_xticks(x)
+            ax.set_xticklabels([f"loss≤{t}" for t in thresholds], rotation=30, ha="right")
+            ax.set_ylabel("Cumulative Tokens Required (Millions)")
+            ax.set_yscale("log")
+            title = "Tokens-to-Convergence at Loss Thresholds"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            ax.set_title(title, fontweight="bold"); ax.legend()
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/convergence/tokens_to_convergence", step)
+            self._generated.append(out); return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    def plot_energy_vs_steps(self, data: Optional[Dict] = None, step: Optional[int] = None) -> Path:
+        """Plot: Cumulative Training Energy (kWh) vs Steps – from CodeCarbon."""
+        key = "energy_vs_steps"
+        out = PLOT_DIRS["energy_metrics"] / plot_filename("training_dynamics", "energy_metrics", key, step=step)
+        try:
+            incomplete = data is None
+            if data is None:
+                np.random.seed(55); n = 200
+                s1 = np.arange(n); s2 = np.arange(n)
+                data = {"s1_steps": s1, "s1_kwh": np.cumsum(np.abs(np.random.normal(2e-4, 5e-5, n))),
+                        "s2_steps": s2, "s2_kwh": np.cumsum(np.abs(np.random.normal(5e-4, 1e-4, n)))}
+
+            s1_steps = np.asarray(data.get("s1_steps", []))
+            s1_kwh   = np.asarray(data.get("s1_kwh",   []))
+            s2_steps = np.asarray(data.get("s2_steps", []))
+            s2_kwh   = np.asarray(data.get("s2_kwh",   []))
+            mode_tag = data.get("mode_tag", "")
+
+            fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
+            if len(s1_steps):
+                ax.plot(s1_steps, s1_kwh, color=STAGE_COLORS[1], lw=VIZ_CONFIG["lw_main"],
+                        label="Stage 1 cumulative energy")
+                ax.fill_between(s1_steps, 0, s1_kwh, color=STAGE_COLORS[1], alpha=0.15)
+            if len(s2_steps):
+                off = s1_kwh[-1] if len(s1_kwh) else 0.0
+                ax.plot(s2_steps, s2_kwh + off, color=STAGE_COLORS[2], lw=VIZ_CONFIG["lw_main"],
+                        label="Stage 2 cumulative energy")
+                ax.fill_between(s2_steps, off, s2_kwh + off, color=STAGE_COLORS[2], alpha=0.15)
+            ax.set_xlabel("Training Step"); ax.set_ylabel("Cumulative Energy (kWh)")
+            title = "Cumulative Training Energy vs Steps"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            ax.set_title(title, fontweight="bold"); ax.legend()
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/energy_metrics/energy_vs_steps", step)
+            self._generated.append(out); return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    def plot_co2_vs_steps(self, data: Optional[Dict] = None, step: Optional[int] = None) -> Path:
+        """Plot: Cumulative CO₂ Emissions (kg) vs Steps – from CodeCarbon."""
+        key = "co2_vs_steps"
+        out = PLOT_DIRS["co2_metrics"] / plot_filename("training_dynamics", "co2_metrics", key, step=step)
+        try:
+            incomplete = data is None
+            if data is None:
+                np.random.seed(56); n = 200
+                s1 = np.arange(n); s2 = np.arange(n)
+                data = {"s1_steps": s1, "s1_co2_kg": np.cumsum(np.abs(np.random.normal(8e-5, 2e-5, n))),
+                        "s2_steps": s2, "s2_co2_kg": np.cumsum(np.abs(np.random.normal(2e-4, 4e-5, n)))}
+
+            s1_steps = np.asarray(data.get("s1_steps",  []))
+            s1_co2   = np.asarray(data.get("s1_co2_kg", []))
+            s2_steps = np.asarray(data.get("s2_steps",  []))
+            s2_co2   = np.asarray(data.get("s2_co2_kg", []))
+            mode_tag = data.get("mode_tag", "")
+
+            fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
+            if len(s1_steps):
+                ax.plot(s1_steps, s1_co2, color=STAGE_COLORS[1], lw=VIZ_CONFIG["lw_main"],
+                        label="Stage 1 CO₂ (kg)")
+                ax.fill_between(s1_steps, 0, s1_co2, color=STAGE_COLORS[1], alpha=0.15)
+            if len(s2_steps):
+                off = s1_co2[-1] if len(s1_co2) else 0.0
+                ax.plot(s2_steps, s2_co2 + off, color=STAGE_COLORS[2], lw=VIZ_CONFIG["lw_main"],
+                        label="Stage 2 CO₂ (kg)")
+                ax.fill_between(s2_steps, off, s2_co2 + off, color=STAGE_COLORS[2], alpha=0.15)
+            ax.set_xlabel("Training Step"); ax.set_ylabel("Cumulative CO₂ Emissions (kg)")
+            title = "Cumulative CO₂ Emissions vs Training Steps"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            ax.set_title(title, fontweight="bold"); ax.legend()
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/co2_metrics/co2_vs_steps", step)
+            self._generated.append(out); return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    def plot_energy_per_token(self, data: Optional[Dict] = None, step: Optional[int] = None) -> Path:
+        """Plot: Energy per 1M Tokens (kWh/1Mtok) curve with markers."""
+        key = "energy_per_token"
+        out = PLOT_DIRS["energy_metrics"] / plot_filename("training_dynamics", "energy_metrics", key, step=step)
+        try:
+            incomplete = data is None
+            if data is None:
+                np.random.seed(57); n = 100
+                steps = np.arange(1, n + 1) * 10
+                eff   = 0.4 * np.exp(-steps / 500) + 0.05 + np.random.normal(0, 0.005, n)
+                data  = {"steps": steps, "kwh_per_1m_tokens": eff}
+
+            steps    = np.asarray(data["steps"])
+            eff      = np.asarray(data["kwh_per_1m_tokens"])
+            mode_tag = data.get("mode_tag", "")
+
+            fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
+            ax.plot(steps, eff, color="#2ca02c", lw=VIZ_CONFIG["lw_main"],
+                    marker="D", ms=4, markevery=max(1, len(steps) // 20),
+                    label="kWh per 1M tokens")
+            ax.fill_between(steps, eff * 0.92, eff * 1.08, color="#2ca02c", alpha=0.15)
+            ax.set_xlabel("Training Step"); ax.set_ylabel("kWh per 1M Tokens")
+            title = "Training Energy Efficiency: kWh per 1M Tokens"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            ax.set_title(title, fontweight="bold"); ax.legend()
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/energy_metrics/energy_per_token", step)
+            self._generated.append(out); return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    def plot_stage_energy_comparison(self, data: Optional[Dict] = None, step: Optional[int] = None) -> Path:
+        """Plot: Stage-wise Energy & CO₂ Comparison (two-panel small-multiples)."""
+        key = "stage_energy_comparison"
+        out = PLOT_DIRS["energy_metrics"] / plot_filename("training_dynamics", "energy_metrics", key, step=step)
+        try:
+            incomplete = data is None
+            if data is None:
+                np.random.seed(58)
+                n1, n2 = 150, 250
+                s1s = np.arange(n1); s2s = np.arange(n2)
+                s1k = np.cumsum(np.abs(np.random.normal(2e-4, 5e-5, n1)))
+                s2k = np.cumsum(np.abs(np.random.normal(5e-4, 1e-4, n2)))
+                data = {"s1_steps": s1s, "s1_kwh": s1k, "s1_co2": s1k * 0.35,
+                        "s2_steps": s2s, "s2_kwh": s2k, "s2_co2": s2k * 0.35}
+
+            mode_tag = data.get("mode_tag", "")
+            fig, axes = plt.subplots(1, 2, figsize=VIZ_CONFIG["figsize_dual"])
+            for ax, (sk, co2k, stepsk, stage, c) in zip(axes, [
+                ("s1_kwh", "s1_co2", "s1_steps", 1, STAGE_COLORS[1]),
+                ("s2_kwh", "s2_co2", "s2_steps", 2, STAGE_COLORS[2]),
+            ]):
+                kwh    = np.asarray(data.get(sk,     []))
+                co2    = np.asarray(data.get(co2k,   []))
+                stps   = np.asarray(data.get(stepsk, []))
+                if not len(stps):
+                    ax.text(0.5, 0.5, f"Stage {stage}\nNo data", ha="center", va="center",
+                            transform=ax.transAxes, fontsize=12)
+                    continue
+                ax.plot(stps, kwh, color=c, lw=VIZ_CONFIG["lw_main"], label="Energy (kWh)")
+                ax.fill_between(stps, 0, kwh, color=c, alpha=0.18)
+                ax2 = ax.twinx()
+                ax2.plot(stps, co2, color="#555555", lw=1.2, ls="--", label="CO₂ (kg)")
+                ax.set_xlabel("Step"); ax.set_ylabel("Cumul. Energy (kWh)", color=c)
+                ax2.set_ylabel("Cumul. CO₂ (kg)", color="#555555")
+                ax.set_title(f"Stage {stage} Energy & CO₂", fontweight="bold")
+                l1, ll1 = ax.get_legend_handles_labels()
+                l2, ll2 = ax2.get_legend_handles_labels()
+                ax.legend(l1 + l2, ll1 + ll2, fontsize=8)
+
+            title = "Stage-wise Energy and CO₂ Comparison"
+            if mode_tag: title += f"  {mode_tag}"
+            if incomplete: title += "  [Incomplete – placeholder data]"
+            fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
+            out = _save_and_log(fig, out, self.logger, "plots/training_dynamics/energy_metrics/stage_energy_comparison", step)
+            self._generated.append(out); return out
+        except Exception as e:
+            log_plot_error(key, e); plt.close("all"); return out
+
+    # ------------------------------------------------------------------
     # Convenience: generate all plots in §1
     # ------------------------------------------------------------------
     def generate_all(self, data: Optional[Dict] = None, step: Optional[int] = None) -> List[Path]:
         """Generate every §1 plot and return list of saved paths."""
         d = data or {}
         methods = [
-            (self.plot_multistage_loss,           d.get("loss", None)),
-            (self.plot_loss_components,           d.get("loss_components", None)),
-            (self.plot_per_dataset_loss_heatmap,  d.get("per_dataset_loss", None)),
-            (self.plot_bitnet_lr_schedule,        d.get("lr_schedule", None)),
-            (self.plot_per_group_lr,              d.get("per_group_lr", None)),
-            (self.plot_gradient_norms,            d.get("grad_norms", None)),
-            (self.plot_gradient_flow_heatmap,     d.get("grad_flow", None)),
+            (self.plot_multistage_loss,             d.get("loss", None)),
+            (self.plot_loss_components,             d.get("loss_components", None)),
+            (self.plot_per_dataset_loss_heatmap,    d.get("per_dataset_loss", None)),
+            (self.plot_bitnet_lr_schedule,          d.get("lr_schedule", None)),
+            (self.plot_per_group_lr,                d.get("per_group_lr", None)),
+            (self.plot_gradient_norms,              d.get("grad_norms", None)),
+            (self.plot_gradient_flow_heatmap,       d.get("grad_flow", None)),
             (self.plot_gradient_clipping_frequency, d.get("grad_clip_freq", None)),
-            (self.plot_convergence_rate,          d.get("convergence", None)),
-            (self.plot_training_efficiency,       d.get("efficiency", None)),
+            (self.plot_convergence_rate,            d.get("convergence", None)),
+            (self.plot_training_efficiency,         d.get("efficiency", None)),
+            # --- new research-grade plots ---
+            (self.plot_loss_vs_tokens,              d.get("loss_vs_tokens", None)),
+            (self.plot_loss_spike_detection,        d.get("loss_spike", None)),
+            (self.plot_gradient_clipping_line,      d.get("grad_clip_line", None)),
+            (self.plot_tokens_to_convergence,       d.get("tokens_convergence", None)),
+            (self.plot_energy_vs_steps,             d.get("energy", None)),
+            (self.plot_co2_vs_steps,                d.get("co2", None)),
+            (self.plot_energy_per_token,            d.get("energy_per_token", None)),
+            (self.plot_stage_energy_comparison,     d.get("stage_energy", None)),
         ]
         paths = []
         for fn, dat in methods:
@@ -722,10 +1059,25 @@ def _save_and_log(
     logger: WandBLogger,
     wb_key: str,
     step: Optional[int],
-):
-    """Save figure to disk, log to W&B, and close."""
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+) -> Path:
+    """Save figure to disk (using step-aware naming), log to W&B, and close.
+
+    The final filename is derived from *wb_key* (last path segment) and
+    *step*:
+      - step given → ``plot-step-{step}.png``
+      - step None  → ``plot-static-{semantic_key}.png``
+
+    Returns the actual path the figure was saved to.
+    """
+    semantic_key = wb_key.rsplit("/", 1)[-1]
+    if step is not None:
+        fname = f"plot-step-{step}-{semantic_key}.png"
+    else:
+        fname = f"plot-static-{semantic_key}.png"
+    actual_path = out_path.parent / fname
+    actual_path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=VIZ_CONFIG["dpi"])
+    fig.savefig(actual_path, dpi=VIZ_CONFIG["dpi"])
     plt.close(fig)
-    logger.log_image(out_path, wb_key, step=step)
+    logger.log_image(actual_path, wb_key, step=step)
+    return actual_path

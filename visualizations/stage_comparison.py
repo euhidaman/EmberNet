@@ -87,7 +87,7 @@ class StageComparisonPlotter:
                 title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/stage_comparison/stage1_vs_stage2/loss_comparison", step)
+            out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/stage1_vs_stage2/loss_comparison", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -143,7 +143,7 @@ class StageComparisonPlotter:
                 title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/stage_comparison/stage1_vs_stage2/param_updates", step)
+            out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/stage1_vs_stage2/param_updates", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -207,7 +207,7 @@ class StageComparisonPlotter:
                 title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/stage_comparison/stage1_vs_stage2/routing_before_after", step)
+            out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/stage1_vs_stage2/routing_before_after", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -252,7 +252,7 @@ class StageComparisonPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend(fontsize=8)
 
-            _save_and_log(fig, out, self.logger, "plots/stage_comparison/ablation/num_experts", step)
+            out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/ablation/num_experts", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -306,7 +306,7 @@ class StageComparisonPlotter:
                 loc="lower right",
             )
 
-            _save_and_log(fig, out, self.logger, "plots/stage_comparison/ablation/routing_strategy", step)
+            out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/ablation/routing_strategy", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -361,7 +361,7 @@ class StageComparisonPlotter:
                 title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/stage_comparison/ablation/quantization_impact", step)
+            out = _save_and_log(fig, out, self.logger, "plots/stage_comparison/ablation/quantization_impact", step)
             self._generated.append(out)
             return out
         except Exception as e:

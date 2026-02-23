@@ -29,3 +29,6 @@ tqdm>=4.65.0
 # Visualization
 seaborn>=0.12.0
 matplotlib>=3.7.0
+
+# Energy / CO2 tracking
+codecarbon>=2.3.0

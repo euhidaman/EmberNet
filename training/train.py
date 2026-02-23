@@ -71,6 +71,12 @@ except Exception as _ae_err:
     print(f"[WARNING] auto_eval unavailable: {_ae_err}")
     _HAS_AUTO_EVAL = False
 
+try:
+    from codecarbon import EmissionsTracker
+    _HAS_CODECARBON = True
+except ImportError:
+    _HAS_CODECARBON = False
+
 
 # =============================================================================
 # BitNet b1.58 Training Stability Classes (Based on Microsoft Research)
@@ -469,6 +475,7 @@ class Trainer:
                     output_dir=config.output_dir,
                     stage=config.stage,
                     plot_interval=_plot_interval,
+                    is_trial=bool(config.max_samples_per_dataset),
                 )
             except Exception as _lp_init_err:
                 print(f"[WARNING] Could not initialise LivePlotter: {_lp_init_err}")
@@ -976,11 +983,20 @@ class Trainer:
                         # Use a monotone batch counter so the x-axis is meaningful
                         # even before the first optimizer step.
                         _viz_step = epoch * len(train_loader) + step + 1
+                        _ep = metrics.get("expert_probs")
+                        _routing_ent = 0.0
+                        if _ep is not None and len(_ep) > 0:
+                            import math as _math
+                            _routing_ent = float(-sum(
+                                p * _math.log(p + 1e-8)
+                                for p in _ep
+                            ))
                         self.live_plotter.record_step(
                             step=_viz_step,
                             loss=raw_loss,
                             lr=_cur_lr,
-                            expert_probs=metrics.get("expert_probs"),
+                            expert_probs=_ep,
+                            routing_entropy=_routing_ent,
                         )
                     except Exception as _vz_err:
                         print(f"  [viz] record_step error: {_vz_err}")
@@ -1261,7 +1277,36 @@ def run_training(args, stage: int, resume_from: Optional[str] = None):
 
     # Create trainer and run training
     trainer = Trainer(config)
+
+    # Wrap training with CodeCarbon energy tracker
+    _cc_tracker = None
+    if _HAS_CODECARBON:
+        try:
+            _cc_tracker = EmissionsTracker(
+                output_dir=stage_output_dir,
+                project_name=f"EmberNet_stage{stage}",
+                log_level="error",
+                save_to_file=True,
+            )
+            _cc_tracker.start()
+        except Exception as _cc_err:
+            print(f"[WARNING] CodeCarbon tracker failed to start: {_cc_err}")
+            _cc_tracker = None
+
     trainer.train()
+
+    if _cc_tracker is not None:
+        try:
+            _emissions_kg = _cc_tracker.stop()
+            _energy_kwh   = float(_cc_tracker.final_emissions_data.energy_consumed)
+            print(f"  [energy] Stage {stage}: {_energy_kwh:.4f} kWh, {_emissions_kg:.6f} kg CO₂")
+            if HAS_WANDB and config.use_wandb and wandb.run is not None:
+                wandb.log({
+                    f"energy/stage{stage}_kwh":  _energy_kwh,
+                    f"energy/stage{stage}_co2_kg": float(_emissions_kg),
+                })
+        except Exception as _cc_stop_err:
+            print(f"[WARNING] CodeCarbon stop error: {_cc_stop_err}")
 
     # Return path to final checkpoint
     return f"{stage_output_dir}/final_model.pt"
@@ -1402,6 +1447,54 @@ def main():
         print("\n[auto_eval] Skipped — eval/auto_eval.py not importable (see warning above).")
     else:
         print("\n[auto_eval] Skipped — no checkpoint path available.")
+
+    # =========================================================================
+    # Post-training: generate all visualizations automatically
+    # =========================================================================
+    try:
+        from generate_all_plots import (
+            _build_context, generate_section, write_report,
+            SECTION_NAMES, load_wandb_data,
+        )
+        from visualizations.config import ensure_plot_dirs
+        from visualizations.wandb_utils import WandBLogger as _WandBLogger
+
+        print(f"\n{'='*70}")
+        print("  POST-TRAINING: Generating all visualizations")
+        print(f"{'='*70}")
+
+        ensure_plot_dirs()
+
+        # Optionally pull full metric history from W&B
+        _raw: Dict = {}
+        if HAS_WANDB and args.wandb_run_name and not args.no_wandb:
+            try:
+                _wrun = f"{args.wandb_project}/{args.wandb_run_name}"
+                _raw = load_wandb_data(_wrun)
+                print(f"  [viz] Loaded {len(_raw)} metrics from W&B: {_wrun}")
+            except Exception:
+                pass
+
+        _ctx   = _build_context(_raw)
+        _log   = _WandBLogger(disabled=True)
+        _paths: List[Path] = []
+        _fails: List[str]  = []
+
+        for _sec in SECTION_NAMES:
+            try:
+                _ps = generate_section(_sec, _log, _ctx)
+                _paths.extend(p for p in _ps if p and p.exists())
+            except Exception as _se:
+                _fails.append(f"{_sec}: {_se}")
+
+        _rpt = write_report(_paths, _fails, [], getattr(args, "wandb_project", "EmberNet"))
+        print(f"  [viz] {len(_paths)} plots saved  |  report → {_rpt}")
+        if _fails:
+            for _f in _fails:
+                print(f"  [viz] WARN: {_f}")
+
+    except Exception as _viz_err:
+        print(f"  [viz] Post-training plot generation skipped: {_viz_err}")
 
 
 if __name__ == "__main__":

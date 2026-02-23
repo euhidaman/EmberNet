@@ -175,7 +175,64 @@ def _build_context(raw_data: Dict) -> Dict:
             "clip_threshold": 1.0,
         }
 
-    return {"training_dynamics": td}
+    # ---- Energy / CO₂ (CodeCarbon-logged) ----
+    if "energy/stage1_kwh" in raw_data or "energy/stage2_kwh" in raw_data:
+        n = len(raw_data.get("train/loss", np.array([]))) or 1
+        steps_all = raw_data.get("train/step", np.arange(n))
+        half = len(steps_all) // 2
+
+        td["energy"] = {
+            "s1_steps":    steps_all[:half],
+            "s1_energy":   raw_data.get("energy/stage1_kwh", np.zeros(half)),
+            "s2_steps":    steps_all[half:],
+            "s2_energy":   raw_data.get("energy/stage2_kwh", np.zeros(len(steps_all) - half)),
+        }
+        td["co2"] = {
+            "s1_steps":  steps_all[:half],
+            "s1_co2_kg": raw_data.get("energy/stage1_co2_kg", np.zeros(half)),
+            "s2_steps":  steps_all[half:],
+            "s2_co2_kg": raw_data.get("energy/stage2_co2_kg", np.zeros(len(steps_all) - half)),
+        }
+        # Per-token efficiency ‑ requires cumulative_tokens key
+        if "train/cumulative_tokens" in raw_data:
+            cum_tok = raw_data["train/cumulative_tokens"]
+            s1_e = raw_data.get("energy/stage1_kwh", np.zeros_like(cum_tok[:half]))
+            s2_e = raw_data.get("energy/stage2_kwh", np.zeros_like(cum_tok[half:]))
+            cum_e = np.concatenate([s1_e, s2_e])
+            tok_m = np.maximum(cum_tok / 1e6, 1e-9)
+            td["energy_per_token"] = {
+                "tokens_m":     tok_m,
+                "kwh_per_m_tok": cum_e / tok_m,
+                "steps":         steps_all,
+            }
+        td["stage_energy"] = {
+            "stage_names":  ["Stage 1", "Stage 2"],
+            "s1_steps":     steps_all[:half],
+            "s2_steps":     steps_all[half:],
+            "s1_energy":    raw_data.get("energy/stage1_kwh", np.zeros(half)),
+            "s2_energy":    raw_data.get("energy/stage2_kwh", np.zeros(len(steps_all) - half)),
+            "s1_co2_kg":    raw_data.get("energy/stage1_co2_kg", np.zeros(half)),
+            "s2_co2_kg":    raw_data.get("energy/stage2_co2_kg", np.zeros(len(steps_all) - half)),
+        }
+
+    # ---- Expert analysis ----
+    ea = {}
+    if "train/routing_entropy" in raw_data:
+        ea["routing_entropy"] = {
+            "steps":   raw_data.get("train/step"),
+            "entropy": raw_data["train/routing_entropy"],
+        }
+    # Stacked expert probabilities (expert_0..expert_7 columns)
+    _expert_cols = [k for k in raw_data if k.startswith("train/expert_") and k[len("train/expert_"):].isdigit()]
+    if len(_expert_cols) == 8:
+        _expert_cols_sorted = sorted(_expert_cols, key=lambda k: int(k.rsplit("_", 1)[-1]))
+        _n = min(len(raw_data[c]) for c in _expert_cols_sorted)
+        ea["stacked_area"] = {
+            "steps":         raw_data.get("train/step", np.arange(_n))[:_n],
+            "expert_probs":  np.column_stack([raw_data[c][:_n] for c in _expert_cols_sorted]),
+        }
+
+    return {"training_dynamics": td, "expert_analysis": ea}
 
 
 # ===========================================================================

@@ -52,6 +52,10 @@ PLOT_DIRS = {
     "benchmark_task_scores": PLOTS_ROOT / "benchmark_results" / "task_scores",
     "benchmark_domain":      PLOTS_ROOT / "benchmark_results" / "domain_analysis",
     "benchmark_dashboard":   PLOTS_ROOT / "benchmark_results" / "dashboard",
+    # Energy & CO2
+    "energy_metrics":        PLOTS_ROOT / "efficiency" / "energy_metrics",
+    "co2_metrics":           PLOTS_ROOT / "efficiency" / "co2_metrics",
+    "efficiency_tradeoffs":  PLOTS_ROOT / "efficiency" / "tradeoffs",
     # Errors
     "errors":                PLOTS_ROOT / "errors",
 }
@@ -92,6 +96,9 @@ _PLOT_DIR_SUFFIXES = {
     "benchmark_task_scores":  Path("benchmark_results/task_scores"),
     "benchmark_domain":       Path("benchmark_results/domain_analysis"),
     "benchmark_dashboard":    Path("benchmark_results/dashboard"),
+    "energy_metrics":         Path("efficiency/energy_metrics"),
+    "co2_metrics":            Path("efficiency/co2_metrics"),
+    "efficiency_tradeoffs":   Path("efficiency/tradeoffs"),
     "errors":                 Path("errors"),
 }
 
@@ -240,14 +247,24 @@ def apply_mpl_style():
 # ---------------------------------------------------------------------------
 # File naming helper
 # ---------------------------------------------------------------------------
-def plot_filename(category: str, subcategory: str, name: str, ext: str = "png") -> str:
+def plot_filename(
+    category: str,
+    subcategory: str,
+    name: str,
+    ext: str = "png",
+    step: "Optional[int]" = None,
+) -> str:
     """
-    Returns a timestamped filename following the convention:
-        {category}_{subcategory}_{name}_{YYYYMMDD_HHMM}.{ext}
+    Returns a step-aware filename:
+      - If *step* is given : ``plot-step-{step}.{ext}``
+      - Otherwise          : ``plot-static-{name}.{ext}``
+
+    The directory (from PLOT_DIRS) provides the semantic context;
+    the filename itself encodes only the step or the key name.
     """
-    ts = datetime.now().strftime("%Y%m%d_%H%M")
-    stem = f"{category}_{subcategory}_{name}_{ts}"
-    return f"{stem}.{ext}"
+    if step is not None:
+        return f"plot-step-{step}.{ext}"
+    return f"plot-static-{name}.{ext}"
 
 
 # ---------------------------------------------------------------------------

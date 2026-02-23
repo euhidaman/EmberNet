@@ -77,7 +77,7 @@ class QuantizationPlotter:
                 title += "  [Incomplete – placeholder data]"
             fig.suptitle(title, fontsize=VIZ_CONFIG["font_title"], fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/quantization/weight_distributions/before_after_hist", step)
+            out = _save_and_log(fig, out, self.logger, "plots/quantization/weight_distributions/before_after_hist", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -119,7 +119,7 @@ class QuantizationPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/quantization/weight_distributions/layerwise_sparsity", step)
+            out = _save_and_log(fig, out, self.logger, "plots/quantization/weight_distributions/layerwise_sparsity", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -160,7 +160,7 @@ class QuantizationPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/quantization/weight_distributions/magnitude_decay", step)
+            out = _save_and_log(fig, out, self.logger, "plots/quantization/weight_distributions/magnitude_decay", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -203,7 +203,7 @@ class QuantizationPlotter:
             ax.axvline(7,  color="red", ls=":", lw=1.2)
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/quantization/activations/4bit_dist", step)
+            out = _save_and_log(fig, out, self.logger, "plots/quantization/activations/4bit_dist", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -239,7 +239,7 @@ class QuantizationPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/quantization/activations/clipping_frequency", step)
+            out = _save_and_log(fig, out, self.logger, "plots/quantization/activations/clipping_frequency", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -275,7 +275,7 @@ class QuantizationPlotter:
                 title += "  [Incomplete – placeholder data]"
             ax.set_title(title, fontweight="bold")
 
-            _save_and_log(fig, out, self.logger, "plots/quantization/activations/scale_boxplot", step)
+            out = _save_and_log(fig, out, self.logger, "plots/quantization/activations/scale_boxplot", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -323,7 +323,7 @@ class QuantizationPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/quantization/bitwidth/model_size_breakdown", step)
+            out = _save_and_log(fig, out, self.logger, "plots/quantization/bitwidth/model_size_breakdown", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -361,7 +361,7 @@ class QuantizationPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/quantization/bitwidth/effective_bitwidth", step)
+            out = _save_and_log(fig, out, self.logger, "plots/quantization/bitwidth/effective_bitwidth", step)
             self._generated.append(out)
             return out
         except Exception as e:
@@ -406,7 +406,7 @@ class QuantizationPlotter:
             ax.set_title(title, fontweight="bold")
             ax.legend()
 
-            _save_and_log(fig, out, self.logger, "plots/quantization/bitwidth/quant_pareto", step)
+            out = _save_and_log(fig, out, self.logger, "plots/quantization/bitwidth/quant_pareto", step)
             self._generated.append(out)
             return out
         except Exception as e:
