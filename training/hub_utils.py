@@ -343,10 +343,30 @@ def push_to_hub(
         print("  [hub] huggingface_hub not installed — skipping Hub push.")
         return
 
-    token = hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    # get_token moved to top-level in huggingface_hub >= 0.20; fall back gracefully
+    try:
+        from huggingface_hub import get_token as _hf_get_token
+    except ImportError:
+        try:
+            from huggingface_hub.utils import get_token as _hf_get_token  # type: ignore[no-redef]
+        except ImportError:
+            _hf_get_token = lambda: None
+
+    # Priority: explicit arg → env vars → token cached by `hf auth login`
+    try:
+        _cached_token = _hf_get_token()
+    except Exception:
+        _cached_token = None
+    token = (
+        hf_token
+        or os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGINGFACE_TOKEN")
+        or _cached_token
+    )
     if not token:
-        print("  [hub] No HF token found (set HF_TOKEN env var or pass --hf-token) — skipping.")
+        print("  [hub] No HF token found — run `huggingface-cli login` or set HF_TOKEN env var.")
         return
+    print(f"  [hub] Token resolved (source: {'arg' if hf_token else 'env/cache'})")
 
     if repo_id is None:
         repo_id = "euhidaman/EmberNet-Trial" if is_trial else "euhidaman/EmberNet"
@@ -421,12 +441,14 @@ def push_to_hub(
                 repo_id=repo_id,
                 repo_type="model",
                 commit_message=commit_msg,
-                # overwrite existing files — no accumulation
-                delete_patterns=["pytorch_model.bin", "config.json", "README.md"],
+                # upload_folder overwrites same-named files by default;
+                # delete_patterns omitted for broad huggingface_hub version compatibility
             )
-            print(f"  [hub] ✓ Pushed to https://huggingface.co/{repo_id}")
+            print(f"  [hub] ✓ Pushed → https://huggingface.co/{repo_id}")
         except Exception as e:
+            import traceback
             print(f"  [hub] Upload failed: {e}")
+            traceback.print_exc()
 
 
 def _save_tokenizer(dest: Path, training_config) -> None:
