@@ -380,13 +380,14 @@ def write_report(
 
     # Group by section
     sections = {
-        "1. Training Dynamics":         "training_dynamics",
-        "2. Expert Analysis":           "expert_analysis",
+        "1. Training Dynamics":          "training_dynamics",
+        "2. Expert Analysis":            "expert_analysis",
         "3. Architecture Visualizations":"architecture_visualizations",
-        "4. Quantization Analysis":     "quantization_analysis",
-        "5. Dataset Analysis":          "dataset_analysis",
-        "6. Performance Metrics":       "performance_metrics",
-        "7. Stage Comparison":          "stage_comparison",
+        "4. Quantization Analysis":      "quantization_analysis",
+        "5. Dataset Analysis":           "dataset_analysis",
+        "6. Performance Metrics":        "performance_metrics",
+        "7. Stage Comparison":           "stage_comparison",
+        "8. Paper Figures (ECCV/AAAI)":  "paper_figures",
     }
 
     for section_title, folder_fragment in sections.items():

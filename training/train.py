@@ -1496,8 +1496,8 @@ def main():
     # =========================================================================
     try:
         from generate_all_plots import (
-            _build_context, generate_section, write_report,
-            SECTION_NAMES, load_wandb_data,
+            _build_context, generate_section, generate_paper_fig, write_report,
+            SECTION_NAMES, _PAPER_FIGS, load_wandb_data,
         )
         from visualizations.config import ensure_plot_dirs
         from visualizations.wandb_utils import WandBLogger as _WandBLogger
@@ -1550,6 +1550,32 @@ def main():
                 _paths.extend(p for p in _ps if p and p.exists())
             except Exception as _se:
                 _fails.append(f"{_sec}: {_se}")
+
+        # ------------------------------------------------------------------
+        # Paper figures (Figs 1-7) — pass the real model if available so
+        # figures use actual weight/routing data rather than synthetic data
+        # ------------------------------------------------------------------
+        print(f"  [viz] Generating 7 paper figures …")
+        _paper_dir = Path("plots/paper_figures")
+        _live_model = None
+        if checkpoint_path and Path(checkpoint_path).exists():
+            try:
+                from inference.infer import EmberVLM as _EmberVLM
+                _live_model = _EmberVLM(model_path=checkpoint_path)
+                print(f"  [viz] Model loaded from {checkpoint_path} for paper figures")
+            except Exception as _ml_err:
+                print(f"  [viz] Could not load model for paper figures (will use synthetic): {_ml_err}")
+        for _fig_name in _PAPER_FIGS:
+            try:
+                _r = generate_paper_fig(_fig_name, save_dir=_paper_dir, model=_live_model)
+                if _r and _r.exists():
+                    _paths.append(_r)
+                    print(f"  [viz] ✓ {_fig_name}")
+                else:
+                    _fails.append(f"{_fig_name}: returned None or file missing")
+            except Exception as _fe:
+                _fails.append(f"{_fig_name}: {_fe}")
+                print(f"  [viz] ✗ {_fig_name}: {_fe}")
 
         _rpt = write_report(_paths, _fails, [], getattr(args, "wandb_project", "EmberNet"))
         print(f"  [viz] {len(_paths)} plots saved  |  report → {_rpt}")
