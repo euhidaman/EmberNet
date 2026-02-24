@@ -335,17 +335,39 @@ class EmberNetDataset(Dataset):
         return self._load_directory(snapshot_dir)
 
     def _select_split(self, dataset_obj):
-        """Select the best split from DatasetDict/Dataset objects."""
+        """Select the best split from DatasetDict/Dataset objects.
+
+        For validation splits we deliberately never fall back to 'test', because
+        those test sets are the ones that lmms-eval uses for external benchmarking.
+        Using them for internal val-loss would create benchmark contamination in the
+        checkpoint-selection signal.  Instead we carve the last 10 % of the train
+        split as a proxy validation set for datasets that have no dedicated val split.
+        """
         if hasattr(dataset_obj, "column_names"):
             return dataset_obj
 
         if hasattr(dataset_obj, "keys"):
             splits = list(dataset_obj.keys())
-            for preferred in [self.split, "train", "validation", "val", "test"]:
-                if preferred in splits:
-                    return dataset_obj[preferred]
-            if splits:
-                return dataset_obj[splits[0]]
+            if self.split == "validation":
+                # Prefer an explicit validation split — never use test.
+                for preferred in ["validation", "val"]:
+                    if preferred in splits:
+                        return dataset_obj[preferred]
+                # No dedicated val split: take last 10 % of train as proxy.
+                if "train" in splits:
+                    train_ds = dataset_obj["train"]
+                    n = len(train_ds)
+                    start = max(0, n - max(1, n // 10))
+                    return train_ds.select(range(start, n))
+                # Nothing suitable found — fall through to first available split.
+                if splits:
+                    return dataset_obj[splits[0]]
+            else:
+                for preferred in [self.split, "train", "validation", "val"]:
+                    if preferred in splits:
+                        return dataset_obj[preferred]
+                if splits:
+                    return dataset_obj[splits[0]]
 
         return dataset_obj
 
