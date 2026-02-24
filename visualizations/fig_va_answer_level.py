@@ -126,20 +126,19 @@ def _extract_answer_level(model, n_samples: int = 40) -> Optional[Dict]:
 
         for prompt, ref_answer in probes:
             # Without VA
-            _inner = getattr(model, 'model', model)
-            if _inner.va_refiner is not None:
-                model.model.set_va_refiner(None)
+            if model.va_refiner is not None:
+                model.set_va_refiner(None)
             with torch.no_grad():
-                ans_no_va = model.chat(image=dummy_img, prompt=prompt, reset=True)
+                ans_no_va = model.generate(image=dummy_img, prompt=prompt, max_new_tokens=64)
             pva_no_va_list.append(0.45 + 0.1 * (len(ans_no_va) % 3))
 
             # With VA
             from models.va_refiner import VARefiner, VARefinerConfig
             va_cfg = VARefinerConfig(use_va_refiner=True)
-            refiner = VARefiner(model.model, va_cfg, model.model.tokenizer)
-            model.model.set_va_refiner(refiner)
+            refiner = VARefiner(model, va_cfg, model.tokenizer)
+            model.set_va_refiner(refiner)
             with torch.no_grad():
-                ans_va = model.chat(image=dummy_img, prompt=prompt, reset=True)
+                ans_va = model.generate(image=dummy_img, prompt=prompt, max_new_tokens=64)
             scores = refiner.get_va_scores()
             pva_va_list.append(float(np.mean(scores)) if scores else 0.4)
 

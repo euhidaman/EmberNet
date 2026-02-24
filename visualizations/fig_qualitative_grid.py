@@ -199,7 +199,7 @@ def generate(
     ----------
     save_dir : Path, optional
         Output directory.  Defaults to plots/paper_figures/.
-    model : EmberVLM wrapper, optional
+    model : EmberNetVLM, optional
         If given, real model inference replaces synthetic answers.
     samples : list of dicts, optional
         Override the built-in sample list.
@@ -225,19 +225,19 @@ def generate(
                 q    = samp["question"]
 
                 # Without VA
-                if hasattr(model, "model") and model.model.va_refiner is not None:
-                    model.model.set_va_refiner(None)
+                if model.va_refiner is not None:
+                    model.set_va_refiner(None)
                 with torch.no_grad():
-                    ans_no = model.chat(image=img, prompt=q, reset=True)
+                    ans_no = model.generate(image=img, prompt=q, max_new_tokens=64)
                 samp["answer_no_va"] = ans_no
 
                 # With VA
                 from models.va_refiner import VARefiner, VARefinerConfig
                 va_cfg = VARefinerConfig(use_va_refiner=True)
-                refiner = VARefiner(model.model, va_cfg, model.model.tokenizer)
-                model.model.set_va_refiner(refiner)
+                refiner = VARefiner(model, va_cfg, model.tokenizer)
+                model.set_va_refiner(refiner)
                 with torch.no_grad():
-                    ans_va = model.chat(image=img, prompt=q, reset=True)
+                    ans_va = model.generate(image=img, prompt=q, max_new_tokens=64)
                 samp["answer_va"] = ans_va
                 scores = refiner.get_va_scores()
                 if scores:

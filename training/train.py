@@ -1560,12 +1560,13 @@ def main():
         _live_model = None
         if checkpoint_path and Path(checkpoint_path).exists():
             try:
-                from inference.infer import EmberVLM as _EmberVLM
-                _wrapper = _EmberVLM(model_path=checkpoint_path)
-                # Pass the raw EmberNetVLM so figure scripts can access
-                # .vision_encoder, .decoder, .projector etc. directly
-                _live_model = getattr(_wrapper, 'model', _wrapper)
-                print(f"  [viz] Model loaded from {checkpoint_path} for paper figures")
+                import torch as _torch
+                _ckpt = _torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+                _viz_cfg = EmberNetConfig()
+                _live_model = EmberNetVLM(_viz_cfg)
+                _live_model.load_state_dict(_ckpt["model_state_dict"], strict=False)
+                _live_model.eval()
+                print(f"  [viz] EmberNetVLM loaded from {checkpoint_path} for paper figures")
             except Exception as _ml_err:
                 print(f"  [viz] Could not load model for paper figures (will use synthetic): {_ml_err}")
         for _fig_name in _PAPER_FIGS:

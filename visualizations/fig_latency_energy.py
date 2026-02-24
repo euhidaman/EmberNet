@@ -133,8 +133,7 @@ def _run_real_benchmark(model, device: str = "cpu", n_runs: int = 10) -> Dict:
     import torch
     from models.bitnet_moe import BitLinear, weight_quant, activation_quant
 
-    # Accept either EmberVLM wrapper or raw EmberNetVLM
-    m = getattr(model, 'model', model)
+    m = model  # always EmberNetVLM
 
     dummy_ids    = torch.randint(1, 1000, (1, 32), device=device)
     dummy_embeds = torch.randn(1, 32, 768, device=device, dtype=torch.float16)
@@ -224,9 +223,7 @@ def generate(save_dir: Optional[Path] = None, model=None) -> Path:
 
     if model is not None:
         try:
-            # EmberVLM wraps the actual nn.Module in .model
-            _inner = getattr(model, 'model', model)
-            device = next(_inner.parameters()).device
+            device = next(model.parameters()).device
             bench_data = _run_real_benchmark(model, device=str(device))
         except Exception as e:
             warnings.warn(f"[fig_latency_energy] Real benchmark failed ({e}), using synthetic data.")
