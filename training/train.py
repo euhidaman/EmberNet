@@ -1412,6 +1412,10 @@ def main():
     parser.add_argument("--wandb-run-name", type=str, default=None,
                         help="W&B run name (default: auto-generated)")
 
+    # VA Refiner (inference-time only; no-op during training)
+    parser.add_argument("--use-va-refiner", action="store_true",
+                        help="Enable VA Refiner hallucination mitigation at inference time (experimental)")
+
     args = parser.parse_args()
 
     # =========================================================================

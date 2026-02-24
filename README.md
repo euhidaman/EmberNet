@@ -856,6 +856,73 @@ EmberNet/
 
 ---
 
+## Hallucination Mitigation (VA Refiner)
+
+EmberNet ships an optional **Visual Absence Refiner (VA Refiner)** that detects and suppresses hallucinated tokens at inference time — particularly tokens that describe visual attributes (colors, objects, counts, spatial relations) that are not grounded in the image.
+
+### How it works
+
+The VA Refiner operates in three layers:
+
+1. **Neuron-level monitoring** — Forward hooks are placed on `shared_expert.down_proj` in the BitNet MoE layers specified by `va_layer_indices` (default: layers 6–11). The top-K neuron activations are fed to a lightweight 2-layer MLP that predicts a per-step "visual hallucination score" `p_neuron ∈ [0, 1]`.
+
+2. **Logit discrepancy** — A null baseline is computed once at the start of generation by running the decoder with image tokens zeroed out. At each step the L1 distance between the live logit distribution and the null baseline is collapsed to a score `p_logit = 1 − tanh(dist / scale)`. High similarity to the null baseline means the model is generating as if there were no image — a sign of hallucination.
+
+3. **Temporal burst detection** — A sliding window tracks the blended score `p = α·p_neuron + (1−α)·p_logit`. If the window mean exceeds `va_burst_threshold`, a "burst" is declared and a soft log-prob penalty (`va_soft_penalty`) is added to every token in `VISUAL_KEYWORDS` until the window cools.
+
+After generation, `calibrate_answer_prefix()` checks the mean VA score for the response. If it exceeds 0.70, the response is prefixed with *"I cannot see that clearly, but …"*. If it exceeds 0.40, the prefix is *"I might be wrong, but …"*.
+
+### CLI usage
+
+```bash
+# Single inference with VA Refiner
+python inference/infer.py \
+  --model checkpoints/embernet.pt \
+  --image photo.jpg \
+  --prompt "What color is the car?" \
+  --use-va-refiner \
+  --va-threshold 0.70 \
+  --va-burst-threshold 0.70 \
+  --va-soft-penalty 5.0 \
+  --va-alpha 0.5
+```
+
+### Python API
+
+```python
+from inference.infer import EmberVLM
+
+model = EmberVLM(
+    model_path="checkpoints/embernet.pt",
+    use_va_refiner=True,
+    va_threshold=0.70,
+    va_burst_threshold=0.70,
+    va_soft_penalty=5.0,
+    va_alpha=0.5,
+)
+response = model.chat(image="photo.jpg", prompt="What color is the car?")
+print(response)
+```
+
+### Configuration knobs
+
+| Argument | Default | Description |
+|---|---|---|
+| `--use-va-refiner` | off | Enable VA Refiner |
+| `--va-threshold` | 0.70 | VA score threshold per token (non-visual) |
+| `--va-burst-threshold` | 0.70 | Window mean that triggers burst mode |
+| `--va-soft-penalty` | 5.0 | Log-prob penalty during bursts |
+| `--va-alpha` | 0.5 | Blend: 1.0 = pure neuron, 0.0 = pure logit discrepancy |
+
+Fine-grained knobs (`va_layer_indices`, `va_neuron_k`, `va_window_size`, `va_decay_factor`, `va_logit_scale`) can be set programmatically via `VARefinerConfig` in `models/va_refiner.py`.
+
+### Trade-offs
+
+- **Overhead**: one extra decoder forward pass (null baseline) at generation start, plus per-step hook collection. On a single A100 this adds ~5–10% latency per response.
+- **Conservative by design**: the refiner penalises rather than blocks tokens, so factual accuracy is preserved. Use `va_soft_penalty < 3.0` for a lighter touch.
+
+---
+
 ## License
 
 MIT License

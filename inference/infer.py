@@ -76,6 +76,11 @@ class EmberVLM:
         model_path: Optional[str] = None,
         device: Optional[str] = None,
         torch_dtype: Optional[torch.dtype] = None,
+        use_va_refiner: bool = False,
+        va_threshold: float = 0.7,
+        va_burst_threshold: float = 0.7,
+        va_soft_penalty: float = 5.0,
+        va_alpha: float = 0.5,
     ):
         """
         Initialize the EmberVLM inference wrapper.
@@ -84,6 +89,11 @@ class EmberVLM:
             model_path: Path to model checkpoint (None for random init)
             device: Device to run on ("cuda", "cpu", or None for auto)
             torch_dtype: Data type (torch.float16, torch.float32, etc.)
+            use_va_refiner: Enable VA Refiner hallucination mitigation
+            va_threshold: VA score threshold for non-visual tokens
+            va_burst_threshold: Burst detection threshold
+            va_soft_penalty: Log-prob penalty applied during bursts
+            va_alpha: Blend weight between neuron score and logit discrepancy
         """
         # Determine device
         if device is None:
@@ -97,6 +107,23 @@ class EmberVLM:
 
         # Load or create model
         self._load_model(model_path)
+
+        # Attach VA Refiner if requested
+        if use_va_refiner:
+            try:
+                from models.va_refiner import VARefiner, VARefinerConfig
+                va_cfg = VARefinerConfig(
+                    use_va_refiner=True,
+                    va_tau_non_visual=va_threshold,
+                    va_burst_threshold=va_burst_threshold,
+                    va_soft_penalty=va_soft_penalty,
+                    va_alpha=va_alpha,
+                )
+                refiner = VARefiner(self.model, va_cfg, self.model.tokenizer)
+                self.model.set_va_refiner(refiner)
+                print("VA Refiner enabled.")
+            except Exception as _va_err:
+                print(f"[warning] VA Refiner could not be loaded: {_va_err}")
 
         # State
         self._current_image = None
@@ -506,6 +533,16 @@ def main():
                         help="Run demo")
     parser.add_argument("--device", type=str, default=None,
                         help="Device (cuda/cpu)")
+    parser.add_argument("--use-va-refiner", action="store_true",
+                        help="Enable VA Refiner hallucination mitigation")
+    parser.add_argument("--va-threshold", type=float, default=0.7,
+                        help="VA score threshold for non-visual tokens (default: 0.7)")
+    parser.add_argument("--va-burst-threshold", type=float, default=0.7,
+                        help="Burst detection threshold (default: 0.7)")
+    parser.add_argument("--va-soft-penalty", type=float, default=5.0,
+                        help="Log-prob penalty during hallucination bursts (default: 5.0)")
+    parser.add_argument("--va-alpha", type=float, default=0.5,
+                        help="Blend weight: neuron score vs logit discrepancy (default: 0.5)")
 
     args = parser.parse_args()
 
@@ -522,7 +559,15 @@ def main():
                 _cc.start()
             except Exception:
                 _cc = None
-        model = EmberVLM(model_path=args.model, device=args.device)
+        model = EmberVLM(
+            model_path=args.model,
+            device=args.device,
+            use_va_refiner=args.use_va_refiner,
+            va_threshold=args.va_threshold,
+            va_burst_threshold=args.va_burst_threshold,
+            va_soft_penalty=args.va_soft_penalty,
+            va_alpha=args.va_alpha,
+        )
         response = model.chat(image=args.image, prompt=args.prompt)
         print(f"Response: {response}")
         if _cc is not None:

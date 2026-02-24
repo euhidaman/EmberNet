@@ -39,6 +39,13 @@ import torch.nn.functional as F
 from .vision import VisionEncoder, create_vision_encoder
 from .bitnet_moe import BitNetMoEDecoder, BitNetMoEConfig
 
+# VA Refiner (imported lazily in methods to keep default path overhead-free)
+try:
+    from .va_refiner import VARefiner, VARefinerConfig, calibrate_answer_prefix
+    _HAS_VA_REFINER = True
+except ImportError:
+    _HAS_VA_REFINER = False
+
 
 # Special tokens for image embedding
 IMAGE_TOKEN = "<image>"
@@ -142,6 +149,13 @@ class EmberNetVLM(nn.Module):
 
         # Tokenizer (loaded lazily)
         self._tokenizer = None
+
+        # VA Refiner (optional, set via set_va_refiner())
+        self.va_refiner: Optional["VARefiner"] = None
+
+    def set_va_refiner(self, va_refiner: Optional["VARefiner"]) -> None:
+        """Attach or detach a VARefiner.  Pass None to disable."""
+        self.va_refiner = va_refiner
 
     def _initialize_decoder(self):
         """Decoder is already properly initialized by its own _init_weights method.
@@ -496,6 +510,19 @@ class EmberNetVLM(nn.Module):
             input_ids, image_embeds
         )
 
+        # --- VA Refiner setup (inference-only, no-op when disabled) ---
+        _va_active = self.va_refiner is not None and _HAS_VA_REFINER
+        if _va_active:
+            self.va_refiner.reset()
+            self.va_refiner.register_hooks()
+            try:
+                _null_logits = self.va_refiner.compute_null_baseline(
+                    inputs_embeds, attention_mask
+                )
+                self.va_refiner.set_null_baseline(_null_logits)
+            except Exception as _va_err:
+                print(f"[VA Refiner] null baseline failed (non-fatal): {_va_err}")
+
         # Generate tokens autoregressively with KV-cache
         generated_ids = []
         past_key_values = None
@@ -512,6 +539,15 @@ class EmberNetVLM(nn.Module):
 
         for step in range(max_new_tokens):
             next_token_logits = logits[:, -1, :]
+
+            # --- VA Refiner: intervene before sampling ---
+            if _va_active:
+                try:
+                    next_token_logits = self.va_refiner.refine_logits(
+                        next_token_logits, generated_ids, self.tokenizer
+                    )
+                except Exception as _va_err:
+                    pass  # never break generation
 
             # Apply temperature
             if temperature > 0 and do_sample:
@@ -589,7 +625,21 @@ class EmberNetVLM(nn.Module):
         else:
             response = f"[Generated {len(generated_ids)} tokens]"
 
-        return response.strip()
+        response = response.strip()
+
+        # --- VA Refiner teardown + answer calibration ---
+        if _va_active:
+            self.va_refiner.remove_hooks()
+            try:
+                response = calibrate_answer_prefix(
+                    response,
+                    self.va_refiner.get_va_scores(),
+                    self.tokenizer,
+                )
+            except Exception:
+                pass
+
+        return response
 
     def chat(
         self,
