@@ -24,8 +24,10 @@ PREPROCESSING:
 - Domain tags: Prepended to prompts for router learning
 """
 
+import io
 import json
 import random
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
@@ -932,42 +934,82 @@ class EmberNetDataset(Dataset):
         return input_ids, attention_mask, labels
 
     def _load_image(self, sample: Dict[str, Any]) -> torch.Tensor:
-        """Load and preprocess image."""
-        if "image" in sample and sample["image"] is not None:
-            if isinstance(sample["image"], torch.Tensor):
-                return sample["image"]
-            elif HAS_PIL and hasattr(sample["image"], "convert"):
-                return self.image_processor(sample["image"])
-            elif isinstance(sample["image"], (str, Path)):
-                path = Path(sample["image"])
-                if path.exists() and HAS_PIL:
-                    image = Image.open(path)
-                    return self.image_processor(image)
-                base_dir = sample.get("_base_dir")
-                if base_dir:
-                    image = self._load_image_from_zip(Path(base_dir), path)
-                    if image is not None:
-                        return self.image_processor(image)
+        """Load and preprocess image from any supported source format."""
+        base_dir = sample.get("_base_dir")
+        for key in ("image", "image_path"):
+            val = sample.get(key)
+            if val is None:
+                continue
+            result = self._resolve_image(val, base_dir)
+            if result is not None:
+                return result
 
-        if "image_path" in sample and sample["image_path"]:
-            path = Path(sample["image_path"])
-            if path.exists() and HAS_PIL:
-                image = Image.open(path)
-                return self.image_processor(image)
-            base_dir = sample.get("_base_dir")
-            if base_dir:
-                image = self._load_image_from_zip(Path(base_dir), path)
-                if image is not None:
-                    return self.image_processor(image)
-
-        # Return random tensor as placeholder
-        import warnings
+        img_val = sample.get("image")
         warnings.warn(
             f"Image not loadable for sample in domain '{self.domain}'; "
+            f"type={type(img_val).__name__}, repr={repr(img_val)[:100]}; "
             f"using random noise tensor. This degrades training quality.",
             stacklevel=2,
         )
         return torch.randn(3, self.config.image_size, self.config.image_size)
+
+    def _resolve_image(self, val: Any, base_dir: Optional[str]) -> Optional[torch.Tensor]:
+        """Try to turn *val* into a preprocessed image tensor."""
+        if val is None:
+            return None
+        if isinstance(val, torch.Tensor):
+            return val
+        if HAS_PIL and hasattr(val, "convert"):
+            return self.image_processor(val)
+        if isinstance(val, (bytes, bytearray)) and HAS_PIL:
+            try:
+                return self.image_processor(Image.open(io.BytesIO(val)))
+            except Exception:
+                pass
+        if isinstance(val, dict):
+            img_bytes = val.get("bytes")
+            if img_bytes is not None and HAS_PIL:
+                try:
+                    return self.image_processor(Image.open(io.BytesIO(img_bytes)))
+                except Exception:
+                    pass
+            img_path = val.get("path") or val.get("filename")
+            if img_path:
+                return self._resolve_image_path(str(img_path), base_dir)
+            return None
+        if isinstance(val, (str, Path)):
+            return self._resolve_image_path(str(val), base_dir)
+        return None
+
+    def _resolve_image_path(self, img_path: str, base_dir: Optional[str]) -> Optional[torch.Tensor]:
+        """Open an image from a file path, resolving against base_dir if needed."""
+        if not HAS_PIL:
+            return None
+        path = Path(img_path)
+        if path.exists():
+            try:
+                return self.image_processor(Image.open(path))
+            except Exception:
+                pass
+        if base_dir:
+            bd = Path(base_dir)
+            for candidate in (bd / path, bd / path.name, bd / "images" / path.name):
+                if candidate.exists():
+                    try:
+                        return self.image_processor(Image.open(candidate))
+                    except Exception:
+                        pass
+            pil_img = self._load_image_from_zip(bd, path)
+            if pil_img is not None:
+                return self.image_processor(pil_img)
+        if img_path.startswith(("http://", "https://")):
+            try:
+                import urllib.request
+                with urllib.request.urlopen(img_path, timeout=15) as resp:
+                    return self.image_processor(Image.open(io.BytesIO(resp.read())))
+            except Exception:
+                pass
+        return None
 
     def _load_image_from_zip(self, base_dir: Path, rel_path: Path) -> Optional["Image.Image"]:
         if not HAS_PIL:
