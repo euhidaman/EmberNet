@@ -135,8 +135,8 @@ def _run_real_benchmark(model, device: str = "cpu", n_runs: int = 10) -> Dict:
 
     m = model  # always EmberNetVLM
 
-    dummy_ids    = torch.randint(1, 1000, (1, 32), device=device)
-    dummy_embeds = torch.randn(1, 32, 768, device=device, dtype=torch.float16)
+    hidden_dim = getattr(m.decoder, "hidden_size", 768) if hasattr(m, "decoder") else 768
+    dummy_embeds = torch.randn(1, 32, hidden_dim, device=device, dtype=torch.float16)
 
     # 1: Ternary (normal quantized forward)
     def _run_ternary():

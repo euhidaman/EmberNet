@@ -107,29 +107,45 @@ def _extract_answer_level(model, n_samples: int = 40) -> Optional[Dict]:
     try:
         import torch
 
-        # Probe prompts with known absent attributes
+        # Probe prompts with HF dataset sources for real images
+        _HF_SOURCES = [
+            dict(hf_name="lmms-lab/VQAv2", hf_config="default", split="validation", index=10),
+            dict(hf_name="lmms-lab/VQAv2", hf_config="default", split="validation", index=20),
+            dict(hf_name="lmms-lab/VQAv2", hf_config="default", split="validation", index=30),
+            dict(hf_name="lmms-lab/textvqa", hf_config="default", split="validation", index=5),
+        ]
         probes = [
-            ("What color is the car?",   "blue"),        # e.g., car is actually red
-            ("How many people are there?", "three"),     # e.g., two people
-            ("Is the bus on the left?",   "yes"),        # e.g., bus is on right
-            ("What text is on the sign?", "STOP"),       # e.g., no sign present
+            ("What color is the car?",   "blue"),
+            ("How many people are there?", "three"),
+            ("Is the bus on the left?",   "yes"),
+            ("What text is on the sign?", "STOP"),
         ] * (n_samples // 4 + 1)
         probes = probes[:n_samples]
 
         from PIL import Image as PILImage
-        dummy_img = PILImage.new("RGB", (224, 224), color=(180, 180, 200))
+        from visualizations.fig_qualitative_grid import _load_hf_image
+
+        # Pre-load a set of real images (cycle through HF sources)
+        _real_images = []
+        for hf_src in _HF_SOURCES:
+            img, _ = _load_hf_image(**hf_src)
+            _real_images.append(img)
 
         pva_no_va_list: List[float] = []
         pva_va_list:    List[float] = []
         correct_no_va_list: List[bool] = []
         correct_va_list:    List[bool] = []
 
-        for prompt, ref_answer in probes:
+        for pi, (prompt, ref_answer) in enumerate(probes):
+            img = _real_images[pi % len(_real_images)]
+            if img is None:
+                img = PILImage.new("RGB", (224, 224), color=(180, 180, 200))
+
             # Without VA
             if model.va_refiner is not None:
                 model.set_va_refiner(None)
             with torch.no_grad():
-                ans_no_va = model.generate(image=dummy_img, prompt=prompt, max_new_tokens=64)
+                ans_no_va = model.generate(image=img, prompt=prompt, max_new_tokens=64)
             pva_no_va_list.append(0.45 + 0.1 * (len(ans_no_va) % 3))
 
             # With VA
@@ -138,7 +154,7 @@ def _extract_answer_level(model, n_samples: int = 40) -> Optional[Dict]:
             refiner = VARefiner(model, va_cfg, model.tokenizer)
             model.set_va_refiner(refiner)
             with torch.no_grad():
-                ans_va = model.generate(image=dummy_img, prompt=prompt, max_new_tokens=64)
+                ans_va = model.generate(image=img, prompt=prompt, max_new_tokens=64)
             scores = refiner.get_va_scores()
             pva_va_list.append(float(np.mean(scores)) if scores else 0.4)
 

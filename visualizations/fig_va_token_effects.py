@@ -126,16 +126,18 @@ def _synthetic_trajectory(
 
 _SAMPLES = [
     dict(
-        image_desc="[COCO #001: street scene]",
+        image_desc="[VQAv2: street scene]",
+        hf_source=dict(hf_name="lmms-lab/VQAv2", hf_config="default", split="validation", index=10),
         prompt="What color is the car?",
         answer_no_va="The car is red and has two large windows.",
         answer_va="The car is red and has two large windows.",
-        hallucinate_span=(4, 7),   # "two large windows" hallucinated
+        hallucinate_span=(4, 7),
         seed=1,
         label="Hallucination on object count",
     ),
     dict(
         image_desc="[ChartQA: bar chart]",
+        hf_source=dict(hf_name="ahmed-masry/ChartQA", hf_config="default", split="test", index=0),
         prompt="What is the highest value shown?",
         answer_no_va="The highest value is approximately four hundred and twenty.",
         answer_va="The highest value is approximately four hundred and twenty.",
@@ -145,6 +147,7 @@ _SAMPLES = [
     ),
     dict(
         image_desc="[DocVQA: invoice]",
+        hf_source=dict(hf_name="lmms-lab/DocVQA", hf_config="DocVQA", split="test", index=0),
         prompt="What is the total amount?",
         answer_no_va="The total amount is three hundred and fifty dollars.",
         answer_va="I might be wrong, but the total amount is three hundred and fifty dollars.",
@@ -154,6 +157,7 @@ _SAMPLES = [
     ),
     dict(
         image_desc="[VQAv2: outdoor scene]",
+        hf_source=dict(hf_name="lmms-lab/VQAv2", hf_config="default", split="validation", index=25),
         prompt="Is the sky clear or cloudy?",
         answer_no_va="The sky is clear with no clouds visible.",
         answer_va="The sky is clear with no clouds visible.",
@@ -179,15 +183,21 @@ def _extract_real_trajectories(model, samples: List[Dict]) -> List[Dict]:
             raise RuntimeError("VA Refiner not attached to model")
 
         from PIL import Image as PILImage
+        from visualizations.fig_qualitative_grid import _load_hf_image
 
         real_trajectories = []
         for samp in samples:
-            dummy_img = PILImage.new("RGB", (224, 224), color=(200, 200, 200))
+            img = None
+            hf_src = samp.get("hf_source")
+            if hf_src:
+                img, _ = _load_hf_image(**hf_src)
+            if img is None:
+                img = PILImage.new("RGB", (224, 224), color=(200, 200, 200))
 
             model.va_refiner.reset()
             with torch.no_grad():
                 _ = model.generate(
-                    image=dummy_img,
+                    image=img,
                     prompt=samp["prompt"],
                     max_new_tokens=64,
                 )

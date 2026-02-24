@@ -842,6 +842,11 @@ class EmberNetDataset(Dataset):
 
     def _create_dummy_data(self, num_samples: int = 100) -> List[Dict[str, Any]]:
         """Create dummy data for testing."""
+        print(f"\n{'!'*70}")
+        print(f"  WARNING: USING DUMMY DATA for domain='{self.domain}' ({self.split})")
+        print(f"  Real dataset could not be loaded. Training on synthetic Q&A pairs.")
+        print(f"  This will NOT produce a useful model. Fix data loading first.")
+        print(f"{'!'*70}\n")
         samples = []
         for i in range(num_samples):
             samples.append({
@@ -869,7 +874,7 @@ class EmberNetDataset(Dataset):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Tokenize prompt and target."""
         if self.tokenizer is None:
-            # Dummy tokenization
+            print(f"  [WARNING] No tokenizer available — using random token IDs. Model will NOT learn.")
             input_ids = torch.randint(0, 32000, (self.config.max_length,))
             attention_mask = torch.ones(self.config.max_length)
             labels = input_ids.clone()
@@ -956,6 +961,12 @@ class EmberNetDataset(Dataset):
                     return self.image_processor(image)
 
         # Return random tensor as placeholder
+        import warnings
+        warnings.warn(
+            f"Image not loadable for sample in domain '{self.domain}'; "
+            f"using random noise tensor. This degrades training quality.",
+            stacklevel=2,
+        )
         return torch.randn(3, self.config.image_size, self.config.image_size)
 
     def _load_image_from_zip(self, base_dir: Path, rel_path: Path) -> Optional["Image.Image"]:

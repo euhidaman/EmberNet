@@ -378,7 +378,12 @@ class VisionEncoder(nn.Module):
             Visual features [batch, num_tokens, hidden_dim]
         """
         if self.encoder is None:
-            # Dummy output for testing
+            import warnings
+            warnings.warn(
+                "Vision encoder is None — returning random features. "
+                "Load a pretrained SigLIP encoder for real vision.",
+                stacklevel=2,
+            )
             batch_size = pixel_values.shape[0]
             return torch.randn(batch_size, self.num_output_tokens, self.lm_hidden_size,
                              device=pixel_values.device, dtype=pixel_values.dtype)

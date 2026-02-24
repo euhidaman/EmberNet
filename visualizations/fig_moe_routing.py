@@ -119,7 +119,7 @@ def _synthetic_routing_matrix(
 
 def _extract_routing_from_model(model, eval_datasets: Optional[List[str]] = None) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Run a tiny set of synthetic prompts through the model and collect routing.
+    Run representative prompts per dataset through the model and collect routing.
     Falls back to synthetic data on any error.
     """
     try:
@@ -132,6 +132,19 @@ def _extract_routing_from_model(model, eval_datasets: Optional[List[str]] = None
         datasets = eval_datasets or _EVAL_DATASETS
         num_experts = len(model.decoder.layers[0].moe.experts)
         num_layers  = len(model.decoder.layers)
+
+        # Representative prompts per dataset for realistic routing measurement
+        _DATASET_PROMPTS = {
+            "TextVQA":   "What text is written on the sign in this image?",
+            "DocVQA":    "What is the total amount shown in this document?",
+            "OCR-VQA":   "What is the title of this book?",
+            "ChartQA":   "What is the highest value shown in this chart?",
+            "MathVista": "Solve the math problem shown in the image.",
+            "VQAv2":     "How many people are visible in this image?",
+            "GQA":       "What is to the left of the table?",
+            "ScienceQA": "Which of the following best explains the diagram?",
+            "A-OKVQA":   "What activity are the people in this image doing?",
+        }
 
         # Hook into router logits for each layer
         router_logits_per_layer: Dict[int, List[torch.Tensor]] = {i: [] for i in range(num_layers)}
@@ -148,13 +161,19 @@ def _extract_routing_from_model(model, eval_datasets: Optional[List[str]] = None
         routing_matrix = np.zeros((len(datasets), num_experts))
         layer_load     = np.zeros((num_layers, num_experts))
 
+        device = next(model.parameters()).device
+
         model.eval()
         with torch.no_grad():
             for di, ds in enumerate(datasets):
-                # Use a simple text-only placeholder prompt
-                dummy_ids = torch.randint(1, 1000, (1, 16), device=next(model.parameters()).device)
+                prompt_text = _DATASET_PROMPTS.get(ds, f"Describe this {ds} image.")
+                if hasattr(model, "tokenizer") and model.tokenizer is not None:
+                    tok_out = model.tokenizer(prompt_text, return_tensors="pt")
+                    input_ids = tok_out["input_ids"].to(device)
+                else:
+                    input_ids = torch.randint(1, 1000, (1, 16), device=device)
                 try:
-                    _ = model.decoder(input_ids=dummy_ids)
+                    _ = model.decoder(input_ids=input_ids)
                 except Exception:
                     pass
 
