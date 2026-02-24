@@ -133,12 +133,15 @@ def _run_real_benchmark(model, device: str = "cpu", n_runs: int = 10) -> Dict:
     import torch
     from models.bitnet_moe import BitLinear, weight_quant, activation_quant
 
+    # Accept either EmberVLM wrapper or raw EmberNetVLM
+    m = getattr(model, 'model', model)
+
     dummy_ids    = torch.randint(1, 1000, (1, 32), device=device)
     dummy_embeds = torch.randn(1, 32, 768, device=device, dtype=torch.float16)
 
     # 1: Ternary (normal quantized forward)
     def _run_ternary():
-        model.decoder(inputs_embeds=dummy_embeds.clone())
+        m.decoder(inputs_embeds=dummy_embeds.clone())
 
     tern_res = _benchmark_model(_run_ternary, n_runs)
 
@@ -148,20 +151,20 @@ def _run_real_benchmark(model, device: str = "cpu", n_runs: int = 10) -> Dict:
     def fp16_forward(self, x):
         return torch.nn.functional.linear(x, self.weight, self.bias)
 
-    for name, m in model.named_modules():
-        if isinstance(m, BitLinear):
-            original_forwards[name] = m.forward
-            m.forward = fp16_forward.__get__(m, type(m))
+    for name, mod in m.named_modules():
+        if isinstance(mod, BitLinear):
+            original_forwards[name] = mod.forward
+            mod.forward = fp16_forward.__get__(mod, type(mod))
 
     def _run_fp16():
-        model.decoder(inputs_embeds=dummy_embeds.clone())
+        m.decoder(inputs_embeds=dummy_embeds.clone())
 
     fp16_res = _benchmark_model(_run_fp16, n_runs)
 
     # Restore original forwards
-    for name, m in model.named_modules():
-        if isinstance(m, BitLinear) and name in original_forwards:
-            m.forward = original_forwards[name]
+    for name, mod in m.named_modules():
+        if isinstance(mod, BitLinear) and name in original_forwards:
+            mod.forward = original_forwards[name]
 
     results = {
         "EmberNet\n(FP16 weights)": {

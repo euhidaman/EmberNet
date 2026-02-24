@@ -1561,7 +1561,10 @@ def main():
         if checkpoint_path and Path(checkpoint_path).exists():
             try:
                 from inference.infer import EmberVLM as _EmberVLM
-                _live_model = _EmberVLM(model_path=checkpoint_path)
+                _wrapper = _EmberVLM(model_path=checkpoint_path)
+                # Pass the raw EmberNetVLM so figure scripts can access
+                # .vision_encoder, .decoder, .projector etc. directly
+                _live_model = getattr(_wrapper, 'model', _wrapper)
                 print(f"  [viz] Model loaded from {checkpoint_path} for paper figures")
             except Exception as _ml_err:
                 print(f"  [viz] Could not load model for paper figures (will use synthetic): {_ml_err}")
