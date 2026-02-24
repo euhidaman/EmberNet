@@ -890,6 +890,13 @@ class Trainer:
         steps_per_epoch = len(train_loader)
         total_steps = steps_per_epoch * self.config.epochs
 
+        # In trial mode auto-lower eval_interval so at least one eval runs per epoch
+        if self.config.max_samples_per_dataset is not None:
+            auto_eval = max(1, steps_per_epoch)
+            if self.config.eval_interval > auto_eval:
+                self.config.eval_interval = auto_eval
+                print(f"  [Trial] eval_interval auto-set to {auto_eval} (one pass per epoch)")
+
         # Set phase1_steps for BitNet optimizer (60% of total training)
         if self.use_bitnet_optimizer and hasattr(self.optimizer, 'phase1_steps'):
             self.optimizer.phase1_steps = int(total_steps * self.config.bitnet_phase1_ratio)
@@ -1090,7 +1097,8 @@ class Trainer:
             # Flush any leftover accumulation steps that didn't hit the boundary
             leftover = epoch_steps % self.config.gradient_accumulation_steps
             if leftover > 0:
-                print(f"  Flushing {leftover} remaining accumulated gradient(s) at epoch end")
+                print(f"  Flushing {leftover} partial accumulated gradient(s) at epoch end"
+                      f" (expected when batches < grad_accum={self.config.gradient_accumulation_steps})")
                 self._optimizer_step()
                 self.global_step += 1
 
@@ -1142,6 +1150,15 @@ class Trainer:
         # Final save
         self._save_checkpoint("final_model.pt")
 
+        # Force one final evaluation so best_loss is always populated
+        if val_loader is not None:
+            final_val_loss = self.evaluate(val_loader)
+            if final_val_loss < float("inf"):
+                print(f"Final Validation Loss: {final_val_loss:.4f}")
+                if final_val_loss < self.best_loss:
+                    self.best_loss = final_val_loss
+                    self._save_checkpoint("best_model.pt", is_best=True)
+
         # Final live plots
         if self.live_plotter is not None:
             try:
@@ -1150,7 +1167,15 @@ class Trainer:
                 print(f"  [viz] plot_final error: {_vz_err}")
 
         total_time = time.time() - start_time
-        best_str = f"{self.best_loss:.4f}" if self.best_loss < float("inf") else "N/A (no validation data or too few steps)"
+        if self.best_loss < float("inf"):
+            best_str = f"{self.best_loss:.4f}"
+        else:
+            # No val eval ran — show final training loss as proxy
+            final_train = self.training_log[-1]["loss"] if self.training_log else None
+            if final_train is not None:
+                best_str = f"N/A (val) | Final train loss: {final_train:.4f}"
+            else:
+                best_str = "N/A (no validation data or too few steps)"
         print(f"\nTraining complete in {total_time/60:.1f} minutes")
         print(f"Best validation loss: {best_str}")
 
@@ -1182,6 +1207,9 @@ class Trainer:
             total_loss += outputs["loss"].item()
             num_batches += 1
 
+        self.model.train()
+        if num_batches == 0:
+            return float("inf")  # No val data available
         return total_loss / num_batches
 
 

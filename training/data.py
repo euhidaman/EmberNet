@@ -204,7 +204,12 @@ class EmberNetDataset(Dataset):
             manifest_path = data_path / "download_manifest.json"
             if manifest_path.exists():
                 return self._load_from_index(manifest_path)
-            return self._load_directory(data_path)
+            samples = self._load_directory(data_path)
+            if not samples:
+                # Empty local dir — try HuggingFace, which itself falls back to dummy data
+                print(f"  [DataLoader] No local data in {data_path}, trying HuggingFace fallback...")
+                samples = self._load_huggingface(str(data_path))
+            return samples
         else:
             # Try loading from HuggingFace
             return self._load_huggingface(str(data_path))
@@ -1143,7 +1148,26 @@ def create_dataloaders(
         else:
             total_mixed = 10000
         train_dataset = MixedDomainDataset(datasets, domains, total_samples=total_mixed)
-        val_dataset = None  # Simplified for stage 2
+
+        # Build a small validation set from validation splits of the same domains
+        val_samples_per_domain = max(5, (max_samples_per_dataset or 100) // 10)
+        val_datasets = {}
+        for domain in domains:
+            try:
+                val_datasets[domain] = EmberNetDataset(
+                    config.data_dir,
+                    config=config,
+                    split="validation",
+                    domain=domain,
+                    max_samples=val_samples_per_domain,
+                )
+            except Exception:
+                pass
+        if val_datasets:
+            val_total = sum(len(d) for d in val_datasets.values())
+            val_dataset = MixedDomainDataset(val_datasets, total_samples=max(1, val_total))
+        else:
+            val_dataset = None
 
     train_loader = DataLoader(
         train_dataset,
