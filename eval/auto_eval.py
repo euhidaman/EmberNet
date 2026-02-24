@@ -184,8 +184,14 @@ def run_auto_eval(
 
         print(f"\n  {len(generated)} benchmark plots saved:")
         for p in generated:
-            print(f"    {p.relative_to(repo_root)}")
-        print(f"  Scores JSON: {json_path.relative_to(repo_root)}")
+            try:
+                print(f"    {p.resolve().relative_to(repo_root)}")
+            except ValueError:
+                print(f"    {p}")
+        try:
+            print(f"  Scores JSON: {json_path.resolve().relative_to(repo_root)}")
+        except ValueError:
+            print(f"  Scores JSON: {json_path}")
 
     except Exception as e:
         _warn(f"Visualization error (non-fatal): {e}")

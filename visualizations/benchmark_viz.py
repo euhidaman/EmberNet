@@ -287,7 +287,7 @@ class BenchmarkVisualizer:
             ax.set_yticks(y)
             ax.set_yticklabels(labels, fontsize=10)
             ax.set_xlabel("Score (%)", fontsize=11)
-            ax.set_xlim(0, max(values) * 1.18 if values else 100)
+            ax.set_xlim(0, max(max(values) * 1.18, 10) if values else 100)
             ax.axvline(sum(values) / len(values) if values else 0,
                        color="black", ls="--", lw=1.2, label="Mean")
             ax.legend(fontsize=9)
@@ -471,7 +471,7 @@ class BenchmarkVisualizer:
                     xticklabels=[DOMAIN_LABELS[d].replace("\n", " ") for d in domains],
                     yticklabels=["Δ"],
                     cmap="RdYlGn", center=0, vmin=-30, vmax=30,
-                    annot=True, fmt="+.1f", fontsize=8,
+                    annot=True, fmt="+.1f", annot_kws={"fontsize": 8},
                     cbar_kws={"label": "pp vs LLaVA"},
                 )
                 ax_heat.set_xticklabels(ax_heat.get_xticklabels(), rotation=35, ha="right", fontsize=7)
