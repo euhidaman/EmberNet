@@ -56,6 +56,8 @@ PLOT_DIRS = {
     "energy_metrics":        PLOTS_ROOT / "efficiency" / "energy_metrics",
     "co2_metrics":           PLOTS_ROOT / "efficiency" / "co2_metrics",
     "efficiency_tradeoffs":  PLOTS_ROOT / "efficiency" / "tradeoffs",
+    # Paper Figures (ECCV/AAAI-grade, 7 figures)
+    "paper_figures":         PLOTS_ROOT / "paper_figures",
     # Errors
     "errors":                PLOTS_ROOT / "errors",
 }
@@ -99,6 +101,7 @@ _PLOT_DIR_SUFFIXES = {
     "energy_metrics":         Path("efficiency/energy_metrics"),
     "co2_metrics":            Path("efficiency/co2_metrics"),
     "efficiency_tradeoffs":   Path("efficiency/tradeoffs"),
+    "paper_figures":          Path("paper_figures"),
     "errors":                 Path("errors"),
 }
 

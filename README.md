@@ -817,7 +817,7 @@ EmberNet VLM (~300M total parameters)
 └── Language Decoder: BitNet MoE (TRAINABLE in Stage 2)
     ├── Layers: 16 transformer blocks
     ├── Hidden size: 768
-    ├── Attention: GQA (12 heads, 6 KV heads)
+    ├── Attention: GQA (12 heads, 6 KV heads) — all projections are BitLinear
     ├── MoE FFN:
     │   ├── 8 Domain Experts (top-2 routing)
     │   │   ├── vision_ocr, vision_diagram
@@ -835,6 +835,60 @@ Model Size on Disk: <500MB
 
 ---
 
+## Quantization Implementation Details
+
+### Which modules are ternary vs. full-precision?
+
+| Module | Precision | Notes |
+|---|---|---|
+| `BitNetAttention` — Q/K/V/O projections | **Ternary (1.58-bit)** | All four projections are `BitLinear` |
+| `BitNetExpert` — gate / up / down projections | **Ternary (1.58-bit)** | All 8 domain experts + shared expert |
+| `VisionProjector` — fc1, fc2 | **Ternary (1.58-bit)** | `BitLinear` MLP in `models/vision.py` |
+| `PixelShuffleCompressor` — proj | **FP16** | Standard `nn.Linear`; small (~600K params) |
+| `AdaptivePooler` — cross-attention | **FP16** | Standard `nn.MultiheadAttention` |
+| `RMSNorm` layers (all) | **FP16** | Learnable scale only; ~negligible params |
+| Token embeddings + LM head (tied) | **FP16** | `nn.Embedding` + tied `nn.Linear` |
+| MoE router (`nn.Linear`) | **FP16** | Small (768 × 8); routing must stay precise |
+| SigLIP vision encoder | **FP16, frozen** | Not counted in 255M trainable params |
+| VA Refiner MLP classifier | **FP32 (small)** | 2-layer MLP, ~12K params; explicitly not ternary |
+
+> **Summary**: ~250M decoder params (+ ~1M projector) are ternary. Non-quantized
+> components (router, layernorms, embeddings, compressor) account for ≈25M FP16 params.
+> The "BitNet-b1.58-style" description is accurate for all learnable weight matrices
+> in the decoder and projector.
+
+### How ternary quantization works at runtime
+
+`BitLinear.forward()` in `models/bitnet_moe.py` applies two Straight-Through Estimator (STE) operations:
+
+```python
+# Activation quantization (per-token, 8-bit symmetric)
+x_quant = x_norm + (activation_quant(x_norm) - x_norm).detach()
+
+# Weight quantization (ternary: sign(W - mean(W)) * mean|W|)
+w_quant = w + (weight_quant(w) - w).detach()
+```
+
+`weight_quant()` maps float weights to `{-scale, 0, +scale}` using the signed mean:
+`u = sign(w - mean(w)) * mean(|w|)`.  The STE means gradients flow through
+as if the quantization were identity — the underlying float weights are
+updated continuously during training and re-quantized at each forward pass.
+
+### On-disk packing (`inference/convert.py`)
+
+After training, `convert_to_ternary()` calls `convert_bitlinear_to_ternary()` on
+every `BitLinear` module.  For each:
+1. `weight_quant(module.weight)` snaps weights to `{-scale, 0, +scale}`.
+2. `pack_ternary_weights()` encodes `{-1, 0, +1}` as `{0b00, 0b01, 0b10}` and
+   packs 4 values per byte (2 bits per weight).
+3. A FP32 scalar `scale = mean(|w|)` is stored alongside.
+4. The resulting `TernaryLinear` module pre-unpacks weights for fast inference.
+
+Non-BitLinear layers (embeddings, layernorms, router, compressor) are quantized
+to INT8 via `torch.quantization.quantize_dynamic` in the same pass.
+
+---
+
 ## Project Structure
 
 ```
@@ -842,6 +896,7 @@ EmberNet/
 ├── models/
 │   ├── bitnet_moe.py      # BitLinear + MoE decoder
 │   ├── vision.py          # SigLIP encoder + compression
+│   ├── va_refiner.py      # VA Refiner hallucination mitigation
 │   └── vlm.py             # Complete VLM
 ├── training/
 │   ├── prepare_data.py    # Dataset download script
@@ -850,6 +905,16 @@ EmberNet/
 ├── inference/
 │   ├── convert.py         # Model optimization
 │   └── infer.py           # User interface
+├── visualizations/
+│   ├── fig_architecture_overview.py  # Fig 1: architecture + params
+│   ├── fig_ternary_stats.py          # Fig 2: ternary weight stats
+│   ├── fig_moe_routing.py            # Fig 3: MoE routing patterns
+│   ├── fig_latency_energy.py         # Fig 4: latency/energy benchmark
+│   ├── fig_va_token_effects.py       # Fig 5: VA token-level dynamics
+│   ├── fig_va_answer_level.py        # Fig 6: VA hallucination metrics
+│   ├── fig_qualitative_grid.py       # Fig 7: qualitative examples
+│   └── ...                           # existing training-viz scripts
+├── generate_all_plots.py  # Master visualization orchestrator
 ├── requirements.txt
 └── README.md
 ```
@@ -920,6 +985,43 @@ Fine-grained knobs (`va_layer_indices`, `va_neuron_k`, `va_window_size`, `va_dec
 
 - **Overhead**: one extra decoder forward pass (null baseline) at generation start, plus per-step hook collection. On a single A100 this adds ~5–10% latency per response.
 - **Conservative by design**: the refiner penalises rather than blocks tokens, so factual accuracy is preserved. Use `va_soft_penalty < 3.0` for a lighter touch.
+
+---
+
+## Visualization Suite
+
+EmberNet ships a publication-grade visualization suite in `visualizations/`.
+Generate all figures or individual ones via `generate_all_plots.py`.
+
+### Quick commands
+
+```bash
+# Generate ALL paper figures (Figs 1–7, synthetic data, no model required)
+python generate_all_plots.py --paper-only
+
+# Generate ALL plots (training-viz + paper figures)
+python generate_all_plots.py --all
+
+# Single paper figure
+python generate_all_plots.py --fig fig_ternary_stats
+
+# With a real checkpoint for data-driven figures
+python generate_all_plots.py --paper-only --model checkpoints/stage2/final_model.pt
+```
+
+### Figure catalogue
+
+| Figure | Script | Description |
+|---|---|---|
+| Fig 1 | `fig_architecture_overview.py` | Pipeline block diagram + parameter/bitwidth breakdown per component |
+| Fig 2 | `fig_ternary_stats.py` | Per-layer ternary weight sparsity heatmaps and {-1,0,+1} composition bars |
+| Fig 3 | `fig_moe_routing.py` | MoE expert routing frequency matrix across vision-language datasets |
+| Fig 4 | `fig_latency_energy.py` | Latency, energy, and throughput: ternary vs FP16 baseline (±std bars) |
+| Fig 5 | `fig_va_token_effects.py` | Per-token p_VA trajectories with burst-mode and penalisation markers |
+| Fig 6 | `fig_va_answer_level.py` | Answer-level hallucination rate with/without VA Refiner, by visual category |
+| Fig 7 | `fig_qualitative_grid.py` | Multi-domain qualitative panel: baseline vs VA-refined answers + p_VA sparklines |
+
+All figures are saved as both `.pdf` (vector, for LaTeX) and `.png` (300 DPI) in `plots/paper_figures/`.
 
 ---
 

@@ -177,12 +177,12 @@ def convert_bitlinear_to_ternary(module: nn.Module) -> nn.Module:
     Returns:
         Module with converted TernaryLinear layers
     """
-    from models.bitnet_moe import BitLinear, ternary_quantize
+    from models.bitnet_moe import BitLinear, weight_quant
 
     for name, child in module.named_children():
         if isinstance(child, BitLinear):
-            # Quantize weights
-            quantized_weight = ternary_quantize(child.weight)
+            # Quantize weights to ternary {-1, 0, +1} using weight_quant
+            quantized_weight = weight_quant(child.weight)
 
             # Pack weights
             packed, scale = pack_ternary_weights(quantized_weight)

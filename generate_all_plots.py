@@ -13,8 +13,20 @@ Actions performed:
 
 Usage:
 ------
-    # Generate all plots with synthetic/placeholder data (no W&B required)
-    python generate_all_plots.py
+    # Generate all plots (training + paper figures) with synthetic data
+    python generate_all_plots.py --all
+
+    # Generate only the 7 ECCV/AAAI paper figures
+    python generate_all_plots.py --all --paper-only
+
+    # Generate a single paper figure by name
+    python generate_all_plots.py --fig fig_architecture_overview
+    python generate_all_plots.py --fig fig_ternary_stats
+    python generate_all_plots.py --fig fig_moe_routing
+    python generate_all_plots.py --fig fig_latency_energy
+    python generate_all_plots.py --fig fig_va_token_effects
+    python generate_all_plots.py --fig fig_va_answer_level
+    python generate_all_plots.py --fig fig_qualitative_grid
 
     # Load data from a specific W&B run
     python generate_all_plots.py --wandb-run EmberNet/<run_id>
@@ -22,18 +34,20 @@ Usage:
     # Load data from local checkpoint directory
     python generate_all_plots.py --checkpoint-dir ./checkpoints/checkpoint_step_5000.pt
 
-    # Generate only one section
+    # Generate only one training-viz section
     python generate_all_plots.py --section expert_analysis
 
-    # Specify W&B project
-    python generate_all_plots.py --wandb-project EmberNet
-
     # Enable W&B upload of generated plots
-    python generate_all_plots.py --upload-to-wandb
+    python generate_all_plots.py --all --upload-to-wandb
 
 Available --section values:
     training_dynamics  expert_analysis  architecture  quantization
     dataset_analysis   performance      stage_comparison  all (default)
+
+Available --fig values (paper figures):
+    fig_architecture_overview  fig_ternary_stats   fig_moe_routing
+    fig_latency_energy         fig_va_token_effects fig_va_answer_level
+    fig_qualitative_grid
 """
 
 import argparse
@@ -62,6 +76,53 @@ from visualizations.stage_comparison    import StageComparisonPlotter
 from visualizations.wandb_utils         import WandBLogger
 
 apply_mpl_style()
+
+
+# ===========================================================================
+# Paper-figure registry
+# ===========================================================================
+
+_PAPER_FIGS = {
+    "fig_architecture_overview": "visualizations.fig_architecture_overview",
+    "fig_ternary_stats":         "visualizations.fig_ternary_stats",
+    "fig_moe_routing":           "visualizations.fig_moe_routing",
+    "fig_latency_energy":        "visualizations.fig_latency_energy",
+    "fig_va_token_effects":      "visualizations.fig_va_token_effects",
+    "fig_va_answer_level":       "visualizations.fig_va_answer_level",
+    "fig_qualitative_grid":      "visualizations.fig_qualitative_grid",
+}
+
+
+def generate_paper_fig(fig_name: str, save_dir=None, model=None):
+    """
+    Import and run the `generate()` function from the named paper-figure module.
+
+    Parameters
+    ----------
+    fig_name : str
+        One of the keys in _PAPER_FIGS (e.g. "fig_ternary_stats").
+    save_dir : Path, optional
+        Override default output directory.
+    model : EmberNetVLM, optional
+        Live model for real-data extraction.
+
+    Returns
+    -------
+    Path or None
+    """
+    from pathlib import Path as _Path
+    import importlib
+
+    if fig_name not in _PAPER_FIGS:
+        print(f"  [WARNING] Unknown paper figure: '{fig_name}'.  "
+              f"Available: {list(_PAPER_FIGS)}")
+        return None
+
+    module = importlib.import_module(_PAPER_FIGS[fig_name])
+    out_dir = _Path(save_dir) if save_dir else _Path("plots/paper_figures")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    return module.generate(save_dir=out_dir, model=model)
 
 
 # ===========================================================================
@@ -399,6 +460,25 @@ def main():
         "--output-dir", type=str, default="plots",
         help="Root output directory (default: plots/).",
     )
+    parser.add_argument(
+        "--all", action="store_true", default=False,
+        help="Generate ALL plots: both training-viz sections AND all 7 paper figures.",
+    )
+    parser.add_argument(
+        "--paper-only", action="store_true", default=False,
+        help="Generate only the 7 ECCV/AAAI paper figures (skips training-viz sections).",
+    )
+    parser.add_argument(
+        "--fig", type=str, default=None,
+        choices=list(_PAPER_FIGS.keys()),
+        metavar="FIG_NAME",
+        help=("Generate a single paper figure by module name.  "
+              "Choices: " + ", ".join(_PAPER_FIGS.keys())),
+    )
+    parser.add_argument(
+        "--model", type=str, default=None,
+        help="Path to an EmberNet checkpoint to use for real-data extraction in paper figures.",
+    )
     args = parser.parse_args()
 
     print("=" * 70)
@@ -443,21 +523,66 @@ def main():
         warnings.append("wandb not installed — W&B upload disabled.")
 
     # ------------------------------------------------------------------
-    # Generate sections
+    # Load optional EmberNet model for real-data paper figures
     # ------------------------------------------------------------------
-    sections_to_run = SECTION_NAMES if args.section == "all" else [args.section]
+    live_model = None
+    if args.model:
+        try:
+            from inference.infer import EmberVLM
+            print(f"\nLoading model for paper figures: {args.model}")
+            live_model = EmberVLM(model_path=args.model)
+        except Exception as e:
+            warnings.append(f"Model load failed ({e}) — paper figures will use synthetic data.")
+            print(f"  [WARNING] {warnings[-1]}")
 
+    # ------------------------------------------------------------------
+    # Handle --fig (single paper figure shortcut)
+    # ------------------------------------------------------------------
+    if args.fig:
+        paper_dir = Path(args.output_dir) / "paper_figures"
+        print(f"\n[paper fig] Generating: {args.fig}")
+        result = generate_paper_fig(args.fig, save_dir=paper_dir, model=live_model)
+        if result and result.exists():
+            print(f"  ✓ Saved → {result}")
+            return 0
+        else:
+            print(f"  ✗ Failed")
+            return 1
+
+    # ------------------------------------------------------------------
+    # Generate training-viz sections (skipped when --paper-only)
+    # ------------------------------------------------------------------
     all_paths: List[Path] = []
     failed:    List[str]  = []
 
-    for section in sections_to_run:
-        try:
-            paths = generate_section(section, logger, context)
-            all_paths.extend([p for p in paths if p and p.exists()])
-        except Exception as e:
-            msg = f"  [ERROR] Section '{section}' failed: {e}\n{traceback.format_exc()}"
-            print(msg)
-            failed.append(f"{section}: {e}")
+    if not args.paper_only:
+        sections_to_run = SECTION_NAMES if args.section == "all" else [args.section]
+        for section in sections_to_run:
+            try:
+                paths = generate_section(section, logger, context)
+                all_paths.extend([p for p in paths if p and p.exists()])
+            except Exception as e:
+                msg = f"  [ERROR] Section '{section}' failed: {e}\n{traceback.format_exc()}"
+                print(msg)
+                failed.append(f"{section}: {e}")
+
+    # ------------------------------------------------------------------
+    # Generate paper figures (when --all or --paper-only)
+    # ------------------------------------------------------------------
+    if args.all or args.paper_only:
+        paper_dir = Path(args.output_dir) / "paper_figures"
+        print("\n[§8] ECCV/AAAI Paper Figures")
+        for fig_name in _PAPER_FIGS:
+            try:
+                result = generate_paper_fig(fig_name, save_dir=paper_dir, model=live_model)
+                if result and result.exists():
+                    all_paths.append(result)
+                    print(f"  ✓ {fig_name}")
+                else:
+                    failed.append(f"{fig_name}: returned None or file missing")
+            except Exception as e:
+                print(f"  [ERROR] {fig_name}: {e}\n{traceback.format_exc()}")
+                failed.append(f"{fig_name}: {e}")
 
     # ------------------------------------------------------------------
     # Upload generated plots to W&B
