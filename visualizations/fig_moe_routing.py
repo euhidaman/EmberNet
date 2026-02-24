@@ -209,7 +209,8 @@ def generate(save_dir: Optional[Path] = None, model=None) -> Path:
     save_dir.mkdir(parents=True, exist_ok=True)
 
     datasets = _EVAL_DATASETS
-    expert_short = [f"E{i}\n{n.replace('_', '_\n')}" for i, n in enumerate(EXPERT_NAMES)]
+    _nl = "\n"
+    expert_short = [f"E{i}{_nl}{n.replace('_', '_' + _nl)}" for i, n in enumerate(EXPERT_NAMES)]
     expert_colors = [EXPERT_COLORS[n] for n in EXPERT_NAMES]
 
     if model is not None:

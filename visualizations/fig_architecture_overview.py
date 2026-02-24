@@ -45,7 +45,7 @@ _ACCENT        = "#2ca02c"   # green  – shared expert / highlight
 _DEFAULT_PARAMS = {
     "SigLIP Encoder\n(FP16, frozen)": dict(params=86_000_000, bits=16, color=_FP16_COLOR),
     "Pixel Shuffle\nCompressor (FP16)": dict(params=600_000,  bits=16, color=_FP16_COLOR),
-    "Ternary\nProjector (2-bit)":       dict(params=1_180_000, bits=1.58, color=_ternary_color := _TERNARY_COLOR),
+    "Ternary\nProjector (2-bit)":       dict(params=1_180_000, bits=1.58, color=_TERNARY_COLOR),
     "BitNet MoE\nDecoder (2-bit)":      dict(params=300_000_000,bits=1.58, color=_TERNARY_COLOR),
     "Embeddings +\nLayer Norms (FP16)": dict(params=25_000_000, bits=16,  color=_FP16_COLOR),
 }

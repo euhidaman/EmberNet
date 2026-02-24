@@ -221,7 +221,9 @@ def generate(save_dir: Optional[Path] = None, model=None) -> Path:
 
     if model is not None:
         try:
-            device = next(model.parameters()).device
+            # EmberVLM wraps the actual nn.Module in .model
+            _inner = getattr(model, 'model', model)
+            device = next(_inner.parameters()).device
             bench_data = _run_real_benchmark(model, device=str(device))
         except Exception as e:
             warnings.warn(f"[fig_latency_energy] Real benchmark failed ({e}), using synthetic data.")

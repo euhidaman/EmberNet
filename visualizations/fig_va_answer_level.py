@@ -126,7 +126,8 @@ def _extract_answer_level(model, n_samples: int = 40) -> Optional[Dict]:
 
         for prompt, ref_answer in probes:
             # Without VA
-            if model.va_refiner is not None:
+            _inner = getattr(model, 'model', model)
+            if _inner.va_refiner is not None:
                 model.model.set_va_refiner(None)
             with torch.no_grad():
                 ans_no_va = model.chat(image=dummy_img, prompt=prompt, reset=True)

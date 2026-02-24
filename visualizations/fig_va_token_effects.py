@@ -175,7 +175,9 @@ def _extract_real_trajectories(model, samples: List[Dict]) -> List[Dict]:
     """
     try:
         import torch
-        if model.va_refiner is None:
+        # EmberVLM wraps the actual EmberNetVLM in .model
+        _inner = getattr(model, 'model', model)
+        if _inner.va_refiner is None:
             raise RuntimeError("VA Refiner not attached to model")
 
         from PIL import Image as PILImage
@@ -185,7 +187,7 @@ def _extract_real_trajectories(model, samples: List[Dict]) -> List[Dict]:
             # Use synthetic image (white 224×224) when no real image available
             dummy_img = PILImage.new("RGB", (224, 224), color=(200, 200, 200))
 
-            model.va_refiner.reset()
+            _inner.va_refiner.reset()
             with torch.no_grad():
                 _ = model.chat(
                     image=dummy_img,
@@ -194,7 +196,7 @@ def _extract_real_trajectories(model, samples: List[Dict]) -> List[Dict]:
                     max_tokens=64,
                 )
 
-            scores = model.va_refiner.get_va_scores()
+            scores = _inner.va_refiner.get_va_scores()
             if scores is None or len(scores) == 0:
                 raise RuntimeError("No VA scores returned")
 
@@ -318,8 +320,9 @@ def generate(save_dir: Optional[Path] = None, model=None) -> Path:
         ax.axhline(y=0.65, color="gray", ls="--", lw=1.0, alpha=0.6, label="threshold=0.65")
 
         ax.set_xticks(x)
-        ax.set_xticklabels(tokens, rotation=35, ha="right", fontsize=7.5,
-                            fontweight=["bold" if v else "normal" for v in is_vis])
+        ax.set_xticklabels(tokens, rotation=35, ha="right", fontsize=7.5)
+        for _tick, _vis in zip(ax.get_xticklabels(), is_vis):
+            _tick.set_fontweight("bold" if _vis else "normal")
         ax.set_ylim(-0.05, 1.10)
         ax.set_ylabel("VA score", fontsize=8.5)
         ax.set_title(
