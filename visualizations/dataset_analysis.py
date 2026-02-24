@@ -101,11 +101,12 @@ class DatasetAnalysisPlotter:
             fig, ax = plt.subplots(figsize=(20, 6))
             domain_palette = {ds: DOMAIN_COLORS[_dataset_domain(ds)] for ds in ALL_DATASETS}
             sns.violinplot(
-                data=df, x="dataset", y="length", ax=ax,
-                palette=domain_palette, cut=0, inner="box", scale="width",
-                order=ALL_DATASETS,
+                data=df, x="dataset", y="length", ax=ax, hue="dataset",
+                palette=domain_palette, cut=0, inner="box", density_norm="width",
+                order=ALL_DATASETS, legend=False,
             )
-            ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right", fontsize=7)
+            ax.set_xticks(range(len(ALL_DATASETS)))
+            ax.set_xticklabels(ALL_DATASETS, rotation=45, ha="right", fontsize=7)
             ax.set_xlabel("Dataset")
             ax.set_ylabel("Sequence Length (tokens)")
             title = "Sequence Length Distribution per Dataset"

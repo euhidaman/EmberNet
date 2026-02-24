@@ -590,7 +590,17 @@ def extract_scores_from_lmms_results(results_dict: dict) -> Dict[str, float]:
     task_results = results_dict.get("results", {})
     scores: Dict[str, float] = {}
 
+    def _coerce(v) -> Optional[float]:
+        """float for numeric, 0.0 for None, None for non-numeric (list/str/etc)."""
+        if isinstance(v, (int, float)):
+            return float(v)
+        if v is None:
+            return 0.0
+        return None
+
     for task_name, metrics in task_results.items():
+        if not isinstance(metrics, dict):
+            continue
         # normalize task name (strip dataset sub-splits like "textvqa_val")
         base = task_name.split(",")[0].lower().replace("-", "_")
 
@@ -599,31 +609,29 @@ def extract_scores_from_lmms_results(results_dict: dict) -> Dict[str, float]:
         # task-specific metric override (checked first)
         if base in _TASK_METRIC_OVERRIDE:
             override_key = _TASK_METRIC_OVERRIDE[base]
-            v = metrics.get(override_key)
-            raw = float(v) if v is not None else 0.0
+            raw = _coerce(metrics.get(override_key))
 
         # special case: MME returns perception + cognition
         elif "mme" in base:
-            perception = metrics.get("mme_perception_score,none") or 0.0
-            cognition  = metrics.get("mme_cognition_score,none")  or 0.0
-            total      = float(perception) + float(cognition)
+            perception = _coerce(metrics.get("mme_perception_score,none")) or 0.0
+            cognition  = _coerce(metrics.get("mme_cognition_score,none"))  or 0.0
+            total      = perception + cognition
             raw = min(total / MME_MAX * 100.0, 100.0)  # 0.0 if total==0
         else:
             for mkey in METRIC_PRIORITY:
                 if mkey in metrics:
-                    v = metrics[mkey]
-                    raw = float(v) if v is not None else 0.0
-                    break
-            # If still None, scan for first numeric key (treat None values as 0)
+                    r = _coerce(metrics[mkey])
+                    if r is not None:  # skip list/string values; try next key
+                        raw = r
+                        break
+            # If still None, scan for first coercible key
             if raw is None:
                 for k, v in metrics.items():
                     if k.endswith("_stderr") or k.endswith(",stderr"):
                         continue
-                    if isinstance(v, (int, float)):
-                        raw = float(v)
-                        break
-                    elif v is None:   # lmms-eval stores None for failed evals
-                        raw = 0.0
+                    r = _coerce(v)
+                    if r is not None:
+                        raw = r
                         break
 
         if raw is not None:

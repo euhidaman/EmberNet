@@ -234,8 +234,8 @@ def _load_scores(results_dir: Path, expected_tasks: List[str]) -> Dict[str, floa
                 files_accepted += 1
                 extracted = extract_scores_from_lmms_results(data)
                 scores.update(extracted)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [auto_eval] _load_scores: error processing {json_file.name}: {e}")
 
     print(f"  [auto_eval] _load_scores: scanned {files_scanned} JSON, "
           f"accepted {files_accepted} with 'results' key → {len(scores)} task scores")

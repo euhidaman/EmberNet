@@ -284,7 +284,9 @@ class TrainingDynamicsPlotter:
             ax.axhline(phase2_lr, color="#ff7f0e", lw=VIZ_CONFIG["lw_dashed"], ls="--", label="Phase 2 target LR")
 
             # Shaded regions
-            ymin, ymax = actual_lr.min() * 0.5, actual_lr.max() * 2
+            _pos_lr = actual_lr[actual_lr > 0]
+            ymin = float(_pos_lr.min()) * 0.5 if len(_pos_lr) else 1e-8
+            ymax = float(actual_lr.max()) * 2 if actual_lr.max() > 0 else 1e-4
             ax.set_ylim(ymin, ymax)
             ax.axvspan(0, warmup_end, alpha=0.07, color="green",  label="Warmup")
             ax.axvspan(warmup_end, phase1_end, alpha=0.07, color="blue",  label="Phase 1")

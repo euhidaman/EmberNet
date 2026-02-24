@@ -410,9 +410,10 @@ class ExpertAnalysisPlotter:
 
             fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
             palette = {EXPERT_LABELS[e]: EXPERT_COLORS[e] for e in EXPERT_NAMES}
-            sns.violinplot(data=df, x="expert", y="usage_pct", ax=ax,
-                           palette=palette, cut=0, inner="box")
-            ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right")
+            sns.violinplot(data=df, x="expert", y="usage_pct", ax=ax, hue="expert",
+                           palette=palette, cut=0, inner="box", legend=False)
+            ax.set_xticks(range(len(EXPERT_NAMES)))
+            ax.set_xticklabels([EXPERT_LABELS[e] for e in EXPERT_NAMES], rotation=30, ha="right")
             ax.set_xlabel("Expert")
             ax.set_ylabel("Token Usage (% of batch)")
             # Ideal uniform line
