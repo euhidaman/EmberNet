@@ -1144,12 +1144,17 @@ class EmberNetDataset(Dataset):
         import zipfile
 
         rel_posix = rel_path.as_posix()
+        fname = rel_path.name
+        _COCO_SUBDIRS = ("train2017", "train2014", "val2014", "val2017", "images")
+        candidates = [rel_posix] + [f"{sub}/{fname}" for sub in _COCO_SUBDIRS]
         for zip_path in base_dir.glob("*.zip"):
             try:
                 with zipfile.ZipFile(zip_path) as zf:
-                    if rel_posix in zf.namelist():
-                        with zf.open(rel_posix) as f:
-                            return Image.open(io.BytesIO(f.read()))
+                    names = set(zf.namelist())
+                    for c in candidates:
+                        if c in names:
+                            with zf.open(c) as f:
+                                return Image.open(io.BytesIO(f.read()))
             except Exception:
                 continue
         return None
