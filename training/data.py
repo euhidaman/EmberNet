@@ -234,11 +234,11 @@ class EmberNetDataset(Dataset):
         for key, info in available.items():
             dataset_stage = str(info.get("stage", ""))
             dataset_domain = info.get("domain", "")
-            download_method = info.get("download_method", "datasets")
+            download_method = info.get("download_method") or info.get("preferred_download") or "datasets"
             # save_path is missing from most index files; derive from data_dir/key
             save_path = info.get("save_path") or str(Path(self.config.data_dir) / key)
-            hf_name = info.get("hf_name", "")
-            hf_config = info.get("config", "")
+            hf_name = info.get("hf_name") or ""
+            hf_config = info.get("config") or ""
 
             # Match condition:
             # - If domain is 'general', we take all stage 1 datasets (for alignment)
