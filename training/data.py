@@ -666,12 +666,25 @@ class EmberNetDataset(Dataset):
                     ds = load_from_disk(str(disk_path))
                     ds = self._select_split(ds)
                     base_dir = disk_path
+
+                    # Validate that the loaded split has useful QA columns.
+                    # GQA's challenge_all_images config only has 'id' + 'image' —
+                    # no question/answer data.  Detect this and fall through to hub.
+                    _cols = ds.column_names if hasattr(ds, "column_names") else []
+                    _qa_cols = {"question", "answer", "answers", "conversations",
+                                "caption", "text", "multiple_choice_answer",
+                                "direct_answers", "fullAnswer", "sentences",
+                                "sentences_raw", "label", "query"}
+                    if _cols and not _qa_cols.intersection(_cols):
+                        print(f"  [DataLoader] {dataset_name} loaded from disk has no QA columns "
+                              f"(cols={_cols}); trying hub with config '{hf_config}'...")
+                        ds = self._load_from_hub(hub_id, hf_config, dataset_name)
+
                 except Exception:
                     # Not a saved-dataset directory; try as a local dataset script/repo
                     print(f"  Not a saved Dataset format; trying local repo load for {dataset_name}...")
                     local_errors = []
                     ds = None
-                    # Try with known config first, then without
                     configs_to_try = [hf_config, "default", ""] if hf_config else ["default", ""]
                     for cfg in configs_to_try:
                         for remote_code in (False, True):
@@ -688,7 +701,6 @@ class EmberNetDataset(Dataset):
                         if ds is not None:
                             break
                     if ds is None:
-                        # Fall through to hub loading with hf_name
                         print(f"  Local load failed for {dataset_name}; trying hub as {hub_id}...")
                         ds = self._load_from_hub(hub_id, hf_config, dataset_name)
                         base_dir = disk_path
@@ -696,6 +708,14 @@ class EmberNetDataset(Dataset):
                 # Dataset not on disk — fetch from HuggingFace hub
                 print(f"Loading {dataset_name} from HuggingFace hub as {hub_id}...")
                 ds = self._load_from_hub(hub_id, hf_config, dataset_name)
+
+            # Check for URL-only datasets (e.g. conceptual_captions) — images must
+            # be fetched from external URLs which is very slow and many URLs are dead.
+            _cols = getattr(ds, "column_names", []) or []
+            if isinstance(_cols, list) and "image_url" in _cols and "image" not in _cols:
+                print(f"  [WARNING] {dataset_name} has only image URLs (no embedded images). "
+                      f"Image loading will be slow and many URLs may be expired. "
+                      f"Consider pre-downloading images or removing this dataset.")
 
             samples = []
             for item in ds:
@@ -782,9 +802,13 @@ class EmberNetDataset(Dataset):
             return None
 
         # Get image - handle different field names
+        # MathVista: 'image' is a string path, 'decoded_image' is the actual Image
+        # NLVR2: 'left_image'/'right_image' instead of 'image'
         image = (
+            item.get("decoded_image") or
             item.get("image") or
             item.get("img") or
+            item.get("left_image") or
             item.get("picture") or
             item.get("image_path")
         )
@@ -800,18 +824,28 @@ class EmberNetDataset(Dataset):
                 image = url
         image = self._normalize_image_value(image, base_dir)
 
-        # ScienceQA format
-        if "question" in item and "choices" in item and "answer" in item:
-            choices = item["choices"]
-            answer_idx = item["answer"]
-            if isinstance(answer_idx, int) and 0 <= answer_idx < len(choices):
-                answer = choices[answer_idx]
+        # Multiple-choice format: ScienceQA, AI2D, A-OKVQA
+        # ScienceQA/A-OKVQA have 'choices', AI2D has 'options'
+        mc_choices = item.get("choices") or item.get("options")
+        if "question" in item and mc_choices:
+            answer_raw = item.get("answer")
+            # A-OKVQA: uses correct_choice_idx (int) to index into choices
+            if answer_raw is None and "correct_choice_idx" in item:
+                answer_raw = item["correct_choice_idx"]
+            if isinstance(answer_raw, (int, float)) or (
+                hasattr(answer_raw, 'item') and hasattr(answer_raw, 'dtype')
+            ):
+                idx = int(answer_raw)
+                if 0 <= idx < len(mc_choices):
+                    answer = mc_choices[idx]
+                else:
+                    answer = str(answer_raw)
             else:
-                answer = str(answer_idx)
+                answer = str(answer_raw) if answer_raw is not None else "Unknown"
 
             question = item["question"]
-            if choices:
-                choices_str = "\n".join([f"{chr(65+i)}. {c}" for i, c in enumerate(choices)])
+            if mc_choices:
+                choices_str = "\n".join([f"{chr(65+i)}. {c}" for i, c in enumerate(mc_choices)])
                 question = f"{question}\n\nChoices:\n{choices_str}"
 
             return {
@@ -909,14 +943,28 @@ class EmberNetDataset(Dataset):
             }, base_dir)
 
         # =====================================================================
-        # STAGE 2: VISION/OCR DATASETS
+        # STAGE 2: VQA DATASETS
         # =====================================================================
 
-        # TextVQA format (answers is a list)
+        # VQAv2 format: has 'multiple_choice_answer' and 'answers' is list of dicts
+        # MUST come before the generic TextVQA handler
+        if "question" in item and "multiple_choice_answer" in item:
+            return {
+                "image": image,
+                "question": item["question"],
+                "answer": str(item["multiple_choice_answer"]),
+            }
+
+        # TextVQA / OK-VQA / DocVQA format (answers is a list of strings)
         if "question" in item and "answers" in item:
             answers = item["answers"]
-            if isinstance(answers, list):
-                answer = answers[0] if answers else ""
+            if isinstance(answers, list) and answers:
+                first = answers[0]
+                # VQAv2 fallback: answers is list of dicts with 'answer' key
+                if isinstance(first, dict):
+                    answer = str(first.get("answer", first))
+                else:
+                    answer = str(first)
             else:
                 answer = str(answers)
             return {
@@ -925,8 +973,8 @@ class EmberNetDataset(Dataset):
                 "answer": answer,
             }
 
-        # DocVQA / InfoVQA format
-        if "question" in item and "answer" in item and "choices" not in item:
+        # DocVQA / generic QA format
+        if "question" in item and "answer" in item and "choices" not in item and "options" not in item:
             answer = item["answer"]
             if isinstance(answer, list):
                 answer = answer[0] if answer else ""
@@ -988,22 +1036,12 @@ class EmberNetDataset(Dataset):
         # STAGE 2: GENERAL VQA DATASETS
         # =====================================================================
 
-        # VQAv2 format
-        if "question" in item and "multiple_choice_answer" in item:
-            return {
-                "image": image,
-                "question": item["question"],
-                "answer": item["multiple_choice_answer"],
-            }
-
         # GQA format - needs to resolve imageId to Visual Genome image path
         if "question" in item and "fullAnswer" in item:
-            # GQA uses imageId which refers to Visual Genome images
             image_id = item.get("imageId") or item.get("image_id")
             resolved_image = image
 
             if image_id and base_dir:
-                # Try to find image in VG_100K folders
                 for vg_folder in ["VG_100K", "VG_100K_2", "images"]:
                     for ext in [".jpg", ".png", ".jpeg"]:
                         img_path = base_dir / "images" / vg_folder / f"{image_id}{ext}"
@@ -1019,7 +1057,7 @@ class EmberNetDataset(Dataset):
                 "answer": item["fullAnswer"],
             }, base_dir)
 
-        # OK-VQA / A-OKVQA format
+        # A-OKVQA direct_answers fallback (if choices handler above didn't match)
         if "question" in item and "direct_answers" in item:
             answers = item["direct_answers"]
             answer = answers[0] if isinstance(answers, list) and answers else str(answers)
@@ -1029,21 +1067,21 @@ class EmberNetDataset(Dataset):
                 "answer": answer,
             }
 
-        # NLVR2 format: dual-image sentence classification (True/False)
-        if "sentence" in item and "label" in item and (
-                "left_image" in item or "right_image" in item):
-            # Use left_image as the primary image (single-image architecture)
+        # NLVR2 format: dual-image visual reasoning (True/False)
+        # Fields: question, answer, left_image, right_image
+        if ("left_image" in item or "right_image" in item):
             raw = item.get("left_image") or item.get("right_image")
             img = self._normalize_image_value(raw, base_dir)
-            label_val = item["label"]
-            if isinstance(label_val, bool):
-                label_str = "True" if label_val else "False"
+            question = item.get("question") or item.get("sentence") or item.get("query") or "Is this statement true or false?"
+            answer_val = item.get("answer") or item.get("label")
+            if isinstance(answer_val, bool):
+                answer_str = "True" if answer_val else "False"
             else:
-                label_str = str(label_val)
+                answer_str = str(answer_val) if answer_val is not None else "Unknown"
             return self._attach_base_dir({
                 "image": img,
-                "question": item["sentence"],
-                "answer": label_str,
+                "question": question,
+                "answer": answer_str,
             }, base_dir)
 
         # =====================================================================
