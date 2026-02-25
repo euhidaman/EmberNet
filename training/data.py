@@ -764,6 +764,25 @@ class EmberNetDataset(Dataset):
             return samples
 
         except Exception as e:
+            # If failure is image-related and dataset exists on disk, try loading
+            # raw annotation files (JSON/parquet) without image decoding.
+            # Parsers like GQA resolve images via imageId so they don't need
+            # the HuggingFace-decoded image column.
+            err_msg = str(e).lower()
+            _is_image_err = ("cannot identify image" in err_msg
+                             or "unidentifiedimageerror" in err_msg
+                             or "cannot open image" in err_msg)
+            if _is_image_err and disk_path and disk_path.exists():
+                print(f"  Image error during HF load for {dataset_name}; "
+                      f"trying raw annotation files...")
+                try:
+                    raw = self._load_snapshot_dataset(disk_path, dataset_name)
+                    if raw:
+                        _DATASET_SAMPLE_CACHE[cache_key] = raw
+                        return raw
+                except Exception:
+                    pass
+
             raise RuntimeError(
                 f"Failed to load dataset '{dataset_name}' (hf_name={hf_name}, config={hf_config}): {e}\n"
                 f"Fix data loading before training. Run training/prepare_data.py to download "
@@ -881,6 +900,11 @@ class EmberNetDataset(Dataset):
             if mc_choices:
                 choices_str = "\n".join([f"{chr(65+i)}. {c}" for i, c in enumerate(mc_choices)])
                 question = f"{question}\n\nChoices:\n{choices_str}"
+
+            # Reject text-only samples (e.g. ScienceQA grammar/language questions
+            # that have no image) — a VLM needs visual input to train properly.
+            if image is None:
+                return None
 
             return {
                 "image": image,
@@ -1275,9 +1299,6 @@ class EmberNetDataset(Dataset):
                 return result
 
         img_val = sample.get("image")
-        # Text-only samples (e.g. ScienceQA without image) — silently return zero tensor
-        if img_val is None and sample.get("image_path") is None:
-            return torch.zeros(3, self.config.image_size, self.config.image_size)
         print(
             f"[IMAGE LOAD FAILURE] domain='{self.domain}' "
             f"type={type(img_val).__name__} repr={repr(img_val)[:120]}\n"
