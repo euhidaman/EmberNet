@@ -574,7 +574,7 @@ class BitNetMoEDecoder(nn.Module):
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
@@ -597,6 +597,8 @@ class BitNetMoEDecoder(nn.Module):
             past_key_values: (optional) KV cache for each layer
             router_logits: (optional) List of router logits from each layer
         """
+        if inputs_embeds is None and input_ids is None:
+            raise ValueError("Either input_ids or inputs_embeds must be provided")
         if inputs_embeds is None:
             hidden_states = self.embed_tokens(input_ids)
         else:

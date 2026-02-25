@@ -27,7 +27,6 @@ PREPROCESSING:
 import io
 import json
 import random
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
@@ -208,7 +207,7 @@ class EmberNetDataset(Dataset):
                 return self._load_from_index(manifest_path)
             samples = self._load_directory(data_path)
             if not samples:
-                # Empty local dir — try HuggingFace, which itself falls back to dummy data
+                # Empty local dir — raise via HuggingFace loader if dataset isn't found there either
                 print(f"  [DataLoader] No local data in {data_path}, trying HuggingFace fallback...")
                 samples = self._load_huggingface(str(data_path))
             return samples
@@ -236,7 +235,8 @@ class EmberNetDataset(Dataset):
             dataset_stage = str(info.get("stage", ""))
             dataset_domain = info.get("domain", "")
             download_method = info.get("download_method", "datasets")
-            save_path = info.get("save_path", "")
+            # save_path is missing from most index files; derive from data_dir/key
+            save_path = info.get("save_path") or str(Path(self.config.data_dir) / key)
 
             # Match condition:
             # - If domain is 'general', we take all stage 1 datasets (for alignment)
@@ -255,121 +255,172 @@ class EmberNetDataset(Dataset):
 
         for key, method, save_path in datasets_to_load:
             if method == "snapshot":
-                # For snapshot datasets, try to load raw files from the snapshot directory
                 print(f"Loading {key} from snapshot directory...")
-                if save_path:
-                    snapshot_dir = Path(save_path)
-                    if snapshot_dir.exists():
-                        # Try to load as directory with images and metadata
-                        snapshot_samples = self._load_snapshot_dataset(snapshot_dir, key)
+                snapshot_dir = Path(save_path)
+                if snapshot_dir.exists():
+                    snapshot_samples = self._load_snapshot_dataset(snapshot_dir, key)
+                    if snapshot_samples:
                         all_samples.extend(snapshot_samples)
                     else:
-                        print(f"Warning: Snapshot path {save_path} not found for {key}")
+                        # Snapshot dir exists but yielded nothing (scripts-only dir, no data)
+                        print(f"  Snapshot empty for {key}; trying HuggingFace hub...")
+                        all_samples.extend(self._load_huggingface(key))
                 else:
-                    print(f"Warning: No save_path in index for snapshot dataset {key}")
+                    print(f"  Snapshot path not found for {key}; trying HuggingFace hub...")
+                    all_samples.extend(self._load_huggingface(key))
             else:
                 # Load via standard HuggingFace datasets library
-                samples = self._load_huggingface(key)
-                all_samples.extend(samples)
+                all_samples.extend(self._load_huggingface(key))
 
         return all_samples
 
     def _load_snapshot_dataset(self, snapshot_dir: Path, dataset_key: str) -> List[Dict[str, Any]]:
-        """
-        Load a dataset from a snapshot directory (raw HuggingFace repo layout).
-        For snapshot datasets, we look for:
-        1. Parquet files with data
-        2. Images in subdirectories
-        3. metadata.json for info
-        """
+        """Load a dataset from a snapshot directory (raw HuggingFace repo layout)."""
         samples = []
 
-        # Try to find parquet files
-        parquet_files = list(snapshot_dir.glob("**/*.parquet"))
+        # ── 1. Parquet files ─────────────────────────────────────────────────
+        parquet_files = sorted(snapshot_dir.glob("**/*.parquet"))
         if parquet_files:
             try:
                 import pandas as pd
-
                 for pq_file in parquet_files:
                     df = pd.read_parquet(pq_file)
-                    # Convert to samples
-                    for idx, row in df.iterrows():
-                        # Try to find image path
+                    for _, row in df.iterrows():
                         image_path = None
-                        for col in ["image", "image_path", "img", "file_name"]:
-                            if col in row and row[col]:
-                                potential_path = snapshot_dir / str(row[col])
-                                if potential_path.exists():
-                                    image_path = str(potential_path)
-                                    break
+                        # imgname is ChartQA's image filename column
+                        for col in ["image", "image_path", "img", "file_name", "imgname"]:
+                            if col not in row.index or not row[col]:
+                                continue
+                            val = str(row[col])
+                            p = snapshot_dir / val
+                            if p.exists():
+                                image_path = str(p); break
+                            # ChartQA: images live in ChartQA Dataset/<split>/png/<name>
+                            if col == "imgname":
+                                stem = Path(val).stem
+                                for sp in ["train", "test", "val"]:
+                                    for ext in [".png", ".jpg", ".jpeg"]:
+                                        p2 = snapshot_dir / "ChartQA Dataset" / sp / "png" / f"{stem}{ext}"
+                                        if p2.exists():
+                                            image_path = str(p2); break
+                                    if image_path: break
+                            if image_path: break
 
-                        # Try to find text/question/answer
-                        text = ""
-                        question = ""
-                        answer = ""
+                        text = question = answer = ""
                         for col in ["caption", "text", "description"]:
-                            if col in row and row[col]:
-                                text = str(row[col])
-                                break
+                            if col in row.index and row[col]:
+                                text = str(row[col]); break
                         for col in ["question", "query"]:
-                            if col in row and row[col]:
+                            if col in row.index and row[col]:
                                 question = str(row[col])
-                        for col in ["answer", "response", "output"]:
-                            if col in row and row[col]:
-                                answer = str(row[col])
+                        # label is ChartQA's answer column
+                        for col in ["answer", "response", "output", "label"]:
+                            if col in row.index and row[col]:
+                                answer = str(row[col]); break
 
                         if image_path:
                             samples.append({
                                 "image_path": image_path,
                                 "question": question or "Describe this image.",
                                 "answer": answer or text or "An image.",
-                                "conversations": [],
                             })
 
                 if samples:
-                    print(f"Loaded {len(samples)} samples from {len(parquet_files)} parquet files in {dataset_key}")
+                    print(f"  Loaded {len(samples)} samples from {len(parquet_files)} parquet file(s) in {dataset_key}")
                     return samples
             except Exception as e:
-                print(f"Warning: Could not load parquet files from {snapshot_dir}: {e}")
+                print(f"  Warning: parquet load failed for {dataset_key}: {e}")
 
-        # Fallback: treat as image directory
-        print(f"No parquet files found, treating {dataset_key} as image directory")
+        # ── 2. JSON data files ───────────────────────────────────────────────
+        _SKIP = {"metadata.json", "dataset_info.json", "dataset_dict.json",
+                 "state.json", "download_manifest.json", "dataset_index.json"}
+        for jf in sorted(snapshot_dir.glob("**/*.json")):
+            if jf.name in _SKIP:
+                continue
+            try:
+                with open(jf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, list) or not data:
+                    continue
+                jf_dir = jf.parent
+                batch = []
+                for item in data:
+                    s = self._parse_dataset_item(item, dataset_key, jf_dir)
+                    if s:
+                        s.setdefault("_base_dir", str(jf_dir))
+                        batch.append(s)
+                if batch:
+                    print(f"  Loaded {len(batch)} samples from {jf.relative_to(snapshot_dir)} in {dataset_key}")
+                    samples.extend(batch)
+            except Exception as e:
+                print(f"  Warning: could not load {jf.name} in {dataset_key}: {e}")
+
+        if samples:
+            return samples
+
+        # ── 3. Fallback: loose image directory ───────────────────────────────
+        print(f"  No structured data in {dataset_key}; scanning for images...")
         return self._load_directory(snapshot_dir)
+
+    # Splits that are used by lmms-eval as evaluation benchmarks.
+    # We must NEVER use these as training data — doing so inflates scores.
+    _EVAL_SPLITS = frozenset({
+        "test", "testdev", "testmini", "testA", "testB",
+        "val2014", "test2014", "test2015",
+        "challenge",  # GQA challenge split
+    })
 
     def _select_split(self, dataset_obj):
         """Select the best split from DatasetDict/Dataset objects.
 
-        For validation splits we deliberately never fall back to 'test', because
-        those test sets are the ones that lmms-eval uses for external benchmarking.
-        Using them for internal val-loss would create benchmark contamination in the
-        checkpoint-selection signal.  Instead we carve the last 10 % of the train
-        split as a proxy validation set for datasets that have no dedicated val split.
+        For train splits we strictly exclude benchmark test/val sets to prevent
+        contamination of lmms-eval scores.
+        For validation splits we carve 10 % of train or use a named val split,
+        but never use a benchmark test set.
         """
         if hasattr(dataset_obj, "column_names"):
+            # Already a single split — accept only if it looks like a training split
             return dataset_obj
 
         if hasattr(dataset_obj, "keys"):
             splits = list(dataset_obj.keys())
+
             if self.split == "validation":
-                # Prefer an explicit validation split — never use test.
                 for preferred in ["validation", "val"]:
                     if preferred in splits:
                         return dataset_obj[preferred]
-                # No dedicated val split: take last 10 % of train as proxy.
+                # Carve last 10 % of train as proxy
                 if "train" in splits:
                     train_ds = dataset_obj["train"]
                     n = len(train_ds)
                     start = max(0, n - max(1, n // 10))
                     return train_ds.select(range(start, n))
-                # Nothing suitable found — fall through to first available split.
-                if splits:
-                    return dataset_obj[splits[0]]
-            else:
-                for preferred in [self.split, "train", "validation", "val"]:
-                    if preferred in splits:
-                        return dataset_obj[preferred]
-                if splits:
-                    return dataset_obj[splits[0]]
+                # Fall through to first non-benchmark split
+                safe = [s for s in splits if s not in self._EVAL_SPLITS
+                        and not s.startswith(("balanced_test", "test"))]
+                if safe:
+                    return dataset_obj[safe[0]]
+                # Nothing safe for validation — use an empty Dataset rather than a test split
+                print(f"  [DataLoader] No safe validation split in {splits}; validation will be empty for this dataset.")
+                from datasets import Dataset as HFDataset
+                return HFDataset.from_dict({})
+
+            else:  # train
+                if "train" in splits:
+                    return dataset_obj["train"]
+                # Accept any split that is not a known benchmark test set
+                safe = [s for s in splits if s not in self._EVAL_SPLITS
+                        and not s.startswith(("balanced_test", "test"))]
+                if safe:
+                    print(f"  [DataLoader] No 'train' split; using '{safe[0]}' from {splits}")
+                    return dataset_obj[safe[0]]
+                # Only test/benchmark splits exist — cannot use for training
+                raise ValueError(
+                    f"Dataset has only benchmark/test splits {splits} and no 'train' split. "
+                    f"Re-download it with a proper training split using prepare_data.py, "
+                    f"or exclude it from the stage-2 domain configuration. "
+                    f"Using test splits for training would contaminate lmms-eval benchmark scores."
+                )
 
         return dataset_obj
 
@@ -432,74 +483,65 @@ class EmberNetDataset(Dataset):
                 print(f"Loading {dataset_name} from disk: {disk_path}")
                 try:
                     ds = load_from_disk(str(disk_path))
-                    ds = self._select_split(ds)
+                    ds = self._select_split(ds)   # raises ValueError for benchmark-only datasets
                     base_dir = disk_path
+                except ValueError:
+                    raise  # contamination guard — let it propagate
                 except Exception:
-                    # Snapshot/raw repo layout fallback
-                    print(f"Disk path is not saved Dataset format, trying local dataset repo for {dataset_name}...")
-                    ds = None
+                    # Not a saved-dataset directory; try as a local dataset script/repo
+                    print(f"  Not a saved Dataset format; trying local repo load for {dataset_name}...")
                     local_errors = []
-                    try:
-                        ds = load_dataset(str(disk_path), trust_remote_code=False)
-                        ds = self._select_split(ds)
-                        base_dir = disk_path
-                    except Exception as e:
-                        local_errors.append(str(e))
-
-                    if ds is None:
+                    ds = None
+                    for remote_code in (False, True):
                         try:
-                            ds = load_dataset(str(disk_path), trust_remote_code=True)
+                            ds = load_dataset(str(disk_path), trust_remote_code=remote_code)
                             ds = self._select_split(ds)
                             base_dir = disk_path
+                            break
+                        except ValueError:
+                            raise
                         except Exception as e:
-                            local_errors.append(f"remote_code=True: {e}")
-
+                            local_errors.append(str(e))
                     if ds is None:
                         raise RuntimeError(
                             f"Could not load local dataset at {disk_path}: " + "; ".join(local_errors)
                         )
             else:
-                # Try loading from HuggingFace hub
-                print(f"Loading {dataset_name} from HuggingFace...")
+                # Dataset not on disk — fetch from HuggingFace hub
+                print(f"Loading {dataset_name} from HuggingFace hub...")
                 ds = None
                 errors = []
-
-                try:
-                    ds = load_dataset(dataset_name, trust_remote_code=False)
-                    ds = self._select_split(ds)
-                except Exception as e:
-                    errors.append(str(e))
-
-                if ds is None:
+                for remote_code in (False, True):
                     try:
-                        ds = load_dataset(dataset_name, trust_remote_code=True)
+                        ds = load_dataset(dataset_name, trust_remote_code=remote_code)
                         ds = self._select_split(ds)
+                        break
+                    except ValueError:
+                        raise
                     except Exception as e:
-                        errors.append(f"remote_code=True: {e}")
+                        errors.append(f"(trust_remote_code={remote_code}): {e}")
+                        ds = None
 
                 if ds is None:
-                    try:
-                        for config_name in get_dataset_config_names(dataset_name, trust_remote_code=False):
-                            try:
-                                ds = load_dataset(dataset_name, config_name, trust_remote_code=False)
-                                ds = self._select_split(ds)
-                                break
-                            except Exception as cfg_e:
-                                errors.append(f"{config_name}: {cfg_e}")
-                    except Exception as cfg_list_e:
-                        errors.append(f"config listing failed: {cfg_list_e}")
-
-                if ds is None:
-                    try:
-                        for config_name in get_dataset_config_names(dataset_name, trust_remote_code=True):
-                            try:
-                                ds = load_dataset(dataset_name, config_name, trust_remote_code=True)
-                                ds = self._select_split(ds)
-                                break
-                            except Exception as cfg_e:
-                                errors.append(f"remote_code=True/{config_name}: {cfg_e}")
-                    except Exception as cfg_list_e:
-                        errors.append(f"remote_code=True config listing failed: {cfg_list_e}")
+                    # Try explicit configs
+                    for remote_code in (False, True):
+                        try:
+                            for config_name in get_dataset_config_names(dataset_name, trust_remote_code=remote_code):
+                                try:
+                                    _ds = load_dataset(dataset_name, config_name, trust_remote_code=remote_code)
+                                    _ds = self._select_split(_ds)
+                                    ds = _ds
+                                    break
+                                except ValueError:
+                                    raise
+                                except Exception as cfg_e:
+                                    errors.append(f"{config_name}: {cfg_e}")
+                        except ValueError:
+                            raise
+                        except Exception as e:
+                            errors.append(f"config listing: {e}")
+                        if ds is not None:
+                            break
 
                 if ds is None:
                     raise RuntimeError("; ".join(errors) if errors else "dataset load failed")
@@ -518,8 +560,11 @@ class EmberNetDataset(Dataset):
             return samples
 
         except Exception as e:
-            print(f"Could not load dataset {dataset_name}: {e}")
-            return self._create_dummy_data()
+            raise RuntimeError(
+                f"Failed to load dataset '{dataset_name}': {e}\n"
+                f"Fix data loading before training. Run training/prepare_data.py to download "
+                f"missing datasets, or remove '{dataset_name}' from the dataset index."
+            ) from e
 
     def _parse_dataset_item(
         self,
@@ -551,6 +596,16 @@ class EmberNetDataset(Dataset):
             item.get("picture") or
             item.get("image_path")
         )
+        # A dict of {"bytes": None, "path": None} is truthy but unloadable —
+        # downgrade to None so the URL fallback below can trigger.
+        if isinstance(image, dict) and not image.get("bytes") and not image.get("path"):
+            image = None
+        # For datasets like conceptual_captions where the image field may be
+        # None/empty but a URL is provided separately, fall back to the URL.
+        if not image:
+            url = item.get("image_url") or item.get("url") or item.get("image_url_4x")
+            if url and isinstance(url, str) and url.startswith(("http://", "https://")):
+                image = url
         image = self._normalize_image_value(image, base_dir)
 
         # ScienceQA format
@@ -772,6 +827,23 @@ class EmberNetDataset(Dataset):
                 "answer": answer,
             }
 
+        # NLVR2 format: dual-image sentence classification (True/False)
+        if "sentence" in item and "label" in item and (
+                "left_image" in item or "right_image" in item):
+            # Use left_image as the primary image (single-image architecture)
+            raw = item.get("left_image") or item.get("right_image")
+            img = self._normalize_image_value(raw, base_dir)
+            label_val = item["label"]
+            if isinstance(label_val, bool):
+                label_str = "True" if label_val else "False"
+            else:
+                label_str = str(label_val)
+            return self._attach_base_dir({
+                "image": img,
+                "question": item["sentence"],
+                "answer": label_str,
+            }, base_dir)
+
         # =====================================================================
         # FALLBACK: Generic format
         # =====================================================================
@@ -842,22 +914,6 @@ class EmberNetDataset(Dataset):
 
         return image_value
 
-    def _create_dummy_data(self, num_samples: int = 100) -> List[Dict[str, Any]]:
-        """Create dummy data for testing."""
-        print(f"\n{'!'*70}")
-        print(f"  WARNING: USING DUMMY DATA for domain='{self.domain}' ({self.split})")
-        print(f"  Real dataset could not be loaded. Training on synthetic Q&A pairs.")
-        print(f"  This will NOT produce a useful model. Fix data loading first.")
-        print(f"{'!'*70}\n")
-        samples = []
-        for i in range(num_samples):
-            samples.append({
-                "image": None,  # Will create random tensor
-                "question": f"Question {i}: What is in this image?",
-                "answer": f"Answer {i}: This is a test image with various objects.",
-            })
-        return samples
-
     def _format_conversation(
         self,
         question: str,
@@ -876,11 +932,11 @@ class EmberNetDataset(Dataset):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Tokenize prompt and target."""
         if self.tokenizer is None:
-            print(f"  [WARNING] No tokenizer available — using random token IDs. Model will NOT learn.")
-            input_ids = torch.randint(0, 32000, (self.config.max_length,))
-            attention_mask = torch.ones(self.config.max_length)
-            labels = input_ids.clone()
-            return input_ids, attention_mask, labels
+            raise RuntimeError(
+                "No tokenizer is available on this EmberNetDataset instance. "
+                "Pass a valid tokenizer when constructing the dataset. "
+                "Training cannot proceed without a tokenizer."
+            )
 
         # Ensure tokenizer has image token as special token
         IMAGE_TOKEN = "<image>"
@@ -945,13 +1001,14 @@ class EmberNetDataset(Dataset):
                 return result
 
         img_val = sample.get("image")
-        warnings.warn(
-            f"Image not loadable for sample in domain '{self.domain}'; "
-            f"type={type(img_val).__name__}, repr={repr(img_val)[:100]}; "
-            f"using random noise tensor. This degrades training quality.",
-            stacklevel=2,
+        print(
+            f"[IMAGE LOAD FAILURE] domain='{self.domain}' "
+            f"type={type(img_val).__name__} repr={repr(img_val)[:120]}\n"
+            f"  _base_dir={sample.get('_base_dir')} question={str(sample.get('question',''))[:60]}\n"
+            f"  → returning zero tensor (this sample contributes no visual signal)",
+            flush=True,
         )
-        return torch.randn(3, self.config.image_size, self.config.image_size)
+        return torch.zeros(3, self.config.image_size, self.config.image_size)
 
     def _resolve_image(self, val: Any, base_dir: Optional[str]) -> Optional[torch.Tensor]:
         """Try to turn *val* into a preprocessed image tensor."""
@@ -1002,6 +1059,22 @@ class EmberNetDataset(Dataset):
             pil_img = self._load_image_from_zip(bd, path)
             if pil_img is not None:
                 return self.image_processor(pil_img)
+            # Cross-dataset resolution: ShareGPT4V references coco/train2017/* which
+            # actually lives in the llava_instruct_150k or coco_captions sibling dir.
+            if "train2017" in img_path or "train2014" in img_path or "val2014" in img_path:
+                fname = Path(img_path).name
+                folder = "train2017" if "train2017" in img_path else (
+                    "train2014" if "train2014" in img_path else "val2014")
+                data_root = bd.parent
+                for sib in data_root.iterdir():
+                    if not sib.is_dir() or sib == bd:
+                        continue
+                    for c in (sib / folder / fname, sib / fname):
+                        if c.exists():
+                            try:
+                                return self.image_processor(Image.open(c))
+                            except Exception:
+                                pass
         if img_path.startswith(("http://", "https://")):
             try:
                 import urllib.request

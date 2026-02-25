@@ -116,7 +116,7 @@ def _load_hf_image(hf_name, hf_config="default", split="test", index=0):
     try:
         from datasets import load_dataset
         from PIL import Image as PILImage
-        ds = load_dataset(hf_name, hf_config, split=split, streaming=True, trust_remote_code=True)
+        ds = load_dataset(hf_name, hf_config, split=split, streaming=True)
         for i, item in enumerate(ds):
             if i == index:
                 img = item.get("image") or item.get("img") or item.get("picture")
