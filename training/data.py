@@ -237,6 +237,8 @@ class EmberNetDataset(Dataset):
             download_method = info.get("download_method", "datasets")
             # save_path is missing from most index files; derive from data_dir/key
             save_path = info.get("save_path") or str(Path(self.config.data_dir) / key)
+            hf_name = info.get("hf_name", "")
+            hf_config = info.get("config", "")
 
             # Match condition:
             # - If domain is 'general', we take all stage 1 datasets (for alignment)
@@ -249,11 +251,11 @@ class EmberNetDataset(Dataset):
                 should_load = True
 
             if should_load:
-                datasets_to_load.append((key, download_method, save_path))
+                datasets_to_load.append((key, download_method, save_path, hf_name, hf_config))
 
         print(f"Index scan: Found {len(datasets_to_load)} datasets for domain='{self.domain}'")
 
-        for key, method, save_path in datasets_to_load:
+        for key, method, save_path, hf_name, hf_config in datasets_to_load:
             if method == "snapshot":
                 print(f"Loading {key} from snapshot directory...")
                 snapshot_dir = Path(save_path)
@@ -264,13 +266,13 @@ class EmberNetDataset(Dataset):
                     else:
                         # Snapshot dir exists but yielded nothing (scripts-only dir, no data)
                         print(f"  Snapshot empty for {key}; trying HuggingFace hub...")
-                        all_samples.extend(self._load_huggingface(key))
+                        all_samples.extend(self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config))
                 else:
                     print(f"  Snapshot path not found for {key}; trying HuggingFace hub...")
-                    all_samples.extend(self._load_huggingface(key))
+                    all_samples.extend(self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config))
             else:
                 # Load via standard HuggingFace datasets library
-                all_samples.extend(self._load_huggingface(key))
+                all_samples.extend(self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config))
 
         return all_samples
 
@@ -470,12 +472,19 @@ class EmberNetDataset(Dataset):
 
         return samples
 
-    def _load_huggingface(self, dataset_name: str) -> List[Dict[str, Any]]:
-        """Load from HuggingFace datasets (saved to disk or from hub)."""
+    def _load_huggingface(self, dataset_name: str, hf_name: str = "", hf_config: str = "") -> List[Dict[str, Any]]:
+        """Load from HuggingFace datasets (saved to disk or from hub).
+
+        Args:
+            dataset_name: Short key (e.g. 'visual_genome_region').
+            hf_name: Full HF repo name (e.g. 'ranjaykrishna/visual_genome').
+            hf_config: HF config/subset name (e.g. 'region_descriptions').
+        """
         try:
             from datasets import get_dataset_config_names, load_from_disk, load_dataset
 
             base_dir = None
+            hub_id = hf_name or dataset_name
 
             # First try loading from disk (downloaded by prepare_data.py)
             disk_path = Path(self.config.data_dir) / dataset_name
@@ -492,63 +501,36 @@ class EmberNetDataset(Dataset):
                     print(f"  Not a saved Dataset format; trying local repo load for {dataset_name}...")
                     local_errors = []
                     ds = None
-                    for remote_code in (False, True):
-                        try:
-                            ds = load_dataset(str(disk_path), trust_remote_code=remote_code)
-                            ds = self._select_split(ds)
-                            base_dir = disk_path
-                            break
-                        except ValueError:
-                            raise
-                        except Exception as e:
-                            local_errors.append(str(e))
-                    if ds is None:
-                        raise RuntimeError(
-                            f"Could not load local dataset at {disk_path}: " + "; ".join(local_errors)
-                        )
-            else:
-                # Dataset not on disk — fetch from HuggingFace hub
-                print(f"Loading {dataset_name} from HuggingFace hub...")
-                ds = None
-                errors = []
-                for remote_code in (False, True):
-                    try:
-                        ds = load_dataset(dataset_name, trust_remote_code=remote_code)
-                        ds = self._select_split(ds)
-                        break
-                    except ValueError:
-                        raise
-                    except Exception as e:
-                        errors.append(f"(trust_remote_code={remote_code}): {e}")
-                        ds = None
-
-                if ds is None:
-                    # Try explicit configs
-                    for remote_code in (False, True):
-                        try:
-                            for config_name in get_dataset_config_names(dataset_name, trust_remote_code=remote_code):
-                                try:
-                                    _ds = load_dataset(dataset_name, config_name, trust_remote_code=remote_code)
-                                    _ds = self._select_split(_ds)
-                                    ds = _ds
-                                    break
-                                except ValueError:
-                                    raise
-                                except Exception as cfg_e:
-                                    errors.append(f"{config_name}: {cfg_e}")
-                        except ValueError:
-                            raise
-                        except Exception as e:
-                            errors.append(f"config listing: {e}")
+                    # Try with known config first, then without
+                    configs_to_try = [hf_config, "default", ""] if hf_config else ["default", ""]
+                    for cfg in configs_to_try:
+                        for remote_code in (False, True):
+                            try:
+                                if cfg:
+                                    ds = load_dataset(str(disk_path), cfg, trust_remote_code=remote_code)
+                                else:
+                                    ds = load_dataset(str(disk_path), trust_remote_code=remote_code)
+                                ds = self._select_split(ds)
+                                base_dir = disk_path
+                                break
+                            except ValueError:
+                                raise
+                            except Exception as e:
+                                local_errors.append(str(e))
                         if ds is not None:
                             break
-
-                if ds is None:
-                    raise RuntimeError("; ".join(errors) if errors else "dataset load failed")
+                    if ds is None:
+                        # Fall through to hub loading with hf_name
+                        print(f"  Local load failed for {dataset_name}; trying hub as {hub_id}...")
+                        ds = self._load_from_hub(hub_id, hf_config, dataset_name)
+                        base_dir = disk_path
+            else:
+                # Dataset not on disk — fetch from HuggingFace hub
+                print(f"Loading {dataset_name} from HuggingFace hub as {hub_id}...")
+                ds = self._load_from_hub(hub_id, hf_config, dataset_name)
 
             samples = []
             for item in ds:
-                # Handle different dataset formats
                 sample = self._parse_dataset_item(item, dataset_name, base_dir)
                 if isinstance(sample, tuple):
                     sample = sample[0]
@@ -561,10 +543,60 @@ class EmberNetDataset(Dataset):
 
         except Exception as e:
             raise RuntimeError(
-                f"Failed to load dataset '{dataset_name}': {e}\n"
+                f"Failed to load dataset '{dataset_name}' (hf_name={hf_name}, config={hf_config}): {e}\n"
                 f"Fix data loading before training. Run training/prepare_data.py to download "
                 f"missing datasets, or remove '{dataset_name}' from the dataset index."
             ) from e
+
+    def _load_from_hub(self, hub_id: str, hf_config: str, dataset_name: str):
+        """Load a dataset from HuggingFace hub with proper config handling."""
+        from datasets import get_dataset_config_names, load_dataset
+
+        ds = None
+        errors = []
+
+        # Try with known config first
+        if hf_config:
+            for remote_code in (False, True):
+                try:
+                    ds = load_dataset(hub_id, hf_config, trust_remote_code=remote_code)
+                    ds = self._select_split(ds)
+                    return ds
+                except ValueError:
+                    raise
+                except Exception as e:
+                    errors.append(f"({hub_id}, {hf_config}, trust_remote_code={remote_code}): {e}")
+
+        # Try without config
+        for remote_code in (False, True):
+            try:
+                ds = load_dataset(hub_id, trust_remote_code=remote_code)
+                ds = self._select_split(ds)
+                return ds
+            except ValueError:
+                raise
+            except Exception as e:
+                errors.append(f"({hub_id}, trust_remote_code={remote_code}): {e}")
+                ds = None
+
+        # Try enumerating configs
+        for remote_code in (False, True):
+            try:
+                for config_name in get_dataset_config_names(hub_id, trust_remote_code=remote_code):
+                    try:
+                        _ds = load_dataset(hub_id, config_name, trust_remote_code=remote_code)
+                        _ds = self._select_split(_ds)
+                        return _ds
+                    except ValueError:
+                        raise
+                    except Exception as cfg_e:
+                        errors.append(f"{config_name}: {cfg_e}")
+            except ValueError:
+                raise
+            except Exception as e:
+                errors.append(f"config listing: {e}")
+
+        raise RuntimeError("; ".join(errors) if errors else f"dataset load failed for {hub_id}")
 
     def _parse_dataset_item(
         self,
