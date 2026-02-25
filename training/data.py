@@ -1050,7 +1050,11 @@ class EmberNetDataset(Dataset):
                 pass
         if base_dir:
             bd = Path(base_dir)
-            for candidate in (bd / path, bd / path.name, bd / "images" / path.name):
+            _COCO_SUBDIRS = ("train2017", "train2014", "val2014", "val2017", "images")
+            local_candidates = [bd / path, bd / path.name]
+            for sub in _COCO_SUBDIRS:
+                local_candidates.append(bd / sub / path.name)
+            for candidate in local_candidates:
                 if candidate.exists():
                     try:
                         return self.image_processor(Image.open(candidate))
@@ -1059,22 +1063,38 @@ class EmberNetDataset(Dataset):
             pil_img = self._load_image_from_zip(bd, path)
             if pil_img is not None:
                 return self.image_processor(pil_img)
-            # Cross-dataset resolution: ShareGPT4V references coco/train2017/* which
-            # actually lives in the llava_instruct_150k or coco_captions sibling dir.
-            if "train2017" in img_path or "train2014" in img_path or "val2014" in img_path:
-                fname = Path(img_path).name
-                folder = "train2017" if "train2017" in img_path else (
-                    "train2014" if "train2014" in img_path else "val2014")
-                data_root = bd.parent
-                for sib in data_root.iterdir():
-                    if not sib.is_dir() or sib == bd:
-                        continue
-                    for c in (sib / folder / fname, sib / fname):
-                        if c.exists():
-                            try:
-                                return self.image_processor(Image.open(c))
-                            except Exception:
-                                pass
+            # Cross-dataset resolution: look in sibling dataset dirs under data_root.
+            # Covers ShareGPT4V (paths like coco/train2017/fname) and LLaVA (bare fname).
+            fname = path.name
+            # Determine preferred subfolder from the path string if present.
+            if "train2014" in img_path:
+                preferred = ("train2014",)
+            elif "val2014" in img_path:
+                preferred = ("val2014",)
+            elif "val2017" in img_path:
+                preferred = ("val2017",)
+            else:
+                preferred = ("train2017",)
+            search_subdirs = preferred + tuple(s for s in _COCO_SUBDIRS if s not in preferred)
+            data_root = bd.parent
+            try:
+                siblings = [s for s in data_root.iterdir() if s.is_dir() and s != bd]
+            except Exception:
+                siblings = []
+            for sib in siblings:
+                for sub in search_subdirs:
+                    c = sib / sub / fname
+                    if c.exists():
+                        try:
+                            return self.image_processor(Image.open(c))
+                        except Exception:
+                            pass
+                c = sib / fname
+                if c.exists():
+                    try:
+                        return self.image_processor(Image.open(c))
+                    except Exception:
+                        pass
         if img_path.startswith(("http://", "https://")):
             try:
                 import urllib.request
