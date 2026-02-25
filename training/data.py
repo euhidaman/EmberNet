@@ -815,7 +815,17 @@ class EmberNetDataset(Dataset):
                         stream_samples: List[Dict[str, Any]] = []
                         _skip_s = 0
                         _trial_cap_s = (self.max_samples or 0) * 3 if self.max_samples else 0
-                        for item in _sds:
+                        # Use explicit next() so corrupt-image errors during
+                        # row materialisation are caught individually.
+                        _iter = iter(_sds)
+                        while True:
+                            try:
+                                item = next(_iter)
+                            except StopIteration:
+                                break
+                            except Exception:
+                                _skip_s += 1
+                                continue
                             try:
                                 sample = self._parse_dataset_item(
                                     item, dataset_name, disk_path)
