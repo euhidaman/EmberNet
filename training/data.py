@@ -362,9 +362,156 @@ class EmberNetDataset(Dataset):
         if samples:
             return samples
 
-        # ── 3. Fallback: loose image directory ───────────────────────────────
+        # ── 3. Script-based datasets: download annotations, resolve images ───
+        py_scripts = list(snapshot_dir.glob("*.py"))
+        if py_scripts:
+            script_samples = self._load_script_based_dataset(snapshot_dir, dataset_key)
+            if script_samples:
+                return script_samples
+
+        # ── 4. Fallback: loose image directory ───────────────────────────────
         print(f"  No structured data in {dataset_key}; scanning for images...")
         return self._load_directory(snapshot_dir)
+
+    def _load_script_based_dataset(self, snapshot_dir: Path, dataset_key: str) -> List[Dict[str, Any]]:
+        """Handle script-only snapshots by downloading annotations and resolving images from disk."""
+        data_root = snapshot_dir.parent
+        if "visual_genome" in dataset_key:
+            return self._load_vg_annotations(snapshot_dir, data_root)
+        if "coco" in dataset_key.lower() and "caption" in dataset_key.lower():
+            return self._load_coco_caption_annotations(snapshot_dir, data_root)
+        return []
+
+    def _load_vg_annotations(self, snapshot_dir: Path, data_root: Path) -> List[Dict[str, Any]]:
+        """Download VG region_descriptions.json and resolve images from GQA's VG folders."""
+        import urllib.request
+        import zipfile
+
+        cache = snapshot_dir / "region_descriptions.json"
+        if not cache.exists():
+            url = "https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/region_descriptions.json.zip"
+            print(f"  Downloading VG region descriptions (~36 MB)...")
+            try:
+                with urllib.request.urlopen(url, timeout=300) as resp:
+                    with zipfile.ZipFile(io.BytesIO(resp.read())) as zf:
+                        for n in zf.namelist():
+                            if n.endswith(".json"):
+                                cache.write_bytes(zf.read(n))
+                                break
+                print(f"  ✓ Downloaded and cached")
+            except Exception as e:
+                print(f"  Download failed: {e}")
+                return []
+
+        # Find VG image directories in sibling dataset folders
+        vg_dirs: List[Path] = []
+        for sib in data_root.iterdir():
+            if not sib.is_dir():
+                continue
+            for sub in ("images/VG_100K", "images/VG_100K_2", "VG_100K", "VG_100K_2"):
+                d = sib / sub
+                if d.is_dir():
+                    vg_dirs.append(d)
+
+        # Build available image lookup: stem → full path
+        available: Dict[str, str] = {}
+        for d in vg_dirs:
+            for f in d.iterdir():
+                if f.suffix.lower() in (".jpg", ".jpeg", ".png"):
+                    available[f.stem] = str(f)
+        print(f"  Found {len(available)} VG images on disk in {len(vg_dirs)} directories")
+
+        with open(cache, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        samples: List[Dict[str, Any]] = []
+        max_entries = self.max_samples if self.max_samples else len(data)
+        for i, entry in enumerate(data):
+            if i >= max_entries:
+                break
+            img_id = str(entry.get("id", ""))
+            img_path = available.get(img_id)
+            if not img_path:
+                continue
+            for region in entry.get("regions", []):
+                phrase = region.get("phrase", "")
+                if phrase:
+                    samples.append({
+                        "image": img_path,
+                        "question": "Describe this region of the image.",
+                        "answer": phrase,
+                        "_base_dir": str(snapshot_dir),
+                    })
+
+        print(f"  Loaded {len(samples)} VG region descriptions")
+        return samples
+
+    def _load_coco_caption_annotations(self, snapshot_dir: Path, data_root: Path) -> List[Dict[str, Any]]:
+        """Download Karpathy COCO captions and resolve images from sibling COCO dirs."""
+        import urllib.request
+        import zipfile
+
+        cache = snapshot_dir / "dataset_coco.json"
+        if not cache.exists():
+            url = "https://cs.stanford.edu/people/karpathy/deepimagesent/caption_datasets.zip"
+            print(f"  Downloading COCO Karpathy captions (~41 MB)...")
+            try:
+                with urllib.request.urlopen(url, timeout=300) as resp:
+                    with zipfile.ZipFile(io.BytesIO(resp.read())) as zf:
+                        for n in zf.namelist():
+                            if "coco" in n.lower() and n.endswith(".json"):
+                                cache.write_bytes(zf.read(n))
+                                break
+                print(f"  ✓ Downloaded and cached")
+            except Exception as e:
+                print(f"  Download failed: {e}")
+                return []
+
+        # Find COCO image directories in sibling dataset folders
+        coco_dirs: List[Path] = []
+        for sib in data_root.iterdir():
+            if not sib.is_dir():
+                continue
+            for sub in ("train2017", "train2014", "val2014", "val2017", "images"):
+                d = sib / sub
+                if d.is_dir():
+                    coco_dirs.append(d)
+
+        available: Dict[str, str] = {}
+        for d in coco_dirs:
+            for f in d.iterdir():
+                if f.suffix.lower() in (".jpg", ".jpeg", ".png"):
+                    available[f.stem] = str(f)
+        print(f"  Found {len(available)} COCO images on disk in {len(coco_dirs)} directories")
+
+        with open(cache, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        samples: List[Dict[str, Any]] = []
+        for img in data.get("images", []):
+            split = img.get("split", "")
+            if self.split == "train" and split not in ("train", "restval"):
+                continue
+            if self.split == "validation" and split != "val":
+                continue
+            filename = img.get("filename", "")
+            # COCO_train2014_000000391895.jpg → 000000391895
+            stem = filename.replace("COCO_train2014_", "").replace("COCO_val2014_", "").replace(".jpg", "").replace(".png", "")
+            img_path = available.get(stem)
+            if not img_path:
+                continue
+            for sent in img.get("sentences", []):
+                raw = sent.get("raw", "")
+                if raw:
+                    samples.append({
+                        "image": img_path,
+                        "question": "Describe this image.",
+                        "answer": raw,
+                        "_base_dir": str(snapshot_dir),
+                    })
+
+        print(f"  Loaded {len(samples)} COCO captions")
+        return samples
 
     # Splits that are used by lmms-eval as evaluation benchmarks.
     # We must NEVER use these as training data — doing so inflates scores.
