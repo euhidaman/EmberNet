@@ -1560,7 +1560,8 @@ def main():
 
         # ------------------------------------------------------------------
         # Paper figures (Figs 1-7) — pass the real model if available so
-        # figures use actual weight/routing data rather than synthetic data
+        # figures use actual weight/routing data rather than synthetic data.
+        # Load on GPU for speed; free VRAM afterwards.
         # ------------------------------------------------------------------
         print(f"  [viz] Generating 7 paper figures …")
         _paper_dir = Path("plots/paper_figures")
@@ -1568,12 +1569,16 @@ def main():
         if checkpoint_path and Path(checkpoint_path).exists():
             try:
                 import torch as _torch
-                _ckpt = _torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+                _torch.cuda.empty_cache()
+                _viz_device = "cuda" if _torch.cuda.is_available() else "cpu"
+                _ckpt = _torch.load(checkpoint_path, map_location=_viz_device, weights_only=False)
                 _viz_cfg = EmberNetConfig()
-                _live_model = EmberNetVLM(_viz_cfg)
+                _live_model = EmberNetVLM(_viz_cfg).to(_viz_device)
                 _live_model.load_state_dict(_ckpt["model_state_dict"], strict=False)
                 _live_model.eval()
-                print(f"  [viz] EmberNetVLM loaded from {checkpoint_path} for paper figures")
+                del _ckpt
+                _torch.cuda.empty_cache()
+                print(f"  [viz] EmberNetVLM loaded from {checkpoint_path} on {_viz_device} for paper figures")
             except Exception as _ml_err:
                 print(f"  [viz] Could not load model for paper figures (will use synthetic): {_ml_err}")
         for _fig_name in _PAPER_FIGS:
@@ -1587,6 +1592,15 @@ def main():
             except Exception as _fe:
                 _fails.append(f"{_fig_name}: {_fe}")
                 print(f"  [viz] ✗ {_fig_name}: {_fe}")
+
+        # Free the viz model from GPU memory
+        if _live_model is not None:
+            del _live_model
+            try:
+                import torch as _torch2
+                _torch2.cuda.empty_cache()
+            except Exception:
+                pass
 
         _rpt = write_report(_paths, _fails, [], getattr(args, "wandb_project", "EmberNet"))
         print(f"  [viz] {len(_paths)} plots saved  |  report → {_rpt}")

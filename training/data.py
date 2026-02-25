@@ -764,89 +764,84 @@ class EmberNetDataset(Dataset):
             return samples
 
         except Exception as e:
-            # If failure is image-related, retry the hub load with streaming=True.
+            # Retry the hub load with streaming=True as a last resort.
             # Streaming defers all image I/O to iteration time, so a single
             # corrupt file on disk doesn't abort the entire load.  Individual
             # bad images are caught by the per-item try/except below.
-            err_msg = str(e).lower()
-            _is_image_err = ("cannot identify image" in err_msg
-                             or "unidentifiedimageerror" in err_msg
-                             or "cannot open image" in err_msg)
-            if _is_image_err:
-                hub_id_fallback = hf_name or dataset_name
-                print(f"  Image error loading {dataset_name}; retrying hub "
-                      f"'{hub_id_fallback}' with streaming=True ...")
-                try:
-                    from datasets import load_dataset as _ld
-                    _configs = [hf_config, "default", ""] if hf_config else ["default", ""]
-                    _sds = None
-                    for _cfg in _configs:
-                        for _rc in (False, True):
-                            try:
-                                if _cfg:
-                                    _sds = _ld(hub_id_fallback, _cfg,
-                                               streaming=True, trust_remote_code=_rc)
+            hub_id_fallback = hf_name or dataset_name
+            print(f"  Load failed for {dataset_name} ({e}); "
+                  f"retrying hub '{hub_id_fallback}' with streaming=True ...")
+            try:
+                from datasets import load_dataset as _ld
+                _configs = [hf_config, "default", ""] if hf_config else ["default", ""]
+                _sds = None
+                for _cfg in _configs:
+                    for _rc in (False, True):
+                        try:
+                            if _cfg:
+                                _sds = _ld(hub_id_fallback, _cfg,
+                                           streaming=True, trust_remote_code=_rc)
+                            else:
+                                _sds = _ld(hub_id_fallback,
+                                           streaming=True, trust_remote_code=_rc)
+                            # Select split from IterableDatasetDict
+                            # (can't use _select_split — streaming has no len/select)
+                            if hasattr(_sds, "keys"):
+                                _avail = list(_sds.keys())
+                                if self.split == "validation":
+                                    _split = next(
+                                        (s for s in ("validation", "val", "train")
+                                         if s in _avail),
+                                        _avail[0],
+                                    )
                                 else:
-                                    _sds = _ld(hub_id_fallback,
-                                               streaming=True, trust_remote_code=_rc)
-                                # Select split from IterableDatasetDict
-                                # (can't use _select_split — streaming has no len/select)
-                                if hasattr(_sds, "keys"):
-                                    _avail = list(_sds.keys())
-                                    if self.split == "validation":
-                                        _split = next(
-                                            (s for s in ("validation", "val", "train")
-                                             if s in _avail),
-                                            _avail[0],
-                                        )
-                                    else:
-                                        _split = next(
-                                            (s for s in ("train",) if s in _avail),
-                                            _avail[0],
-                                        )
-                                    _sds = _sds[_split]
-                                break
-                            except Exception:
-                                _sds = None
-                        if _sds is not None:
+                                    _split = next(
+                                        (s for s in ("train",) if s in _avail),
+                                        _avail[0],
+                                    )
+                                _sds = _sds[_split]
                             break
-
+                        except Exception:
+                            _sds = None
                     if _sds is not None:
-                        stream_samples: List[Dict[str, Any]] = []
-                        _skip_s = 0
-                        _trial_cap_s = (self.max_samples or 0) * 3 if self.max_samples else 0
-                        # Use explicit next() so corrupt-image errors during
-                        # row materialisation are caught individually.
-                        _iter = iter(_sds)
-                        while True:
-                            try:
-                                item = next(_iter)
-                            except StopIteration:
-                                break
-                            except Exception:
-                                _skip_s += 1
-                                continue
-                            try:
-                                sample = self._parse_dataset_item(
-                                    item, dataset_name, disk_path)
-                                if isinstance(sample, tuple):
-                                    sample = sample[0]
-                                if sample:
-                                    if disk_path and "_base_dir" not in sample:
-                                        sample["_base_dir"] = str(disk_path)
-                                    stream_samples.append(sample)
-                            except Exception:
-                                _skip_s += 1
-                            if _trial_cap_s and len(stream_samples) >= _trial_cap_s:
-                                break
-                        if stream_samples:
-                            print(f"  Streaming fallback: loaded "
-                                  f"{len(stream_samples)} samples from {dataset_name}"
-                                  + (f" ({_skip_s} skipped)" if _skip_s else ""))
-                            _DATASET_SAMPLE_CACHE[cache_key] = stream_samples
-                            return stream_samples
-                except Exception as _s_err:
-                    print(f"  Streaming fallback failed for {dataset_name}: {_s_err}")
+                        break
+
+                if _sds is not None:
+                    stream_samples: List[Dict[str, Any]] = []
+                    _skip_s = 0
+                    _trial_cap_s = (self.max_samples or 0) * 3 if self.max_samples else 0
+                    # Use explicit next() so corrupt-image errors during
+                    # row materialisation are caught individually.
+                    _iter = iter(_sds)
+                    while True:
+                        try:
+                            item = next(_iter)
+                        except StopIteration:
+                            break
+                        except Exception:
+                            _skip_s += 1
+                            continue
+                        try:
+                            sample = self._parse_dataset_item(
+                                item, dataset_name, disk_path)
+                            if isinstance(sample, tuple):
+                                sample = sample[0]
+                            if sample:
+                                if disk_path and "_base_dir" not in sample:
+                                    sample["_base_dir"] = str(disk_path)
+                                stream_samples.append(sample)
+                        except Exception:
+                            _skip_s += 1
+                        if _trial_cap_s and len(stream_samples) >= _trial_cap_s:
+                            break
+                    if stream_samples:
+                        print(f"  Streaming fallback: loaded "
+                              f"{len(stream_samples)} samples from {dataset_name}"
+                              + (f" ({_skip_s} skipped)" if _skip_s else ""))
+                        _DATASET_SAMPLE_CACHE[cache_key] = stream_samples
+                        return stream_samples
+            except Exception as _s_err:
+                print(f"  Streaming fallback failed for {dataset_name}: {_s_err}")
 
             raise RuntimeError(
                 f"Failed to load dataset '{dataset_name}' (hf_name={hf_name}, config={hf_config}): {e}\n"
