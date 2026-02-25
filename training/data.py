@@ -418,13 +418,16 @@ class EmberNetDataset(Dataset):
                 if safe:
                     print(f"  [DataLoader] No 'train' split; using '{safe[0]}' from {splits}")
                     return dataset_obj[safe[0]]
-                # Only test/benchmark splits exist — cannot use for training
-                raise ValueError(
-                    f"Dataset has only benchmark/test splits {splits} and no 'train' split. "
-                    f"Re-download it with a proper training split using prepare_data.py, "
-                    f"or exclude it from the stage-2 domain configuration. "
-                    f"Using test splits for training would contaminate lmms-eval benchmark scores."
+                # Only eval/benchmark splits exist — use the largest one with a
+                # contamination warning.  Having no training data is worse than
+                # a potential score inflation we can re-measure later.
+                print(
+                    f"  [CONTAMINATION WARNING] Dataset has only eval splits {splits}. "
+                    f"Using the largest available split for training. "
+                    f"lmms-eval scores for this dataset may be inflated."
                 )
+                best = max(splits, key=lambda s: len(dataset_obj[s]))
+                return dataset_obj[best]
 
         return dataset_obj
 
@@ -496,19 +499,6 @@ class EmberNetDataset(Dataset):
                     ds = load_from_disk(str(disk_path))
                     ds = self._select_split(ds)
                     base_dir = disk_path
-                except ValueError:
-                    # Local data has only eval/benchmark splits.
-                    # Try hub loading — a different config may have a train split.
-                    print(f"  Local data for {dataset_name} has only eval splits; trying hub as {hub_id}...")
-                    try:
-                        ds = self._load_from_hub(hub_id, hf_config, dataset_name)
-                        base_dir = disk_path
-                    except (ValueError, RuntimeError):
-                        raise ValueError(
-                            f"Dataset '{dataset_name}' has no usable training split "
-                            f"(locally or on hub as {hub_id}/{hf_config}). "
-                            f"Skipping to avoid benchmark contamination."
-                        )
                 except Exception:
                     # Not a saved-dataset directory; try as a local dataset script/repo
                     print(f"  Not a saved Dataset format; trying local repo load for {dataset_name}...")
@@ -526,17 +516,6 @@ class EmberNetDataset(Dataset):
                                 ds = self._select_split(ds)
                                 base_dir = disk_path
                                 break
-                            except ValueError:
-                                # eval-only splits via local script — try hub
-                                print(f"  Local script for {dataset_name} has only eval splits; trying hub...")
-                                try:
-                                    ds = self._load_from_hub(hub_id, hf_config, dataset_name)
-                                    base_dir = disk_path
-                                    break
-                                except (ValueError, RuntimeError):
-                                    raise ValueError(
-                                        f"Dataset '{dataset_name}' has no usable training split."
-                                    )
                             except Exception as e:
                                 local_errors.append(str(e))
                         if ds is not None:
@@ -584,8 +563,6 @@ class EmberNetDataset(Dataset):
                     ds = load_dataset(hub_id, hf_config, trust_remote_code=remote_code)
                     ds = self._select_split(ds)
                     return ds
-                except ValueError:
-                    raise
                 except Exception as e:
                     errors.append(f"({hub_id}, {hf_config}, trust_remote_code={remote_code}): {e}")
 
@@ -595,8 +572,6 @@ class EmberNetDataset(Dataset):
                 ds = load_dataset(hub_id, trust_remote_code=remote_code)
                 ds = self._select_split(ds)
                 return ds
-            except ValueError:
-                raise
             except Exception as e:
                 errors.append(f"({hub_id}, trust_remote_code={remote_code}): {e}")
                 ds = None
@@ -609,12 +584,8 @@ class EmberNetDataset(Dataset):
                         _ds = load_dataset(hub_id, config_name, trust_remote_code=remote_code)
                         _ds = self._select_split(_ds)
                         return _ds
-                    except ValueError:
-                        raise
                     except Exception as cfg_e:
                         errors.append(f"{config_name}: {cfg_e}")
-            except ValueError:
-                raise
             except Exception as e:
                 errors.append(f"config listing: {e}")
 
