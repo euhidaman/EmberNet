@@ -290,12 +290,30 @@ class EmberNetDataset(Dataset):
                 for pq_file in parquet_files:
                     df = pd.read_parquet(pq_file)
                     for _, row in df.iterrows():
+                        image_value = None
                         image_path = None
                         # imgname is ChartQA's image filename column
-                        for col in ["image", "image_path", "img", "file_name", "imgname"]:
-                            if col not in row.index or not row[col]:
+                        for col in ["imgname", "image_path", "file_name", "img", "image"]:
+                            if col not in row.index:
                                 continue
-                            val = str(row[col])
+                            cell = row[col]
+                            if cell is None:
+                                continue
+                            # Raw bytes or dict with bytes → keep as-is for PIL
+                            if isinstance(cell, (bytes, bytearray)):
+                                image_value = cell
+                                break
+                            if isinstance(cell, dict):
+                                if cell.get("bytes"):
+                                    image_value = cell
+                                    break
+                                if cell.get("path"):
+                                    cell = cell["path"]
+                                else:
+                                    continue
+                            if not isinstance(cell, str) or not cell:
+                                continue
+                            val = cell
                             p = snapshot_dir / val
                             if p.exists():
                                 image_path = str(p); break
@@ -312,21 +330,23 @@ class EmberNetDataset(Dataset):
 
                         text = question = answer = ""
                         for col in ["caption", "text", "description"]:
-                            if col in row.index and row[col]:
-                                text = str(row[col]); break
+                            if col in row.index and row[col] is not None and isinstance(row[col], str):
+                                text = row[col]; break
                         for col in ["question", "query"]:
-                            if col in row.index and row[col]:
-                                question = str(row[col])
+                            if col in row.index and row[col] is not None and isinstance(row[col], str):
+                                question = row[col]
                         # label is ChartQA's answer column
                         for col in ["answer", "response", "output", "label"]:
-                            if col in row.index and row[col]:
+                            if col in row.index and row[col] is not None:
                                 answer = str(row[col]); break
 
-                        if image_path:
+                        if image_path or image_value:
                             samples.append({
+                                "image": image_value if image_value else image_path,
                                 "image_path": image_path,
                                 "question": question or "Describe this image.",
                                 "answer": answer or text or "An image.",
+                                "_base_dir": str(snapshot_dir),
                             })
 
                 if samples:
