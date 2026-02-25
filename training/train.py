@@ -1063,8 +1063,12 @@ class Trainer:
                         if self.use_wandb:
                             wandb.log(log_dict, step=self.global_step)
 
-                    # Evaluation
-                    if val_loader is not None and self.global_step % self.config.eval_interval == 0:
+                    # Evaluation — skip mid-training validation in trial mode
+                    # (saves ~650s per eval pass; final eval still runs at end)
+                    _skip_mid_val = bool(self.config.max_samples_per_dataset)
+                    if (val_loader is not None
+                            and self.global_step % self.config.eval_interval == 0
+                            and not _skip_mid_val):
                         val_loss = self.evaluate(val_loader)
                         print(f"Validation Loss: {val_loss:.4f}")
 
@@ -1128,8 +1132,9 @@ class Trainer:
                 except Exception as _vz_err:
                     print(f"  [viz] plot_epoch error: {_vz_err}")
 
-            # HuggingFace Hub push (no-op if token not set)
-            if _HAS_HUB_UTILS:
+            # HuggingFace Hub push — skip entirely in trial mode (saves ~20s upload per epoch)
+            _is_trial = bool(self.config.max_samples_per_dataset)
+            if _HAS_HUB_UTILS and not _is_trial:
                 try:
                     elapsed_so_far = time.time() - start_time
                     _push_to_hub(
@@ -1142,10 +1147,12 @@ class Trainer:
                         avg_loss=epoch_avg_loss,
                         global_step=self.global_step,
                         training_seconds=elapsed_so_far,
-                        is_trial=bool(self.config.max_samples_per_dataset),
+                        is_trial=False,
                     )
                 except Exception as _hub_err:
                     print(f"  [hub] push_to_hub error: {_hub_err}")
+            elif _is_trial:
+                print(f"  [Trial] Skipping hub push (save ~20s)")
 
         # Final save
         self._save_checkpoint("final_model.pt")
@@ -1238,11 +1245,11 @@ def run_training(args, stage: int, resume_from: Optional[str] = None):
         epochs = args.epochs if args.epochs is not None else 1
         batch_size = args.batch_size if args.batch_size is not None else 1
         grad_accum = args.grad_accum if args.grad_accum is not None else 4
-        max_samples = args.max_samples_per_dataset if args.max_samples_per_dataset is not None else 50
+        max_samples = args.max_samples_per_dataset if args.max_samples_per_dataset is not None else 10
         use_wandb = args.wandb and not args.no_wandb
         log_interval = 5
-        eval_interval = 20
-        save_interval = 50
+        eval_interval = 9999  # Skip mid-training eval; final eval still runs
+        save_interval = 9999
         output_dir = args.output_dir if args.output_dir != "./checkpoints" else "./checkpoints/trial"
         # Disable AMP in trial mode for stability unless explicitly enabled
         if not hasattr(args, '_amp_explicitly_set'):

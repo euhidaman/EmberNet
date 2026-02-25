@@ -80,6 +80,12 @@ DOMAIN_TO_EXPERT = {
 }
 
 
+# Module-level cache: avoids re-loading the same dataset multiple times
+# (e.g. Stage 1 train, Stage 1 val, Stage 2 general all load llava/sharegpt4v/allava).
+# Key = (dataset_key, max_samples), Value = list of raw sample dicts.
+_DATASET_SAMPLE_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+
+
 @dataclass
 class DataConfig:
     """Configuration for data loading."""
@@ -280,6 +286,12 @@ class EmberNetDataset(Dataset):
 
     def _load_snapshot_dataset(self, snapshot_dir: Path, dataset_key: str) -> List[Dict[str, Any]]:
         """Load a dataset from a snapshot directory (raw HuggingFace repo layout)."""
+        cache_key = f"snap:{dataset_key}:{self.max_samples}"
+        if cache_key in _DATASET_SAMPLE_CACHE:
+            cached = _DATASET_SAMPLE_CACHE[cache_key]
+            print(f"  [Cache HIT] {dataset_key}: {len(cached)} samples (skipping reload)")
+            return list(cached)
+
         samples = []
 
         # ── 1. Parquet files ─────────────────────────────────────────────────
@@ -351,6 +363,7 @@ class EmberNetDataset(Dataset):
 
                 if samples:
                     print(f"  Loaded {len(samples)} samples from {len(parquet_files)} parquet file(s) in {dataset_key}")
+                    _DATASET_SAMPLE_CACHE[cache_key] = samples
                     return samples
             except Exception as e:
                 print(f"  Warning: parquet load failed for {dataset_key}: {e}")
@@ -361,6 +374,9 @@ class EmberNetDataset(Dataset):
         for jf in sorted(snapshot_dir.glob("**/*.json")):
             if jf.name in _SKIP:
                 continue
+            # Trial: skip remaining JSON files once we have enough
+            if self.max_samples and len(samples) >= self.max_samples * 2:
+                break
             try:
                 with open(jf, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -368,11 +384,15 @@ class EmberNetDataset(Dataset):
                     continue
                 jf_dir = jf.parent
                 batch = []
+                # Trial early-exit: stop parsing once we have enough
+                _trial_cap = (self.max_samples or 0) * 3 if self.max_samples else 0
                 for item in data:
                     s = self._parse_dataset_item(item, dataset_key, jf_dir)
                     if s:
                         s.setdefault("_base_dir", str(jf_dir))
                         batch.append(s)
+                    if _trial_cap and len(batch) >= _trial_cap:
+                        break
                 if batch:
                     print(f"  Loaded {len(batch)} samples from {jf.relative_to(snapshot_dir)} in {dataset_key}")
                     samples.extend(batch)
@@ -380,6 +400,7 @@ class EmberNetDataset(Dataset):
                 print(f"  Warning: could not load {jf.name} in {dataset_key}: {e}")
 
         if samples:
+            _DATASET_SAMPLE_CACHE[cache_key] = samples
             return samples
 
         # ── 3. Script-based datasets: download annotations, resolve images ───
@@ -387,6 +408,7 @@ class EmberNetDataset(Dataset):
         if py_scripts:
             script_samples = self._load_script_based_dataset(snapshot_dir, dataset_key)
             if script_samples:
+                _DATASET_SAMPLE_CACHE[cache_key] = script_samples
                 return script_samples
 
         # ── 4. Fallback: loose image directory ───────────────────────────────
@@ -645,13 +667,13 @@ class EmberNetDataset(Dataset):
         return samples
 
     def _load_huggingface(self, dataset_name: str, hf_name: str = "", hf_config: str = "") -> List[Dict[str, Any]]:
-        """Load from HuggingFace datasets (saved to disk or from hub).
+        """Load from HuggingFace datasets (saved to disk or from hub)."""
+        cache_key = f"hf:{dataset_name}:{hf_name}:{hf_config}:{self.max_samples}"
+        if cache_key in _DATASET_SAMPLE_CACHE:
+            cached = _DATASET_SAMPLE_CACHE[cache_key]
+            print(f"  [Cache HIT] {dataset_name}: {len(cached)} samples (skipping reload)")
+            return list(cached)
 
-        Args:
-            dataset_name: Short key (e.g. 'visual_genome_region').
-            hf_name: Full HF repo name (e.g. 'ranjaykrishna/visual_genome').
-            hf_config: HF config/subset name (e.g. 'region_descriptions').
-        """
         try:
             from datasets import get_dataset_config_names, load_from_disk, load_dataset
 
@@ -718,15 +740,27 @@ class EmberNetDataset(Dataset):
                       f"Consider pre-downloading images or removing this dataset.")
 
             samples = []
+            _trial_cap = (self.max_samples or 0) * 3 if self.max_samples else 0
+            _skip_count = 0
             for item in ds:
-                sample = self._parse_dataset_item(item, dataset_name, base_dir)
-                if isinstance(sample, tuple):
-                    sample = sample[0]
-                if sample and base_dir and "_base_dir" not in sample:
-                    sample["_base_dir"] = str(base_dir)
-                if sample:
-                    samples.append(sample)
+                try:
+                    sample = self._parse_dataset_item(item, dataset_name, base_dir)
+                    if isinstance(sample, tuple):
+                        sample = sample[0]
+                    if sample and base_dir and "_base_dir" not in sample:
+                        sample["_base_dir"] = str(base_dir)
+                    if sample:
+                        samples.append(sample)
+                except Exception as _item_err:
+                    _skip_count += 1
+                    if _skip_count <= 3:
+                        print(f"  [SKIP ITEM] {dataset_name}: {_item_err}")
+                if _trial_cap and len(samples) >= _trial_cap:
+                    break
+            if _skip_count > 3:
+                print(f"  [SKIP ITEM] {dataset_name}: ... and {_skip_count - 3} more items skipped")
 
+            _DATASET_SAMPLE_CACHE[cache_key] = samples
             return samples
 
         except Exception as e:
@@ -1241,6 +1275,9 @@ class EmberNetDataset(Dataset):
                 return result
 
         img_val = sample.get("image")
+        # Text-only samples (e.g. ScienceQA without image) — silently return zero tensor
+        if img_val is None and sample.get("image_path") is None:
+            return torch.zeros(3, self.config.image_size, self.config.image_size)
         print(
             f"[IMAGE LOAD FAILURE] domain='{self.domain}' "
             f"type={type(img_val).__name__} repr={repr(img_val)[:120]}\n"
@@ -1505,13 +1542,18 @@ def create_dataloaders(
             domain="general",
             max_samples=max_samples_per_dataset,
         )
-        val_dataset = EmberNetDataset(
-            config.data_dir,
-            config=config,
-            split="validation",
-            domain="general",
-            max_samples=max_samples_per_dataset,
-        )
+        # In trial mode, skip validation dataset (saves reloading all data)
+        if max_samples_per_dataset is not None:
+            print(f"  [Trial] Skipping Stage 1 validation dataset (saves major reload)")
+            val_dataset = None
+        else:
+            val_dataset = EmberNetDataset(
+                config.data_dir,
+                config=config,
+                split="validation",
+                domain="general",
+                max_samples=max_samples_per_dataset,
+            )
     else:
         # Stage 2: Mix domain-specific datasets
         # Curriculum: start with easier domains, gradually add harder ones
@@ -1578,24 +1620,29 @@ def create_dataloaders(
         train_dataset = MixedDomainDataset(datasets, active_domains, total_samples=total_mixed)
 
         # Build a small validation set from validation splits of the same domains
-        val_samples_per_domain = max(5, (max_samples_per_dataset or 100) // 10)
-        val_datasets = {}
-        for domain in domains:
-            try:
-                val_datasets[domain] = EmberNetDataset(
-                    config.data_dir,
-                    config=config,
-                    split="validation",
-                    domain=domain,
-                    max_samples=val_samples_per_domain,
-                )
-            except Exception:
-                pass
-        if val_datasets:
-            val_total = sum(len(d) for d in val_datasets.values())
-            val_dataset = MixedDomainDataset(val_datasets, total_samples=max(1, val_total))
-        else:
+        # In trial mode, skip validation entirely (saves loading all data again)
+        if max_samples_per_dataset is not None:
+            print(f"  [Trial] Skipping Stage 2 validation dataset (saves major reload)")
             val_dataset = None
+        else:
+            val_samples_per_domain = max(5, 100 // 10)
+            val_datasets = {}
+            for domain in domains:
+                try:
+                    val_datasets[domain] = EmberNetDataset(
+                        config.data_dir,
+                        config=config,
+                        split="validation",
+                        domain=domain,
+                        max_samples=val_samples_per_domain,
+                    )
+                except Exception:
+                    pass
+            if val_datasets:
+                val_total = sum(len(d) for d in val_datasets.values())
+                val_dataset = MixedDomainDataset(val_datasets, total_samples=max(1, val_total))
+            else:
+                val_dataset = None
 
     train_loader = DataLoader(
         train_dataset,

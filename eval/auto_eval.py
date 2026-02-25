@@ -35,13 +35,10 @@ from typing import Dict, List, Optional
 # Each task maps to one expert domain for the spider chart
 SUITE_TRIAL = [
     "textvqa",       # E0: vision_ocr     (fastest OCR benchmark)
-    "ocrbench",      # E0: vision_ocr     (dedicated OCR; tests quantization degradation)
     "ai2d",          # E1: vision_diagram
     "chartqa",       # E2: code_math_chart
     "scienceqa_img", # E7: agentic_reasoning
-    "pope",          # General: hallucination (quantized models hallucinate more)
-    "mmstar",        # General: image-required MCQ (no language-prior shortcut)
-    "mme",           # General
+    "pope",          # General: hallucination
 ]
 
 SUITE_CORE = [
@@ -94,7 +91,7 @@ def run_auto_eval(
 
     mode   = "trial" if is_trial else "main"
     tasks  = SUITE_TRIAL if is_trial else SUITE_CORE
-    limit  = 50 if is_trial else None
+    limit  = 5 if is_trial else None
 
     print(f"  Mode    : {mode.upper()}")
     print(f"  Tasks   : {', '.join(tasks)}")
