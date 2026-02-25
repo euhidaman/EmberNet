@@ -256,23 +256,25 @@ class EmberNetDataset(Dataset):
         print(f"Index scan: Found {len(datasets_to_load)} datasets for domain='{self.domain}'")
 
         for key, method, save_path, hf_name, hf_config in datasets_to_load:
-            if method == "snapshot":
-                print(f"Loading {key} from snapshot directory...")
-                snapshot_dir = Path(save_path)
-                if snapshot_dir.exists():
-                    snapshot_samples = self._load_snapshot_dataset(snapshot_dir, key)
-                    if snapshot_samples:
-                        all_samples.extend(snapshot_samples)
+            try:
+                if method == "snapshot":
+                    print(f"Loading {key} from snapshot directory...")
+                    snapshot_dir = Path(save_path)
+                    if snapshot_dir.exists():
+                        snapshot_samples = self._load_snapshot_dataset(snapshot_dir, key)
+                        if snapshot_samples:
+                            all_samples.extend(snapshot_samples)
+                        else:
+                            print(f"  Snapshot empty for {key}; trying HuggingFace hub...")
+                            all_samples.extend(self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config))
                     else:
-                        # Snapshot dir exists but yielded nothing (scripts-only dir, no data)
-                        print(f"  Snapshot empty for {key}; trying HuggingFace hub...")
+                        print(f"  Snapshot path not found for {key}; trying HuggingFace hub...")
                         all_samples.extend(self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config))
                 else:
-                    print(f"  Snapshot path not found for {key}; trying HuggingFace hub...")
                     all_samples.extend(self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config))
-            else:
-                # Load via standard HuggingFace datasets library
-                all_samples.extend(self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config))
+            except Exception as e:
+                print(f"  [SKIP] {key}: {e}")
+                continue
 
         return all_samples
 
@@ -399,7 +401,7 @@ class EmberNetDataset(Dataset):
                     return train_ds.select(range(start, n))
                 # Fall through to first non-benchmark split
                 safe = [s for s in splits if s not in self._EVAL_SPLITS
-                        and not s.startswith(("balanced_test", "test"))]
+                        and not s.startswith(("balanced_test", "unbalanced_test", "test"))]
                 if safe:
                     return dataset_obj[safe[0]]
                 # Nothing safe for validation — use an empty Dataset rather than a test split
@@ -412,7 +414,7 @@ class EmberNetDataset(Dataset):
                     return dataset_obj["train"]
                 # Accept any split that is not a known benchmark test set
                 safe = [s for s in splits if s not in self._EVAL_SPLITS
-                        and not s.startswith(("balanced_test", "test"))]
+                        and not s.startswith(("balanced_test", "unbalanced_test", "test"))]
                 if safe:
                     print(f"  [DataLoader] No 'train' split; using '{safe[0]}' from {splits}")
                     return dataset_obj[safe[0]]
@@ -492,10 +494,21 @@ class EmberNetDataset(Dataset):
                 print(f"Loading {dataset_name} from disk: {disk_path}")
                 try:
                     ds = load_from_disk(str(disk_path))
-                    ds = self._select_split(ds)   # raises ValueError for benchmark-only datasets
+                    ds = self._select_split(ds)
                     base_dir = disk_path
                 except ValueError:
-                    raise  # contamination guard — let it propagate
+                    # Local data has only eval/benchmark splits.
+                    # Try hub loading — a different config may have a train split.
+                    print(f"  Local data for {dataset_name} has only eval splits; trying hub as {hub_id}...")
+                    try:
+                        ds = self._load_from_hub(hub_id, hf_config, dataset_name)
+                        base_dir = disk_path
+                    except (ValueError, RuntimeError):
+                        raise ValueError(
+                            f"Dataset '{dataset_name}' has no usable training split "
+                            f"(locally or on hub as {hub_id}/{hf_config}). "
+                            f"Skipping to avoid benchmark contamination."
+                        )
                 except Exception:
                     # Not a saved-dataset directory; try as a local dataset script/repo
                     print(f"  Not a saved Dataset format; trying local repo load for {dataset_name}...")
@@ -514,7 +527,16 @@ class EmberNetDataset(Dataset):
                                 base_dir = disk_path
                                 break
                             except ValueError:
-                                raise
+                                # eval-only splits via local script — try hub
+                                print(f"  Local script for {dataset_name} has only eval splits; trying hub...")
+                                try:
+                                    ds = self._load_from_hub(hub_id, hf_config, dataset_name)
+                                    base_dir = disk_path
+                                    break
+                                except (ValueError, RuntimeError):
+                                    raise ValueError(
+                                        f"Dataset '{dataset_name}' has no usable training split."
+                                    )
                             except Exception as e:
                                 local_errors.append(str(e))
                         if ds is not None:
@@ -718,9 +740,19 @@ class EmberNetDataset(Dataset):
                     img_path = image
                     if base_dir and img_value:
                         from pathlib import Path
+                        fname = Path(img_value).name
                         img_path_obj = base_dir / img_value
                         if not img_path_obj.exists():
-                            img_path_obj = base_dir / "allava_laion" / "images" / img_value.split("/")[-1]
+                            for candidate_dir in [
+                                base_dir / "images",
+                                base_dir / "image_chunks",
+                                base_dir.parent / "allava_laion" / "images",
+                                base_dir.parent / "allava_laion" / "image_chunks",
+                            ]:
+                                c = candidate_dir / fname
+                                if c.exists():
+                                    img_path_obj = c
+                                    break
                         if img_path_obj.exists():
                             img_path = str(img_path_obj)
 
@@ -1338,12 +1370,27 @@ def create_dataloaders(
 
         datasets = {}
         for domain in domains:
-            datasets[domain] = EmberNetDataset(
-                config.data_dir,
-                config=config,
-                split="train",
-                domain=domain,
-                max_samples=max_samples_per_dataset,
+            try:
+                ds = EmberNetDataset(
+                    config.data_dir,
+                    config=config,
+                    split="train",
+                    domain=domain,
+                    max_samples=max_samples_per_dataset,
+                )
+                if len(ds) > 0:
+                    datasets[domain] = ds
+                else:
+                    print(f"  [SKIP] Domain '{domain}' yielded 0 samples")
+            except Exception as e:
+                print(f"  [SKIP] Domain '{domain}' failed to load: {e}")
+
+        # Filter domain weights to only include domains that loaded successfully
+        active_domains = {d: w for d, w in domains.items() if d in datasets}
+        if not active_domains:
+            raise RuntimeError(
+                "No stage-2 domains loaded any training data. "
+                "Check dataset downloads with prepare_data.py."
             )
 
         # In trial mode, use only the actual available samples instead of the
@@ -1352,7 +1399,7 @@ def create_dataloaders(
             total_mixed = sum(len(d) for d in datasets.values())
         else:
             total_mixed = 10000
-        train_dataset = MixedDomainDataset(datasets, domains, total_samples=total_mixed)
+        train_dataset = MixedDomainDataset(datasets, active_domains, total_samples=total_mixed)
 
         # Build a small validation set from validation splits of the same domains
         val_samples_per_domain = max(5, (max_samples_per_dataset or 100) // 10)
