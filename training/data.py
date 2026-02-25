@@ -382,11 +382,11 @@ class EmberNetDataset(Dataset):
         For validation splits we carve 10 % of train or use a named val split,
         but never use a benchmark test set.
         """
-        if hasattr(dataset_obj, "column_names"):
-            # Already a single split — accept only if it looks like a training split
-            return dataset_obj
-
-        if hasattr(dataset_obj, "keys"):
+        # Check for DatasetDict FIRST — it also has .column_names (as a dict),
+        # so we must distinguish it before the single-Dataset check.
+        if hasattr(dataset_obj, "keys") and not isinstance(
+            getattr(dataset_obj, "column_names", None), list
+        ):
             splits = list(dataset_obj.keys())
 
             if self.split == "validation":
