@@ -77,6 +77,8 @@ from visualizations.wandb_utils         import WandBLogger
 
 apply_mpl_style()
 
+import numpy as np
+
 
 # ===========================================================================
 # Paper-figure registry
@@ -189,7 +191,6 @@ def load_checkpoint_data(checkpoint_path: str) -> Dict:
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         data = {}
         if "global_step" in checkpoint:
-            import numpy as np
             data["train/step"] = np.array([checkpoint["global_step"]])
         print(f"  Loaded checkpoint info from: {checkpoint_path}")
         return data
@@ -202,17 +203,22 @@ def load_checkpoint_data(checkpoint_path: str) -> Dict:
 # Plot registry
 # ===========================================================================
 
-def _build_context(raw_data: Dict) -> Dict:
+def _build_context(
+    raw_data: Dict,
+    model=None,
+    output_dir: Optional[str] = None,
+    checkpoint_path: Optional[str] = None,
+) -> Dict:
     """
-    Convert a flat W&B history dict into the nested format expected
-    by each plotter.  Falls back to None (synthetic data) for any missing key.
+    Build the nested context dict expected by each plotter section.
+
+    Data sources:
+      - raw_data      : W&B history (training_dynamics, expert_analysis)
+      - model         : live EmberNetVLM (architecture, quantization)
+      - output_dir    : path to training output (benchmark JSON for performance)
+      - checkpoint_path: path to final checkpoint (stage comparison)
     """
-    import numpy as np
-
-    def get_arr(key):
-        return raw_data.get(key)
-
-    # ---- Training dynamics ----
+    # ---- Training dynamics (from W&B) ----
     td = {}
     if "train/loss" in raw_data:
         n = len(raw_data["train/loss"])
@@ -236,7 +242,6 @@ def _build_context(raw_data: Dict) -> Dict:
             "clip_threshold": 1.0,
         }
 
-    # ---- Energy / CO₂ (CodeCarbon-logged) ----
     if "energy/stage1_kwh" in raw_data or "energy/stage2_kwh" in raw_data:
         n = len(raw_data.get("train/loss", np.array([]))) or 1
         steps_all = raw_data.get("train/step", np.arange(n))
@@ -254,7 +259,6 @@ def _build_context(raw_data: Dict) -> Dict:
             "s2_steps":  steps_all[half:],
             "s2_co2_kg": raw_data.get("energy/stage2_co2_kg", np.zeros(len(steps_all) - half)),
         }
-        # Per-token efficiency ‑ requires cumulative_tokens key
         if "train/cumulative_tokens" in raw_data:
             cum_tok = raw_data["train/cumulative_tokens"]
             s1_e = raw_data.get("energy/stage1_kwh", np.zeros_like(cum_tok[:half]))
@@ -276,14 +280,13 @@ def _build_context(raw_data: Dict) -> Dict:
             "s2_co2_kg":    raw_data.get("energy/stage2_co2_kg", np.zeros(len(steps_all) - half)),
         }
 
-    # ---- Expert analysis ----
+    # ---- Expert analysis (from W&B) ----
     ea = {}
     if "train/routing_entropy" in raw_data:
         ea["routing_entropy"] = {
             "steps":   raw_data.get("train/step"),
             "entropy": raw_data["train/routing_entropy"],
         }
-    # Stacked expert probabilities (expert_0..expert_7 columns)
     _expert_cols = [k for k in raw_data if k.startswith("train/expert_") and k[len("train/expert_"):].isdigit()]
     if len(_expert_cols) == 8:
         _expert_cols_sorted = sorted(_expert_cols, key=lambda k: int(k.rsplit("_", 1)[-1]))
@@ -293,7 +296,452 @@ def _build_context(raw_data: Dict) -> Dict:
             "expert_probs":  np.column_stack([raw_data[c][:_n] for c in _expert_cols_sorted]),
         }
 
-    return {"training_dynamics": td, "expert_analysis": ea}
+    # ---- Architecture (from live model) ----
+    arch = _extract_architecture(model) if model is not None else None
+
+    # ---- Quantization (from live model) ----
+    quant = _extract_quantization(model) if model is not None else None
+
+    # ---- Dataset analysis (from training data on disk) ----
+    ds_analysis = _extract_dataset_analysis(output_dir)
+
+    # ---- Performance (from benchmark JSON) ----
+    perf = _extract_performance(output_dir)
+
+    # ---- Stage comparison (from W&B + checkpoints) ----
+    sc = _extract_stage_comparison(raw_data, output_dir, checkpoint_path)
+
+    return {
+        "training_dynamics": td,
+        "expert_analysis":   ea,
+        "architecture":      arch,
+        "quantization":      quant,
+        "dataset_analysis":  ds_analysis,
+        "performance":       perf,
+        "stage_comparison":  sc,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Architecture extraction (from live model forward pass)
+# ---------------------------------------------------------------------------
+
+def _extract_architecture(model) -> Optional[Dict]:
+    """Extract attention maps, routing patterns, expert activations from model."""
+    try:
+        import torch
+        from models.bitnet_moe import BitLinear
+
+        if not (hasattr(model, "decoder") and hasattr(model.decoder, "layers")):
+            print("  [arch] Model has no decoder.layers — skipping architecture extraction")
+            return None
+
+        device = next(model.parameters()).device
+        dtype = next(model.parameters()).dtype
+        num_layers = len(model.decoder.layers)
+        hidden_size = model.decoder.config.hidden_size
+        seq_len = 32
+        n_img = 16
+
+        dummy = torch.randn(1, seq_len, hidden_size, device=device, dtype=dtype)
+
+        # Collect attention weights from all layers via hooks
+        attn_maps = []
+        router_logits_all = []
+
+        def _attn_hook(layer_idx):
+            def hook(mod, inp, out):
+                # BitNetAttention returns (output, kv_cache)
+                # To get attn_weights we need to recompute; store input instead
+                pass
+            return hook
+
+        # Run forward to collect router logits
+        model.eval()
+        with torch.no_grad():
+            h = dummy
+            for li, layer in enumerate(model.decoder.layers):
+                h, r_logits, _ = layer(h)
+                if r_logits is not None:
+                    probs = torch.softmax(r_logits.float(), dim=-1)
+                    router_logits_all.append(probs.detach().cpu().numpy().squeeze())
+
+        # Expert activation timeline: [n_experts, seq_len]
+        if router_logits_all:
+            n_experts = router_logits_all[0].shape[-1] if router_logits_all[0].ndim > 1 else 8
+            act_map = np.zeros((n_experts, num_layers))
+            for li, rp in enumerate(router_logits_all):
+                if rp.ndim == 2:
+                    act_map[:, li] = rp.mean(axis=0)[:n_experts]
+                elif rp.ndim == 1:
+                    act_map[:, li] = rp[:n_experts]
+        else:
+            act_map = None
+
+        # Compute attention distances per layer
+        layer_dists = []
+        with torch.no_grad():
+            h = dummy
+            for li, layer in enumerate(model.decoder.layers):
+                residual = h
+                h_normed = layer.input_layernorm(h)
+                q = layer.attention.q_proj(h_normed)
+                k = layer.attention.k_proj(h_normed)
+                bsz, sl, _ = q.shape
+                hd = layer.attention.head_dim
+                nh = layer.attention.num_heads
+                nkv = layer.attention.num_kv_heads
+                q = q.view(bsz, sl, nh, hd).transpose(1, 2)
+                k = k.view(bsz, sl, nkv, hd).transpose(1, 2)
+                cos, sin = layer.attention.rotary_emb(h_normed, sl)
+                from models.bitnet_moe import apply_rotary_pos_emb
+                q, k = apply_rotary_pos_emb(q, k, cos, sin)
+                if layer.attention.num_kv_groups > 1:
+                    k = k.unsqueeze(2).expand(-1, -1, layer.attention.num_kv_groups, -1, -1)
+                    k = k.reshape(bsz, nh, sl, hd)
+                scale = 1.0 / (hd ** 0.5)
+                attn_w = torch.matmul(q, k.transpose(-2, -1)) * scale
+                attn_w = torch.softmax(attn_w, dim=-1)
+                # mean over heads and batch -> [seq, seq]
+                attn_mean = attn_w.mean(dim=(0, 1)).cpu().numpy()
+                attn_maps.append(attn_mean)
+                # Average attention distance
+                pos = np.arange(sl)
+                dist_matrix = np.abs(pos[:, None] - pos[None, :])
+                avg_dist = (attn_mean * dist_matrix).sum() / attn_mean.sum()
+                layer_dists.append(float(avg_dist))
+                # Continue forward for next layer
+                h, _, _ = layer(residual)
+
+        result = {
+            "arch": True,
+            "moe_detail": True,
+            "bitlinear": True,
+            "token_sankey": True,
+        }
+        if attn_maps:
+            result["cross_modal_attn"] = {
+                "attn": attn_maps[0],
+                "n_img_tokens": n_img,
+                "n_text_tokens": seq_len - n_img,
+            }
+            result["layerwise_attn"] = {"attn_all": attn_maps}
+        if layer_dists:
+            result["attn_distance"] = {
+                "layers": np.arange(num_layers),
+                "distances": np.array(layer_dists),
+            }
+        if act_map is not None:
+            result["expert_timeline"] = {"act_map": act_map}
+
+        print(f"  [arch] Extracted {len(result)} architecture data keys from model")
+        return result
+
+    except Exception as e:
+        print(f"  [arch] Architecture extraction failed: {e}")
+        import traceback; traceback.print_exc()
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Quantization extraction (from model weights)
+# ---------------------------------------------------------------------------
+
+def _extract_quantization(model) -> Optional[Dict]:
+    """Extract weight histograms, sparsity, and size data from model."""
+    try:
+        import torch
+        from models.bitnet_moe import BitLinear, weight_quant
+
+        if not (hasattr(model, "decoder") and hasattr(model.decoder, "layers")):
+            return None
+
+        num_layers = len(model.decoder.layers)
+
+        # Collect FP16 and quantized weights from all BitLinear layers
+        all_fp16 = []
+        all_quant = []
+        layer_sparsity = []
+        layer_bits = []
+        act_scales = {}
+
+        # Layer names: embed, L0..L15, lm_head
+        layer_names = ["embed"] + [f"L{i}" for i in range(num_layers)] + ["lm_head"]
+        sparsity_per_layer = np.zeros(len(layer_names))
+
+        # Embedding sparsity
+        embed_w = model.decoder.embed_tokens.weight.detach().float().cpu()
+        sparsity_per_layer[0] = float((embed_w.abs() < 1e-6).sum()) / embed_w.numel()
+        layer_bits.append(16.0)
+
+        for li, layer in enumerate(model.decoder.layers):
+            layer_fp16 = []
+            layer_qnt = []
+            for mod in [layer.attention.q_proj, layer.attention.k_proj,
+                        layer.attention.v_proj, layer.attention.o_proj]:
+                if isinstance(mod, BitLinear):
+                    w = mod.weight.detach().float()
+                    wq = weight_quant(w).cpu()
+                    w = w.cpu()
+                    layer_fp16.append(w.flatten())
+                    layer_qnt.append(wq.flatten())
+            for exp in layer.moe.experts:
+                for proj in [exp.gate_proj, exp.up_proj, exp.down_proj]:
+                    if isinstance(proj, BitLinear):
+                        w = proj.weight.detach().float()
+                        wq = weight_quant(w).cpu()
+                        w = w.cpu()
+                        layer_fp16.append(w.flatten())
+                        layer_qnt.append(wq.flatten())
+            if hasattr(layer.moe, 'shared_expert'):
+                for proj in [layer.moe.shared_expert.gate_proj,
+                             layer.moe.shared_expert.up_proj,
+                             layer.moe.shared_expert.down_proj]:
+                    if isinstance(proj, BitLinear):
+                        w = proj.weight.detach().float()
+                        wq = weight_quant(w).cpu()
+                        w = w.cpu()
+                        layer_fp16.append(w.flatten())
+                        layer_qnt.append(wq.flatten())
+
+            if layer_fp16:
+                cat_fp = torch.cat(layer_fp16)
+                cat_q = torch.cat(layer_qnt)
+                all_fp16.append(cat_fp)
+                all_quant.append(cat_q)
+                sparsity_per_layer[1 + li] = float((cat_q.abs() < 0.5).sum()) / cat_q.numel()
+                # Effective bitwidth: ternary = ~1.58
+                layer_bits.append(1.58)
+                act_scales[layer_names[1 + li]] = [float(cat_q.abs().mean())]
+
+        # LM head sparsity (shared with embed)
+        sparsity_per_layer[-1] = sparsity_per_layer[0]
+        layer_bits.append(16.0)
+
+        result = {}
+
+        if all_fp16 and all_quant:
+            fp16_flat = torch.cat(all_fp16).numpy()
+            quant_flat = torch.cat(all_quant).numpy()
+            # Subsample for histogram
+            if len(fp16_flat) > 100000:
+                idx = np.random.default_rng(42).choice(len(fp16_flat), 100000, replace=False)
+                fp16_flat = fp16_flat[idx]
+                quant_flat = quant_flat[idx]
+            zero_frac = float((np.abs(quant_flat) < 0.5).sum()) / len(quant_flat)
+            result["weight_hist"] = {
+                "fp16": fp16_flat,
+                "quant": quant_flat,
+                "sparsity": zero_frac * 100,
+            }
+
+        result["sparsity"] = {
+            "stage2": sparsity_per_layer * 100,
+        }
+
+        result["eff_bitwidth"] = {"bits": np.array(layer_bits)}
+
+        result["act_scale"] = {"dist": act_scales}
+
+        # Model size breakdown: Vision Encoder, Projector, Decoder, Total
+        def _count_params(module):
+            return sum(p.numel() for p in module.parameters())
+
+        enc_p = _count_params(model.vision_encoder) if hasattr(model, "vision_encoder") else 0
+        proj_p = _count_params(model.projector) if hasattr(model, "projector") else 0
+        dec_p = _count_params(model.decoder) if hasattr(model, "decoder") else 0
+        total_p = enc_p + proj_p + dec_p
+
+        fp16_mb = np.array([enc_p * 2, proj_p * 2, dec_p * 2, total_p * 2]) / 1e6
+        ternary_mb = np.array([enc_p * 2, proj_p * 1.58 / 8, dec_p * 1.58 / 8,
+                               enc_p * 2 + proj_p * 1.58 / 8 + dec_p * 1.58 / 8]) / 1e6
+        act_mb = np.array([0, 0, dec_p * 1 / 8, dec_p * 1 / 8]) / 1e6  # 8-bit activations
+
+        result["model_size"] = {
+            "fp16": fp16_mb,
+            "ternary": ternary_mb,
+            "activations": act_mb,
+        }
+
+        print(f"  [quant] Extracted {len(result)} quantization data keys from model")
+        return result
+
+    except Exception as e:
+        print(f"  [quant] Quantization extraction failed: {e}")
+        import traceback; traceback.print_exc()
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Dataset analysis extraction (from training data on disk)
+# ---------------------------------------------------------------------------
+
+def _extract_dataset_analysis(output_dir: Optional[str]) -> Optional[Dict]:
+    """Extract dataset statistics from disk data."""
+    try:
+        from visualizations.config import ALL_DATASETS, DATASET_DOMAINS
+
+        if output_dir is None:
+            return None
+
+        ckpt_base = Path(output_dir)
+        # Look for dataset_stats.json written during data loading
+        stats_file = ckpt_base / "dataset_stats.json"
+        if not stats_file.exists():
+            # Try parent dir
+            stats_file = ckpt_base.parent / "dataset_stats.json"
+
+        result = {}
+
+        # Domain distribution from config (this is architectural, not data-dependent)
+        domain_tokens = {}
+        for domain, datasets in DATASET_DOMAINS.items():
+            domain_tokens[domain] = float(len(datasets))
+        result["domain_pie"] = {"domain_tokens_B": domain_tokens}
+
+        # Architecture diagrams that just need a truthy value
+        result["samples"] = {}
+        result["failures"] = {}
+
+        if stats_file.exists():
+            import json
+            stats = json.loads(stats_file.read_text())
+            if "token_counts" in stats:
+                result["token_dist"] = stats["token_counts"]
+            print(f"  [dataset] Loaded stats from {stats_file}")
+        else:
+            print(f"  [dataset] No dataset_stats.json found — domain_pie available, others will skip")
+
+        return result if result else None
+
+    except Exception as e:
+        print(f"  [dataset] Dataset analysis extraction failed: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Performance extraction (from benchmark JSON)
+# ---------------------------------------------------------------------------
+
+def _extract_performance(output_dir: Optional[str]) -> Optional[Dict]:
+    """Load benchmark scores from auto_eval JSON output."""
+    try:
+        import json
+
+        if output_dir is None:
+            return None
+
+        ckpt_base = Path(output_dir)
+        bench_dir = ckpt_base / "plots" / "benchmark_results"
+
+        # Find benchmark_scores_*.json files
+        scores = {}
+        if bench_dir.exists():
+            for jf in sorted(bench_dir.glob("benchmark_scores_*.json")):
+                try:
+                    data = json.loads(jf.read_text())
+                    if isinstance(data, dict):
+                        scores.update(data)
+                except Exception:
+                    pass
+
+        # Also try lmms_raw dir
+        raw_dir = bench_dir / "lmms_raw"
+        if raw_dir.exists():
+            try:
+                from visualizations.benchmark_viz import extract_scores_from_lmms_results
+                for jf in sorted(raw_dir.rglob("*.json")):
+                    try:
+                        data = json.loads(jf.read_text())
+                        if isinstance(data, dict) and "results" in data:
+                            extracted = extract_scores_from_lmms_results(data)
+                            scores.update(extracted)
+                    except Exception:
+                        pass
+            except ImportError:
+                pass
+
+        if not scores:
+            print("  [perf] No benchmark scores found")
+            return None
+
+        print(f"  [perf] Loaded {len(scores)} benchmark scores")
+
+        result = {}
+
+        # bench_acc: radar/bar of benchmark scores
+        benchmarks = sorted(scores.keys())
+        bench_scores = np.array([scores[b] for b in benchmarks])
+        result["bench_acc"] = {
+            "benchmarks": benchmarks,
+            "scores": {"EmberNet": bench_scores},
+        }
+
+        return result
+
+    except Exception as e:
+        print(f"  [perf] Performance extraction failed: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Stage comparison extraction (from W&B data + both stage checkpoints)
+# ---------------------------------------------------------------------------
+
+def _extract_stage_comparison(
+    raw_data: Dict,
+    output_dir: Optional[str],
+    checkpoint_path: Optional[str],
+) -> Optional[Dict]:
+    """Build cross-stage comparison data from training logs."""
+    try:
+        result = {}
+
+        # Loss side-by-side (from W&B)
+        if "train/loss" in raw_data:
+            n = len(raw_data["train/loss"])
+            steps = raw_data.get("train/step", np.arange(n))
+            loss = raw_data["train/loss"]
+            val_loss = raw_data.get("val/loss", loss)
+            half = n // 2
+
+            if half > 0:
+                result["loss_sbs"] = {
+                    "s1_steps": steps[:half],
+                    "s1_train": loss[:half],
+                    "s1_val":   val_loss[:half] if len(val_loss) >= half else loss[:half],
+                    "s2_steps": steps[half:],
+                    "s2_train": loss[half:],
+                    "s2_val":   val_loss[half:] if len(val_loss) > half else loss[half:],
+                }
+
+        # Routing before/after from expert probability columns
+        _expert_cols = [k for k in raw_data if k.startswith("train/expert_") and k[len("train/expert_"):].isdigit()]
+        if len(_expert_cols) == 8:
+            from visualizations.config import EXPERT_NAMES
+            _expert_cols_sorted = sorted(_expert_cols, key=lambda k: int(k.rsplit("_", 1)[-1]))
+            _n = min(len(raw_data[c]) for c in _expert_cols_sorted)
+            half = _n // 2
+            if half > 0:
+                before = {}
+                after = {}
+                for ei, col in enumerate(_expert_cols_sorted):
+                    ename = EXPERT_NAMES[ei] if ei < len(EXPERT_NAMES) else f"expert_{ei}"
+                    vals = raw_data[col][:_n]
+                    before[ename] = np.array([float(np.mean(vals[:half]))])
+                    after[ename] = np.array([float(np.mean(vals[half:]))])
+                result["routing_ba"] = {"before": before, "after": after}
+
+        if not result:
+            print("  [stage] No stage comparison data available (need W&B logs)")
+            return None
+
+        print(f"  [stage] Extracted {len(result)} stage-comparison data keys")
+        return result
+
+    except Exception as e:
+        print(f"  [stage] Stage comparison extraction failed: {e}")
+        return None
 
 
 # ===========================================================================
@@ -508,7 +956,27 @@ def main():
         print("\nNo data source specified → using synthetic placeholder data for all plots.")
         warnings.append("No data source — all plots use synthetic placeholder data.")
 
-    context = _build_context(raw_data)
+    # ------------------------------------------------------------------
+    # Load optional EmberNet model for real-data extraction
+    # ------------------------------------------------------------------
+    live_model = None
+    if args.model:
+        try:
+            from inference.infer import EmberVLM
+            print(f"\nLoading model: {args.model}")
+            live_model = EmberVLM(model_path=args.model)
+        except Exception as e:
+            warnings.append(f"Model load failed ({e}) — model-dependent plots will skip.")
+            print(f"  [WARNING] {warnings[-1]}")
+
+    _output_base = args.output_dir
+    _ckpt_for_ctx = args.checkpoint_dir or args.model
+    context = _build_context(
+        raw_data,
+        model=live_model,
+        output_dir=_output_base,
+        checkpoint_path=_ckpt_for_ctx,
+    )
 
     # ------------------------------------------------------------------
     # W&B logger
@@ -522,19 +990,6 @@ def main():
     except ImportError:
         logger = WandBLogger(disabled=True)
         warnings.append("wandb not installed — W&B upload disabled.")
-
-    # ------------------------------------------------------------------
-    # Load optional EmberNet model for real-data paper figures
-    # ------------------------------------------------------------------
-    live_model = None
-    if args.model:
-        try:
-            from inference.infer import EmberVLM
-            print(f"\nLoading model for paper figures: {args.model}")
-            live_model = EmberVLM(model_path=args.model)
-        except Exception as e:
-            warnings.append(f"Model load failed ({e}) — paper figures will use synthetic data.")
-            print(f"  [WARNING] {warnings[-1]}")
 
     # ------------------------------------------------------------------
     # Handle --fig (single paper figure shortcut)

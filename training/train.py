@@ -1525,13 +1525,36 @@ def main():
             except Exception:
                 pass
 
-        _ctx   = _build_context(_raw)
-
-        # Inject real per-group LR history saved by the last stage's live plotter.
-        # lr_groups.json is written by LivePlotter.save_lr_groups_json() at end of
-        # each stage's training.  Use stage2 if available, fall back to stage1.
+        # ------------------------------------------------------------------
+        # Load model EARLY so both sections and paper figures can use it.
+        # ------------------------------------------------------------------
         import json as _json
         _ckpt_base = Path(checkpoint_path).parent.parent if checkpoint_path else Path("checkpoints")
+        _live_model = None
+        if checkpoint_path and Path(checkpoint_path).exists():
+            try:
+                import torch as _torch
+                _torch.cuda.empty_cache()
+                _viz_device = "cuda" if _torch.cuda.is_available() else "cpu"
+                _ckpt = _torch.load(checkpoint_path, map_location=_viz_device, weights_only=False)
+                _viz_cfg = EmberNetConfig()
+                _live_model = EmberNetVLM(_viz_cfg).to(_viz_device)
+                _live_model.load_state_dict(_ckpt["model_state_dict"], strict=False)
+                _live_model.eval()
+                del _ckpt
+                _torch.cuda.empty_cache()
+                print(f"  [viz] EmberNetVLM loaded on {_viz_device} for visualizations")
+            except Exception as _ml_err:
+                print(f"  [viz] Could not load model (model-dependent plots will skip): {_ml_err}")
+
+        _ctx = _build_context(
+            _raw,
+            model=_live_model,
+            output_dir=str(_ckpt_base),
+            checkpoint_path=checkpoint_path,
+        )
+
+        # Inject real per-group LR history saved by the last stage's live plotter.
         for _stage_dir in ("stage2", "stage1"):
             _lr_json = _ckpt_base / _stage_dir / "lr_groups.json"
             if _lr_json.exists():
@@ -1559,28 +1582,10 @@ def main():
                 _fails.append(f"{_sec}: {_se}")
 
         # ------------------------------------------------------------------
-        # Paper figures (Figs 1-7) — pass the real model if available so
-        # figures use actual weight/routing data rather than synthetic data.
-        # Load on GPU for speed; free VRAM afterwards.
+        # Paper figures (Figs 1-7) — reuse the model loaded above.
         # ------------------------------------------------------------------
         print(f"  [viz] Generating 7 paper figures …")
         _paper_dir = Path("plots/paper_figures")
-        _live_model = None
-        if checkpoint_path and Path(checkpoint_path).exists():
-            try:
-                import torch as _torch
-                _torch.cuda.empty_cache()
-                _viz_device = "cuda" if _torch.cuda.is_available() else "cpu"
-                _ckpt = _torch.load(checkpoint_path, map_location=_viz_device, weights_only=False)
-                _viz_cfg = EmberNetConfig()
-                _live_model = EmberNetVLM(_viz_cfg).to(_viz_device)
-                _live_model.load_state_dict(_ckpt["model_state_dict"], strict=False)
-                _live_model.eval()
-                del _ckpt
-                _torch.cuda.empty_cache()
-                print(f"  [viz] EmberNetVLM loaded from {checkpoint_path} on {_viz_device} for paper figures")
-            except Exception as _ml_err:
-                print(f"  [viz] Could not load model for paper figures (will skip model-dependent figs): {_ml_err}")
         for _fig_name in _PAPER_FIGS:
             try:
                 _r = generate_paper_fig(_fig_name, save_dir=_paper_dir, model=_live_model)
