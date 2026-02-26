@@ -682,6 +682,7 @@ class EmberNetDataset(Dataset):
 
             # First try loading from disk (downloaded by prepare_data.py)
             disk_path = Path(self.config.data_dir) / dataset_name
+            _needs_hub = False
             if disk_path.exists():
                 print(f"Loading {dataset_name} from disk: {disk_path}")
                 try:
@@ -699,8 +700,8 @@ class EmberNetDataset(Dataset):
                                 "sentences_raw", "label", "query"}
                     if _cols and not _qa_cols.intersection(_cols):
                         print(f"  [DataLoader] {dataset_name} loaded from disk has no QA columns "
-                              f"(cols={_cols}); trying hub with config '{hf_config}'...")
-                        ds = self._load_from_hub(hub_id, hf_config, dataset_name)
+                              f"(cols={_cols}); falling through to hub...")
+                        _needs_hub = True
 
                 except Exception:
                     # Not a saved-dataset directory; try as a local dataset script/repo
@@ -723,9 +724,12 @@ class EmberNetDataset(Dataset):
                         if ds is not None:
                             break
                     if ds is None:
-                        print(f"  Local load failed for {dataset_name}; trying hub as {hub_id}...")
-                        ds = self._load_from_hub(hub_id, hf_config, dataset_name)
-                        base_dir = disk_path
+                        _needs_hub = True
+
+                if _needs_hub:
+                    print(f"  Trying hub as {hub_id} (config='{hf_config}')...")
+                    ds = self._load_from_hub(hub_id, hf_config, dataset_name)
+                    base_dir = disk_path
             else:
                 # Dataset not on disk — fetch from HuggingFace hub
                 print(f"Loading {dataset_name} from HuggingFace hub as {hub_id}...")

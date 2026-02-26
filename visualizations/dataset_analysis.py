@@ -19,7 +19,7 @@ import seaborn as sns
 from visualizations.config import (
     VIZ_CONFIG, PLOT_DIRS, STAGE_COLORS, EXPERT_NAMES, EXPERT_COLORS, EXPERT_LABELS,
     ALL_DATASETS, DATASET_DOMAINS, DOMAIN_COLORS,
-    apply_mpl_style, plot_filename, log_plot_error,
+    apply_mpl_style, plot_filename, log_plot_error, skip_no_data,
 )
 from visualizations.training_dynamics import _save_and_log
 from visualizations.wandb_utils import WandBLogger
@@ -43,13 +43,11 @@ class DatasetAnalysisPlotter:
         key = "token_distribution_per_dataset"
         out = PLOT_DIRS["token_statistics"] / plot_filename("dataset_analysis", "token_statistics", key)
         try:
-            n_ds = len(ALL_DATASETS)
             if data is None:
-                np.random.seed(100)
-                img_tok  = np.random.uniform(5.0, 60.0, n_ds)   # Millions
-                text_tok = np.random.uniform(10.0, 120.0, n_ds)
-                data = {"datasets": ALL_DATASETS, "img_tokens_M": img_tok, "text_tokens_M": text_tok}
+                skip_no_data("token_distribution_per_dataset")
+                return out
 
+            n_ds = len(ALL_DATASETS)
             datasets   = data.get("datasets", ALL_DATASETS)
             img_tok    = np.asarray(data["img_tokens_M"])
             text_tok   = np.asarray(data["text_tokens_M"])
@@ -84,16 +82,8 @@ class DatasetAnalysisPlotter:
         out = PLOT_DIRS["token_statistics"] / plot_filename("dataset_analysis", "token_statistics", key)
         try:
             if data is None:
-                import pandas as pd
-                np.random.seed(101)
-                rows = []
-                for ds in ALL_DATASETS:
-                    domain = _dataset_domain(ds)
-                    mean_len = np.random.randint(128, 1024)
-                    lengths  = np.random.lognormal(np.log(mean_len), 0.4, 200).clip(32, 2048)
-                    for l in lengths:
-                        rows.append({"dataset": ds, "length": l, "domain": domain})
-                data = {"df": pd.DataFrame(rows)}
+                skip_no_data("sequence_length_violin")
+                return out
 
             import pandas as pd
             df = data["df"]
@@ -124,17 +114,8 @@ class DatasetAnalysisPlotter:
         out = PLOT_DIRS["token_statistics"] / plot_filename("dataset_analysis", "token_statistics", key)
         try:
             if data is None:
-                n1, n2 = 2000, 3000
-                steps  = np.arange(n1 + n2)
-                cum_s1 = np.cumsum(np.full(n1, 4096 * 4))   # tokens per step
-                cum_s2 = cum_s1[-1] + np.cumsum(np.full(n2, 4096 * 4))
-                data = {
-                    "steps_s1": np.arange(n1),
-                    "steps_s2": np.arange(n1, n1 + n2),
-                    "cum_s1": cum_s1,
-                    "cum_s2": cum_s2,
-                    "epoch_boundaries": [500, 1000, 1500, 2500, 3500, 4500],
-                }
+                skip_no_data("cumulative_token_exposure")
+                return out
 
             s1_steps = np.asarray(data["steps_s1"])
             s2_steps = np.asarray(data["steps_s2"])
@@ -170,8 +151,8 @@ class DatasetAnalysisPlotter:
         out = PLOT_DIRS["domain_distributions"] / plot_filename("dataset_analysis", "domain_distributions", key)
         try:
             if data is None:
-                domain_tok = {d: np.random.uniform(0.5, 3.0) for d in DATASET_DOMAINS}
-                data = {"domain_tokens_B": domain_tok}
+                skip_no_data("domain_distribution_pie")
+                return out
 
             domain_tok = data["domain_tokens_B"]
             labels  = [d.replace("_", "\n") for d in domain_tok]
@@ -201,23 +182,9 @@ class DatasetAnalysisPlotter:
         key = "dataset_mixing_schedule"
         out = PLOT_DIRS["domain_distributions"] / plot_filename("dataset_analysis", "domain_distributions", key)
         try:
-            n_steps = 3000
-            n_ds    = len(ALL_DATASETS)
             if data is None:
-                np.random.seed(110)
-                steps   = np.arange(n_steps)
-                # Uniform start → curriculum shift toward harder datasets
-                mix = np.zeros((n_ds, n_steps))
-                for i in range(n_ds):
-                    target = np.random.dirichlet(np.ones(n_ds))[i]
-                    start  = 1.0 / n_ds
-                    mix[i] = np.linspace(start, target, n_steps) + \
-                             np.random.normal(0, 0.002, n_steps)
-                # Normalize to sum = 1
-                mix = np.abs(mix)
-                mix /= mix.sum(axis=0, keepdims=True)
-                mixing = {ds: mix[i] * 100 for i, ds in enumerate(ALL_DATASETS)}
-                data = {"steps": steps, "mixing": mixing}
+                skip_no_data("dataset_mixing_schedule")
+                return out
 
             steps  = np.asarray(data["steps"])
             mixing = data["mixing"]
@@ -252,16 +219,9 @@ class DatasetAnalysisPlotter:
         key = "expert_dataset_alignment_matrix"
         out = PLOT_DIRS["domain_distributions"] / plot_filename("dataset_analysis", "domain_distributions", key)
         try:
-            n_experts = len(EXPERT_NAMES)
-            n_ds      = len(ALL_DATASETS)
             if data is None:
-                np.random.seed(111)
-                # Designed alignment (block-diagonal based on domain mapping)
-                designed = _build_designed_alignment()
-                # Learned alignment: noisy version
-                learned  = designed + np.random.normal(0, 0.05, designed.shape)
-                learned  = np.clip(learned, 0, 1)
-                data = {"designed": designed, "learned": learned}
+                skip_no_data("expert_dataset_alignment_matrix")
+                return out
 
             designed = np.asarray(data["designed"])
             learned  = np.asarray(data["learned"])
@@ -300,6 +260,10 @@ class DatasetAnalysisPlotter:
         key = "representative_samples_grid"
         out = PLOT_DIRS["sample_visualizations"] / plot_filename("dataset_analysis", "sample_visualizations", key)
         try:
+            if data is None:
+                skip_no_data("representative_samples_grid")
+                return out
+
             n_rows, n_cols = 4, 5
             n_samples = n_rows * n_cols  # exactly 20
 
@@ -335,6 +299,10 @@ class DatasetAnalysisPlotter:
         key = "failure_case_analysis"
         out = PLOT_DIRS["sample_visualizations"] / plot_filename("dataset_analysis", "sample_visualizations", key)
         try:
+            if data is None:
+                skip_no_data("failure_case_analysis")
+                return out
+
             failure_types = [
                 "OCR error", "Spatial error", "Math error", "Diagram error",
                 "Counting error", "Chart error", "Reasoning error", "Knowledge error",

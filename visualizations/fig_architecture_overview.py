@@ -29,7 +29,7 @@ from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from visualizations.config import VIZ_CONFIG, apply_mpl_style
+from visualizations.config import VIZ_CONFIG, apply_mpl_style, skip_no_data
 
 apply_mpl_style()
 
@@ -57,7 +57,7 @@ def _extract_params_from_model(model) -> dict:
     try:
         from models.bitnet_moe import BitLinear
     except ImportError:
-        return _DEFAULT_PARAMS
+        return None
 
     counts = {k: dict(**v) for k, v in _DEFAULT_PARAMS.items()}
 
@@ -221,7 +221,14 @@ def generate(save_dir: Optional[Path] = None, model=None) -> Path:
         save_dir = Path("plots/paper_figures")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    param_dict = _extract_params_from_model(model) if model is not None else _DEFAULT_PARAMS
+    if model is None:
+        skip_no_data("fig1_architecture_overview")
+        return save_dir / "fig1_architecture_overview.png"
+
+    param_dict = _extract_params_from_model(model)
+    if param_dict is None:
+        skip_no_data("fig1_architecture_overview (extraction failed)")
+        return save_dir / "fig1_architecture_overview.png"
 
     fig = plt.figure(figsize=(16, 8), dpi=VIZ_CONFIG["dpi"])
     # Layout: left 40% = pipeline, right 60% = 2 stacked bars

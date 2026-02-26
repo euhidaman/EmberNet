@@ -40,7 +40,7 @@ import matplotlib.gridspec as gridspec
 
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from visualizations.config import VIZ_CONFIG, apply_mpl_style
+from visualizations.config import VIZ_CONFIG, apply_mpl_style, skip_no_data
 
 apply_mpl_style()
 
@@ -259,6 +259,10 @@ def generate(
 
     samples = samples or _QUAL_SAMPLES
 
+    if model is None:
+        skip_no_data("fig7_qualitative_grid")
+        return save_dir / "fig7_qualitative_grid.png"
+
     # Pre-load real images from HuggingFace datasets
     for samp in samples:
         hf_src = samp.get("hf_source")
@@ -301,7 +305,8 @@ def generate(
                 if scores:
                     samp["pva_trace"] = list(scores)
         except Exception as e:
-            print(f"[fig_qualitative_grid] Model inference failed ({e}), using synthetic answers.")
+            skip_no_data(f"fig7_qualitative_grid (inference failed: {e})")
+            return save_dir / "fig7_qualitative_grid.png"
 
     n = len(samples)
     # Layout: each row = [image | no-VA answer | VA answer | sparkline]

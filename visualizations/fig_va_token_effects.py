@@ -37,7 +37,7 @@ import matplotlib.gridspec as gridspec
 from matplotlib.patches import Patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from visualizations.config import VIZ_CONFIG, apply_mpl_style
+from visualizations.config import VIZ_CONFIG, apply_mpl_style, skip_no_data
 
 apply_mpl_style()
 
@@ -221,7 +221,7 @@ def _extract_real_trajectories(model, samples: List[Dict]) -> List[Dict]:
         return real_trajectories
 
     except Exception as e:
-        print(f"[fig_va_token_effects] Using synthetic trajectories: {e}")
+        print(f"[fig_va_token_effects] Real extraction failed: {e}")
         return None
 
 
@@ -247,27 +247,28 @@ def generate(save_dir: Optional[Path] = None, model=None) -> Path:
         save_dir = Path("plots/paper_figures")
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    if model is None:
+        skip_no_data("fig5_va_token_effects")
+        return save_dir / "fig5_va_token_effects.png"
+
     # Build trajectories
     if model is not None:
         real_traj = _extract_real_trajectories(model, _SAMPLES)
     else:
         real_traj = None
 
+    if real_traj is None:
+        skip_no_data("fig5_va_token_effects (extraction failed)")
+        return save_dir / "fig5_va_token_effects.png"
+
     trajectories = []
     for i, samp in enumerate(_SAMPLES):
-        if real_traj and i < len(real_traj) and real_traj[i] is not None:
-            traj = real_traj[i]
-        else:
-            traj = _synthetic_trajectory(
-                samp["answer_no_va"],
-                hallucinate_span=samp.get("hallucinate_span"),
-                seed=samp.get("seed", i),
-            )
-            traj["label"]      = samp["label"]
-            traj["image_desc"] = samp["image_desc"]
-            traj["prompt"]     = samp["prompt"]
-            traj["answer"]     = samp["answer_no_va"]
-        trajectories.append(traj)
+        if i < len(real_traj) and real_traj[i] is not None:
+            trajectories.append(real_traj[i])
+
+    if not trajectories:
+        skip_no_data("fig5_va_token_effects (no valid samples)")
+        return save_dir / "fig5_va_token_effects.png"
 
     n_samples = len(trajectories)
     fig, axes = plt.subplots(n_samples, 1, figsize=(14, 3.8 * n_samples),

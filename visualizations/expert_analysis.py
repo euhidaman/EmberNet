@@ -23,7 +23,7 @@ import seaborn as sns
 from visualizations.config import (
     VIZ_CONFIG, PLOT_DIRS, EXPERT_NAMES, EXPERT_COLORS, EXPERT_LABELS,
     ALL_DATASETS, DATASET_DOMAINS, DOMAIN_COLORS,
-    apply_mpl_style, plot_filename, log_plot_error,
+    apply_mpl_style, plot_filename, log_plot_error, skip_no_data,
 )
 from visualizations.training_dynamics import _save_and_log
 from visualizations.wandb_utils import WandBLogger
@@ -50,15 +50,13 @@ class ExpertAnalysisPlotter:
         key = "expert_selection_heatmap"
         out = PLOT_DIRS["routing_patterns"] / plot_filename("expert_analysis", "routing_patterns", key)
         try:
-            n_ckpts = 10
             if data is None:
-                np.random.seed(10)
-                # Start near uniform, end near specialized
-                freq = np.random.dirichlet(np.ones(N_EXPERTS) * 2, size=n_ckpts).T
-                ckpt_labels = [f"step\n{(i+1)*500}" for i in range(n_ckpts)]
-            else:
-                freq = np.asarray(data["freq"])
-                ckpt_labels = data.get("ckpt_labels", [str(i) for i in range(freq.shape[1])])
+                skip_no_data("expert_selection_heatmap")
+                return out
+
+            n_ckpts = 10
+            freq = np.asarray(data["freq"])
+            ckpt_labels = data.get("ckpt_labels", [str(i) for i in range(freq.shape[1])])
 
             fig, ax = plt.subplots(figsize=(12, 6))
             im = sns.heatmap(
@@ -86,12 +84,10 @@ class ExpertAnalysisPlotter:
         out = PLOT_DIRS["routing_patterns"] / plot_filename("expert_analysis", "routing_patterns", key)
         try:
             if data is None:
-                np.random.seed(11)
-                mat = np.random.uniform(0.01, 0.3, (N_EXPERTS, N_EXPERTS))
-                mat = (mat + mat.T) / 2  # symmetric
-                np.fill_diagonal(mat, np.random.uniform(0.05, 0.4, N_EXPERTS))
-            else:
-                mat = np.asarray(data["matrix"])
+                skip_no_data("expert_cooccurrence_matrix")
+                return out
+
+            mat = np.asarray(data["matrix"])
 
             labels = [EXPERT_LABELS[e] for e in EXPERT_NAMES]
             fig, ax = plt.subplots(figsize=(9, 8))
@@ -120,12 +116,12 @@ class ExpertAnalysisPlotter:
         key = "expert_routing_by_dataset"
         out = PLOT_DIRS["routing_patterns"] / plot_filename("expert_analysis", "routing_patterns", key)
         try:
-            n_ds = len(ALL_DATASETS)
             if data is None:
-                np.random.seed(12)
-                routing = np.random.dirichlet(np.ones(N_EXPERTS), size=n_ds).T
-            else:
-                routing = np.asarray(data["routing"])
+                skip_no_data("expert_routing_by_dataset")
+                return out
+
+            n_ds = len(ALL_DATASETS)
+            routing = np.asarray(data["routing"])
 
             x     = np.arange(n_ds)
             bottoms = np.zeros(n_ds)
@@ -167,12 +163,12 @@ class ExpertAnalysisPlotter:
                 import plotly.io as pio
 
                 if data is None:
-                    np.random.seed(13)
-                    token_flows = np.random.dirichlet(np.ones(N_EXPERTS), size=8)
-                    # rows = input domains, cols = experts
-                    mean_flow = token_flows.mean(axis=0)
-                    source_labels = [d for d in DATASET_DOMAINS]
-                    target_labels = [EXPERT_LABELS[e] for e in EXPERT_NAMES]
+                    skip_no_data("routing_sankey_snapshot")
+                    return out
+
+                token_flows = np.asarray(data["token_flows"])
+                source_labels = data.get("source_labels", [d for d in DATASET_DOMAINS])
+                target_labels = data.get("target_labels", [EXPERT_LABELS[e] for e in EXPERT_NAMES])
 
                 sources, targets, values, link_colors = [], [], [], []
                 n_src = len(source_labels)
@@ -220,17 +216,8 @@ class ExpertAnalysisPlotter:
         out = PLOT_DIRS["specialization_metrics"] / plot_filename("expert_analysis", "specialization_metrics", key)
         try:
             if data is None:
-                np.random.seed(20)
-                n = 5000
-                steps = np.arange(n)
-                indices = {}
-                for i, name in enumerate(EXPERT_NAMES):
-                    # Specialization rises from ~0.1 to ~0.7-0.9
-                    target = np.random.uniform(0.6, 0.95)
-                    curve  = target * (1 - np.exp(-steps / (n * 0.35))) + \
-                             np.random.normal(0, 0.015, n)
-                    indices[name] = np.clip(curve, 0, 1)
-                data = {"steps": steps, "indices": indices}
+                skip_no_data("expert_specialization_index")
+                return out
 
             steps   = np.asarray(data["steps"])
             indices = data["indices"]
@@ -261,17 +248,8 @@ class ExpertAnalysisPlotter:
         out = PLOT_DIRS["specialization_metrics"] / plot_filename("expert_analysis", "specialization_metrics", key)
         try:
             if data is None:
-                np.random.seed(21)
-                # Synthetic ternary distributions per expert
-                dists = {}
-                for name in EXPERT_NAMES:
-                    p_neg  = np.random.uniform(0.2, 0.35)
-                    p_zero = np.random.uniform(0.25, 0.60)
-                    p_pos  = 1 - p_neg - p_zero
-                    dists[name] = {"neg": p_neg, "zero": p_zero, "pos": p_pos}
-                data = {"dists_final": dists, "dists_init": {
-                    n: {"neg": 0.33, "zero": 0.34, "pos": 0.33} for n in EXPERT_NAMES
-                }}
+                skip_no_data("expert_weight_sparsity_grid")
+                return out
 
             dists_final = data["dists_final"]
             dists_init  = data.get("dists_init", {
@@ -312,12 +290,8 @@ class ExpertAnalysisPlotter:
         try:
             domains = list(DATASET_DOMAINS.keys())
             if data is None:
-                np.random.seed(22)
-                variance_data = {
-                    name: {d: np.random.exponential(0.5, 50) + 0.1 for d in domains}
-                    for name in EXPERT_NAMES
-                }
-                data = {"variance": variance_data}
+                skip_no_data("expert_output_variance_boxplot")
+                return out
 
             var_data = data["variance"]
             fig, axes = plt.subplots(1, len(domains), figsize=(20, 6), sharey=True)
@@ -356,13 +330,8 @@ class ExpertAnalysisPlotter:
         out = PLOT_DIRS["expert_utilization"] / plot_filename("expert_analysis", "expert_utilization", key)
         try:
             if data is None:
-                np.random.seed(30)
-                n = 5000
-                steps = np.arange(n)
-                imbalance = 0.8 * np.exp(-steps / (n * 0.5)) + 0.05 + \
-                            np.random.normal(0, 0.02, n)
-                imbalance = np.clip(imbalance, 0, None)
-                data = {"steps": steps, "imbalance": imbalance, "target": 0.1}
+                skip_no_data("expert_load_balancing")
+                return out
 
             steps     = np.asarray(data["steps"])
             imbalance = np.asarray(data["imbalance"])
@@ -390,15 +359,8 @@ class ExpertAnalysisPlotter:
         out = PLOT_DIRS["expert_utilization"] / plot_filename("expert_analysis", "expert_utilization", key)
         try:
             if data is None:
-                np.random.seed(31)
-                usage_data = {
-                    name: np.random.beta(a, b, size=300) * 30
-                    for name, (a, b) in zip(EXPERT_NAMES, [
-                        (3.0, 1.5), (2.5, 2.0), (3.5, 1.2), (2.0, 2.5),
-                        (1.5, 3.0), (3.0, 1.8), (2.8, 1.6), (2.2, 2.2),
-                    ])
-                }
-                data = {"usage": usage_data}
+                skip_no_data("expert_usage_violin")
+                return out
 
             usage = data["usage"]
             import pandas as pd
@@ -433,17 +395,13 @@ class ExpertAnalysisPlotter:
         key = "dead_expert_detection"
         out = PLOT_DIRS["expert_utilization"] / plot_filename("expert_analysis", "expert_utilization", key)
         try:
-            n_ckpts = 10
             if data is None:
-                np.random.seed(32)
-                # Most experts active; a few occasionally die early then recover
-                active = np.ones((N_EXPERTS, n_ckpts), dtype=int)
-                active[2, [0, 1]] = 0
-                active[5, [0]] = 0
-                ckpt_labels = [f"step\n{(i+1)*500}" for i in range(n_ckpts)]
-            else:
-                active = np.asarray(data["active"])
-                ckpt_labels = data.get("ckpt_labels", [str(i) for i in range(active.shape[1])])
+                skip_no_data("dead_expert_detection")
+                return out
+
+            n_ckpts = 10
+            active = np.asarray(data["active"])
+            ckpt_labels = data.get("ckpt_labels", [str(i) for i in range(active.shape[1])])
 
             cmap = plt.cm.RdYlGn  # red=dead, green=active
             fig, ax = plt.subplots(figsize=(12, 5))
@@ -492,19 +450,8 @@ class ExpertAnalysisPlotter:
             angles = np.linspace(0, 2 * np.pi, N, endpoint=False)
 
             if data is None:
-                np.random.seed(40)
-                perf = {}
-                for i, name in enumerate(EXPERT_NAMES):
-                    scores = np.random.uniform(0.1, 0.5, N)
-                    scores[i] = np.random.uniform(0.7, 1.0)   # high on own domain
-                    perf[name] = scores
-
-                ideal = {}
-                for i, name in enumerate(EXPERT_NAMES):
-                    ideal_scores = np.full(N, 0.1)
-                    ideal_scores[i] = 1.0
-                    ideal[name] = ideal_scores
-                data = {"perf": perf, "ideal": ideal}
+                skip_no_data("per_expert_spider_charts")
+                return out
 
             perf  = data["perf"]
             ideal = data.get("ideal", {})
@@ -547,13 +494,8 @@ class ExpertAnalysisPlotter:
             angles = np.linspace(0, 2 * np.pi, N, endpoint=False)
 
             if data is None:
-                np.random.seed(41)
-                perf = {}
-                for i, name in enumerate(EXPERT_NAMES):
-                    scores = np.random.uniform(0.1, 0.5, N)
-                    scores[i] = np.random.uniform(0.75, 1.0)
-                    perf[name] = scores
-                data = {"perf": perf}
+                skip_no_data("comparative_spider_chart")
+                return out
 
             perf = data["perf"]
             fig, ax = plt.subplots(figsize=(9, 9), subplot_kw=dict(polar=True))
@@ -592,16 +534,8 @@ class ExpertAnalysisPlotter:
             ckpt_keys   = ["init", "25pct", "50pct", "final"]
 
             if data is None:
-                np.random.seed(42)
-                data = {}
-                for ci, ck in enumerate(ckpt_keys):
-                    perf = {}
-                    specialization = ci / (len(ckpt_keys) - 1)  # 0→1
-                    for i, name in enumerate(EXPERT_NAMES):
-                        scores = np.random.uniform(0.1, 1 - specialization * 0.5, N)
-                        scores[i] = np.random.uniform(0.4 + specialization * 0.5, 1.0)
-                        perf[name] = np.clip(scores, 0, 1)
-                    data[ck] = perf
+                skip_no_data("spider_temporal_evolution")
+                return out
 
             fig, axes = plt.subplots(2, 2, figsize=VIZ_CONFIG["figsize_grid22"],
                                      subplot_kw=dict(polar=True))
@@ -639,19 +573,8 @@ class ExpertAnalysisPlotter:
         out = PLOT_DIRS["expert_utilization"] / plot_filename("expert_analysis", "expert_utilization", key)
         try:
             if data is None:
-                np.random.seed(30)
-                T = 200
-                steps = np.arange(T) * 10
-                # Simulate experts starting uniform and specializing
-                probs = np.zeros((N_EXPERTS, T))
-                for i in range(N_EXPERTS):
-                    target = 1.0 / N_EXPERTS + (np.random.rand() - 0.5) * 0.06
-                    probs[i] = np.clip(
-                        target + (np.random.rand() - 0.5) * 0.02,
-                        0.05, 0.4,
-                    )
-                probs /= probs.sum(axis=0, keepdims=True)
-                data = {"steps": steps, "expert_probs": probs}
+                skip_no_data("expert_usage_stacked_area")
+                return out
 
             steps       = np.asarray(data["steps"])
             expert_probs = np.asarray(data["expert_probs"])  # (N_experts, T)
@@ -685,15 +608,8 @@ class ExpertAnalysisPlotter:
         out = PLOT_DIRS["routing_patterns"] / plot_filename("expert_analysis", "routing_patterns", key)
         try:
             if data is None:
-                np.random.seed(31)
-                T = 300
-                steps = np.arange(T) * 10
-                max_entropy = np.log(N_EXPERTS)
-                # Starts near max (uniform/unconfident), drops to ~50% of max
-                base = max_entropy * (0.95 - 0.45 * (1 - np.exp(-steps / 1500)))
-                noise = np.random.normal(0, 0.02, T)
-                entropy = np.clip(base + noise, 0.1, max_entropy)
-                data = {"steps": steps, "entropy": entropy}
+                skip_no_data("routing_entropy_over_time")
+                return out
 
             steps    = np.asarray(data["steps"])
             entropy  = np.asarray(data["entropy"])

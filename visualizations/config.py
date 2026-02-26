@@ -295,3 +295,8 @@ def log_plot_error(plot_name: str, error: Exception):
         f.write(f"Time: {ts}\n\n")
         f.write(_full_tb)
     print(f"  [PLOT ERROR] Full traceback saved → {err_file}")
+
+
+def skip_no_data(plot_name: str) -> None:
+    """Print a notice that a plot was skipped because no real data is available."""
+    print(f"  [SKIP] {plot_name}: no real data available")

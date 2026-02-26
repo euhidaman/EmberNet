@@ -24,6 +24,7 @@ from visualizations.config import (
     VIZ_CONFIG, PLOT_DIRS, STAGE_COLORS, EXPERT_NAMES,
     ALL_DATASETS, DATASET_DOMAINS, DOMAIN_COLORS,
     apply_mpl_style, plot_filename, log_plot_error,
+    skip_no_data,
 )
 from visualizations.wandb_utils import WandBLogger
 
@@ -59,14 +60,15 @@ class TrainingDynamicsPlotter:
             fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
 
             if data is None:
-                data = _synthetic_loss_data()
+                skip_no_data("multi_stage_loss_progression")
+                return out
 
             s1_steps = data.get("stage1_steps", np.arange(0, 2000))
             s2_steps = data.get("stage2_steps", np.arange(2000, 5000))
-            s1_train  = data.get("stage1_train_loss",   _mock_loss(len(s1_steps), start=4.0))
-            s1_val    = data.get("stage1_val_loss",     _mock_loss(len(s1_steps), start=3.8))
-            s2_train  = data.get("stage2_train_loss",   _mock_loss(len(s2_steps), start=2.0))
-            s2_val    = data.get("stage2_val_loss",     _mock_loss(len(s2_steps), start=1.9))
+            s1_train  = data["stage1_train_loss"]
+            s1_val    = data["stage1_val_loss"]
+            s2_train  = data["stage2_train_loss"]
+            s2_val    = data["stage2_val_loss"]
 
             c1, c2 = STAGE_COLORS[1], STAGE_COLORS[2]
             lw = VIZ_CONFIG["lw_main"]
@@ -132,16 +134,8 @@ class TrainingDynamicsPlotter:
         out = PLOT_DIRS["loss_curves"] / plot_filename("training_dynamics", "loss_curves", key)
         try:
             if data is None:
-                n = 3000
-                steps = np.arange(n)
-                data = {
-                    "steps":       steps,
-                    "lm_loss":     _mock_loss(n, start=2.0, noise=0.05),
-                    "aux_loss":    np.abs(np.random.normal(0.05, 0.01, n)),
-                    "router_z":    np.abs(np.random.normal(0.02, 0.005, n)),
-                    "entropy":     np.abs(np.random.normal(0.01, 0.003, n)),
-                    "expert_sup":  np.abs(np.random.normal(0.03, 0.008, n)),
-                }
+                skip_no_data("loss_components_breakdown")
+                return out
 
             steps    = np.asarray(data["steps"])
             lm       = np.asarray(data["lm_loss"])
@@ -191,16 +185,11 @@ class TrainingDynamicsPlotter:
             datasets = ALL_DATASETS
             n_ckpts = 10
             if data is None:
-                np.random.seed(42)
-                matrix = np.random.uniform(0.5, 4.0, (len(datasets), n_ckpts))
-                # Simulate decreasing loss over checkpoints
-                for i in range(len(datasets)):
-                    matrix[i] = np.linspace(matrix[i, 0], matrix[i, 0] * 0.3, n_ckpts) + \
-                                 np.random.normal(0, 0.05, n_ckpts)
-                ckpt_labels = [f"ckpt\n{(i+1)*500}" for i in range(n_ckpts)]
-            else:
-                matrix = np.asarray(data["matrix"])
-                ckpt_labels = data.get("ckpt_labels", [str(i) for i in range(matrix.shape[1])])
+                skip_no_data("per_dataset_loss_heatmap")
+                return out
+
+            matrix = np.asarray(data["matrix"])
+            ckpt_labels = data.get("ckpt_labels", [str(i) for i in range(matrix.shape[1])])
 
             fig, ax = plt.subplots(figsize=(14, 8))
             im = sns.heatmap(
@@ -246,30 +235,8 @@ class TrainingDynamicsPlotter:
         out = PLOT_DIRS["learning_rates"] / plot_filename("training_dynamics", "learning_rates", key)
         try:
             if data is None:
-                total = 5000
-                warmup = 500
-                phase1_end = int(total * 0.6)
-                max_lr = 3e-4
-                phase2_lr = max_lr * 0.1
-                steps = np.arange(total)
-
-                def _lr(s):
-                    if s < warmup:
-                        return max_lr * s / warmup
-                    elif s < phase1_end:
-                        return max_lr
-                    else:
-                        return phase2_lr
-
-                actual_lr = np.array([_lr(s) for s in steps])
-                data = {
-                    "steps": steps,
-                    "actual_lr": actual_lr,
-                    "warmup_end": warmup,
-                    "phase1_end": phase1_end,
-                    "max_lr": max_lr,
-                    "phase2_lr": phase2_lr,
-                }
+                skip_no_data("bitnet_two_phase_lr_schedule")
+                return out
 
             steps     = np.asarray(data["steps"])
             actual_lr = np.asarray(data["actual_lr"])
@@ -322,17 +289,8 @@ class TrainingDynamicsPlotter:
             group_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
             n = 5000
             if data is None:
-                np.random.seed(0)
-                steps = np.arange(n)
-                scales = [1.0, 0.8, 0.9, 0.7, 0.5]
-                lrs = {}
-                for g, sc in zip(groups, scales):
-                    base = sc * 3e-4
-                    warmup = np.linspace(0, base, 500)
-                    flat   = np.full(2500, base)
-                    decay  = np.linspace(base, base * 0.1, 2000)
-                    lrs[g] = np.concatenate([warmup, flat, decay])
-                data = {"steps": steps, "lrs": lrs}
+                skip_no_data("per_param_group_lr")
+                return out
 
             steps = np.asarray(data["steps"])
             lrs   = data["lrs"]
@@ -370,18 +328,8 @@ class TrainingDynamicsPlotter:
         out = PLOT_DIRS["gradient_stats"] / plot_filename("training_dynamics", "gradient_stats", key)
         try:
             if data is None:
-                n = 5000
-                np.random.seed(1)
-                steps = np.arange(n)
-                global_norm = np.abs(np.random.normal(0.5, 0.3, n)).clip(0.01, 5)
-                # Spike simulation
-                spike_positions = np.random.choice(n, size=20, replace=False)
-                global_norm[spike_positions] *= 4
-                data = {
-                    "steps": steps,
-                    "global_norm": global_norm,
-                    "clip_threshold": 1.0,
-                }
+                skip_no_data("gradient_norms_over_time")
+                return out
 
             steps = np.asarray(data["steps"])
             g_norm = np.asarray(data["global_norm"])
@@ -433,15 +381,11 @@ class TrainingDynamicsPlotter:
             )
             n_ckpts = 10
             if data is None:
-                np.random.seed(2)
-                matrix = np.random.uniform(1e-4, 1e-2, (len(layer_names), n_ckpts))
-                # Simulate vanishing gradient at lower layers
-                for i, _ in enumerate(layer_names[:3]):
-                    matrix[i] *= 0.01
-                ckpt_labels = [f"{(i+1)*500}" for i in range(n_ckpts)]
-            else:
-                matrix = np.asarray(data["matrix"])
-                ckpt_labels = data.get("ckpt_labels", [str(i) for i in range(matrix.shape[1])])
+                skip_no_data("gradient_flow_heatmap")
+                return out
+
+            matrix = np.asarray(data["matrix"])
+            ckpt_labels = data.get("ckpt_labels", [str(i) for i in range(matrix.shape[1])])
 
             fig, ax = plt.subplots(figsize=(14, 8))
             sns.heatmap(
@@ -475,11 +419,8 @@ class TrainingDynamicsPlotter:
         try:
             n_epochs = 10
             if data is None:
-                np.random.seed(3)
-                epochs = np.arange(1, n_epochs + 1)
-                adaptive_freq = np.random.uniform(5, 30, n_epochs)
-                fixed_freq    = np.random.uniform(10, 50, n_epochs)
-                data = {"epochs": epochs, "adaptive": adaptive_freq, "fixed": fixed_freq}
+                skip_no_data("gradient_clipping_frequency")
+                return out
 
             epochs   = np.asarray(data["epochs"])
             adaptive = np.asarray(data.get("adaptive", np.zeros(len(epochs))))
@@ -520,32 +461,13 @@ class TrainingDynamicsPlotter:
         out = PLOT_DIRS["convergence"] / plot_filename("training_dynamics", "convergence", key)
         try:
             if data is None:
-                n = 3000
-                s1_steps = np.arange(1, 2000)
-                s2_steps = np.arange(1, 1001)
-                s1_val = 3.0 * (s1_steps ** -0.35) + np.random.normal(0, 0.02, len(s1_steps))
-                s2_val = 1.8 * (s2_steps ** -0.45) + np.random.normal(0, 0.02, len(s2_steps))
-                data = {"s1_steps": s1_steps, "s1_val": s1_val, "s2_steps": s2_steps, "s2_val": s2_val}
+                skip_no_data("loss_convergence_rate")
+                return out
 
-            # Use .get() per key so a partial data dict (e.g. only Stage 1
-            # data available mid-training) falls back to synthetic placeholders
-            # rather than crashing with KeyError.
-            _syn = {}
-            if any(k not in data for k in ("s1_steps", "s1_val", "s2_steps", "s2_val")):
-                _rng = np.random.default_rng(seed=0)
-                _s1 = np.arange(1, 500)
-                _s2 = np.arange(1, 500)
-                _syn = {
-                    "s1_steps": _s1,
-                    "s1_val":   3.0 * (_s1 ** -0.35) + _rng.normal(0, 0.02, len(_s1)),
-                    "s2_steps": _s2,
-                    "s2_val":   1.8 * (_s2 ** -0.45) + _rng.normal(0, 0.02, len(_s2)),
-                }
-
-            s1_steps = np.asarray(data.get("s1_steps", _syn.get("s1_steps", np.arange(1, 500))))
-            s1_val   = np.asarray(data.get("s1_val",   _syn.get("s1_val",   3.0 * (s1_steps ** -0.35))))
-            s2_steps = np.asarray(data.get("s2_steps", _syn.get("s2_steps", np.arange(1, 500))))
-            s2_val   = np.asarray(data.get("s2_val",   _syn.get("s2_val",   1.8 * (s2_steps ** -0.45))))
+            s1_steps = np.asarray(data["s1_steps"])
+            s1_val   = np.asarray(data["s1_val"])
+            s2_steps = np.asarray(data["s2_steps"])
+            s2_val   = np.asarray(data["s2_val"])
 
             def powerlaw_fit(steps, vals):
                 log_s = np.log(steps + 1)
@@ -591,15 +513,8 @@ class TrainingDynamicsPlotter:
         out = PLOT_DIRS["convergence"] / plot_filename("training_dynamics", "convergence", key)
         try:
             if data is None:
-                n = 5000
-                time_h = np.linspace(0, 12, n)
-                steps  = np.arange(n)
-                train_loss = _mock_loss(n, start=4.0)
-                val_loss   = _mock_loss(n, start=3.8)
-                cum_tokens = np.cumsum(np.full(n, 4096))         # tokens per step
-                data = {"time_h": time_h, "steps": steps,
-                        "train_loss": train_loss, "val_loss": val_loss,
-                        "cum_tokens": cum_tokens}
+                skip_no_data("training_efficiency_metrics")
+                return out
 
             time_h     = np.asarray(data["time_h"])
             train_loss = np.asarray(data["train_loss"])
@@ -641,22 +556,8 @@ class TrainingDynamicsPlotter:
         out = PLOT_DIRS["loss_curves"] / plot_filename("training_dynamics", "loss_curves", key, step=step)
         try:
             if data is None:
-                n = 500
-                np.random.seed(7)
-                tokens_m = np.linspace(0.1, 50, n)
-                s1_mask  = tokens_m <= 20
-                tl = 4.0 * (tokens_m ** -0.35) + np.random.normal(0, 0.08, n)
-                vl = 3.9 * (tokens_m ** -0.33) + np.random.normal(0, 0.10, n)
-                tl = np.clip(tl, 0.5, None);  vl = np.clip(vl, 0.5, None)
-                win = 20
-                def _rstd(x):
-                    o = np.zeros_like(x)
-                    for i in range(len(x)):
-                        lo = max(0, i - win // 2); hi = min(len(x), i + win // 2)
-                        o[i] = x[lo:hi].std() + 0.02
-                    return o
-                data = {"tokens_m": tokens_m, "train_loss": tl, "train_std": _rstd(tl),
-                        "val_loss": vl, "val_std": _rstd(vl), "s1_mask": s1_mask}
+                skip_no_data("loss_vs_tokens")
+                return out
 
             tokens_m   = np.asarray(data["tokens_m"])
             train_loss = np.asarray(data["train_loss"])
@@ -697,12 +598,8 @@ class TrainingDynamicsPlotter:
         out = PLOT_DIRS["loss_curves"] / plot_filename("training_dynamics", "loss_curves", key, step=step)
         try:
             if data is None:
-                n = 800; np.random.seed(8)
-                steps  = np.arange(n)
-                losses = 3.5 * np.exp(-steps / 300) + 0.5 + np.random.normal(0, 0.05, n)
-                for sp in [60, 150, 300, 510]:
-                    if sp < n: losses[sp] += np.random.uniform(1.0, 2.5)
-                data = {"steps": steps, "losses": losses}
+                skip_no_data("loss_spike_detection")
+                return out
 
             steps    = np.asarray(data["steps"])
             losses   = np.asarray(data["losses"])
@@ -737,10 +634,8 @@ class TrainingDynamicsPlotter:
         out = PLOT_DIRS["gradient_stats"] / plot_filename("training_dynamics", "gradient_stats", key, step=step)
         try:
             if data is None:
-                np.random.seed(9); epochs = np.arange(1, 11)
-                s1 = np.clip(55 - epochs * 4 + np.random.normal(0, 3, 10), 5, 80)
-                s2 = np.clip(35 - epochs * 2 + np.random.normal(0, 3, 10), 2, 60)
-                data = {"epochs": epochs, "s1_clip_rate": s1, "s2_clip_rate": s2}
+                skip_no_data("gradient_clipping_rate_line")
+                return out
 
             epochs   = np.asarray(data["epochs"])
             s1_rate  = np.asarray(data.get("s1_clip_rate", np.zeros_like(epochs)))
@@ -771,7 +666,8 @@ class TrainingDynamicsPlotter:
         try:
             thresholds = [4.0, 3.0, 2.5, 2.0, 1.8, 1.5]
             if data is None:
-                data = {"thresholds": thresholds, "tokens_needed_m": [5, 18, 40, 100, 200, 500]}
+                skip_no_data("tokens_to_convergence")
+                return out
 
             thresholds = list(data.get("thresholds", thresholds))
             tokens_m   = np.asarray(data["tokens_needed_m"])
@@ -802,10 +698,8 @@ class TrainingDynamicsPlotter:
         out = PLOT_DIRS["energy_metrics"] / plot_filename("training_dynamics", "energy_metrics", key, step=step)
         try:
             if data is None:
-                np.random.seed(55); n = 200
-                s1 = np.arange(n); s2 = np.arange(n)
-                data = {"s1_steps": s1, "s1_kwh": np.cumsum(np.abs(np.random.normal(2e-4, 5e-5, n))),
-                        "s2_steps": s2, "s2_kwh": np.cumsum(np.abs(np.random.normal(5e-4, 1e-4, n)))}
+                skip_no_data("energy_vs_steps")
+                return out
 
             s1_steps = np.asarray(data.get("s1_steps", []))
             s1_kwh   = np.asarray(data.get("s1_kwh",   []))
@@ -838,10 +732,8 @@ class TrainingDynamicsPlotter:
         out = PLOT_DIRS["co2_metrics"] / plot_filename("training_dynamics", "co2_metrics", key, step=step)
         try:
             if data is None:
-                np.random.seed(56); n = 200
-                s1 = np.arange(n); s2 = np.arange(n)
-                data = {"s1_steps": s1, "s1_co2_kg": np.cumsum(np.abs(np.random.normal(8e-5, 2e-5, n))),
-                        "s2_steps": s2, "s2_co2_kg": np.cumsum(np.abs(np.random.normal(2e-4, 4e-5, n)))}
+                skip_no_data("co2_vs_steps")
+                return out
 
             s1_steps = np.asarray(data.get("s1_steps",  []))
             s1_co2   = np.asarray(data.get("s1_co2_kg", []))
@@ -874,10 +766,8 @@ class TrainingDynamicsPlotter:
         out = PLOT_DIRS["energy_metrics"] / plot_filename("training_dynamics", "energy_metrics", key, step=step)
         try:
             if data is None:
-                np.random.seed(57); n = 100
-                steps = np.arange(1, n + 1) * 10
-                eff   = 0.4 * np.exp(-steps / 500) + 0.05 + np.random.normal(0, 0.005, n)
-                data  = {"steps": steps, "kwh_per_1m_tokens": eff}
+                skip_no_data("energy_per_token")
+                return out
 
             steps    = np.asarray(data["steps"])
             eff      = np.asarray(data["kwh_per_1m_tokens"])
@@ -903,13 +793,8 @@ class TrainingDynamicsPlotter:
         out = PLOT_DIRS["energy_metrics"] / plot_filename("training_dynamics", "energy_metrics", key, step=step)
         try:
             if data is None:
-                np.random.seed(58)
-                n1, n2 = 150, 250
-                s1s = np.arange(n1); s2s = np.arange(n2)
-                s1k = np.cumsum(np.abs(np.random.normal(2e-4, 5e-5, n1)))
-                s2k = np.cumsum(np.abs(np.random.normal(5e-4, 1e-4, n2)))
-                data = {"s1_steps": s1s, "s1_kwh": s1k, "s1_co2": s1k * 0.35,
-                        "s2_steps": s2s, "s2_kwh": s2k, "s2_co2": s2k * 0.35}
+                skip_no_data("stage_energy_comparison")
+                return out
 
             mode_tag = data.get("mode_tag", "")
             fig, axes = plt.subplots(1, 2, figsize=VIZ_CONFIG["figsize_dual"])
@@ -984,28 +869,6 @@ class TrainingDynamicsPlotter:
 # ===========================================================================
 # Private helpers
 # ===========================================================================
-
-def _mock_loss(n: int, start: float = 3.0, noise: float = 0.1) -> np.ndarray:
-    """Exponentially decaying mock loss with noise."""
-    steps = np.arange(n)
-    loss  = start * np.exp(-steps / (n * 0.4)) + 0.1
-    loss += np.random.normal(0, noise, n)
-    return np.clip(loss, 0.01, None)
-
-
-def _synthetic_loss_data() -> Dict:
-    np.random.seed(42)
-    s1 = np.arange(0, 2000)
-    s2 = np.arange(2000, 5000)
-    return {
-        "stage1_steps":      s1,
-        "stage2_steps":      s2,
-        "stage1_train_loss": _mock_loss(len(s1), start=4.0),
-        "stage1_val_loss":   _mock_loss(len(s1), start=3.8),
-        "stage2_train_loss": _mock_loss(len(s2), start=2.0),
-        "stage2_val_loss":   _mock_loss(len(s2), start=1.9),
-    }
-
 
 def _save_and_log(
     fig: plt.Figure,

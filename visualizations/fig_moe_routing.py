@@ -37,7 +37,7 @@ from matplotlib.colors import LogNorm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from visualizations.config import (
-    VIZ_CONFIG, EXPERT_NAMES, EXPERT_COLORS, DATASET_DOMAINS, apply_mpl_style
+    VIZ_CONFIG, EXPERT_NAMES, EXPERT_COLORS, DATASET_DOMAINS, apply_mpl_style, skip_no_data
 )
 
 apply_mpl_style()
@@ -200,8 +200,8 @@ def _extract_routing_from_model(model, eval_datasets: Optional[List[str]] = None
         return routing_matrix, layer_load
 
     except Exception as e:
-        print(f"[fig_moe_routing] Falling back to synthetic data: {e}")
-        return _synthetic_routing_matrix(_EVAL_DATASETS)
+        print(f"[fig_moe_routing] Real extraction failed: {e}")
+        return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -232,10 +232,14 @@ def generate(save_dir: Optional[Path] = None, model=None) -> Path:
     expert_short = [f"E{i}{_nl}{n.replace('_', '_' + _nl)}" for i, n in enumerate(EXPERT_NAMES)]
     expert_colors = [EXPERT_COLORS[n] for n in EXPERT_NAMES]
 
-    if model is not None:
-        routing_matrix, layer_matrix = _extract_routing_from_model(model, datasets)
-    else:
-        routing_matrix, layer_matrix = _synthetic_routing_matrix(datasets)
+    if model is None:
+        skip_no_data("fig3_moe_routing")
+        return save_dir / "fig3_moe_routing.png"
+
+    routing_matrix, layer_matrix = _extract_routing_from_model(model, datasets)
+    if routing_matrix is None:
+        skip_no_data("fig3_moe_routing (extraction failed)")
+        return save_dir / "fig3_moe_routing.png"
 
     num_layers = layer_matrix.shape[0]
 

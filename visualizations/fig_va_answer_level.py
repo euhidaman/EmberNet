@@ -41,7 +41,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from visualizations.config import VIZ_CONFIG, apply_mpl_style
+from visualizations.config import VIZ_CONFIG, apply_mpl_style, skip_no_data
 
 apply_mpl_style()
 
@@ -199,12 +199,14 @@ def generate(save_dir: Optional[Path] = None, model=None) -> Path:
         save_dir = Path("plots/paper_figures")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    if model is not None:
-        data = _extract_answer_level(model)
-        if data is None:
-            data = _synthetic_data()
-    else:
-        data = _synthetic_data()
+    if model is None:
+        skip_no_data("fig6_va_answer_level")
+        return save_dir / "fig6_va_answer_level.png"
+
+    data = _extract_answer_level(model)
+    if data is None:
+        skip_no_data("fig6_va_answer_level (extraction failed)")
+        return save_dir / "fig6_va_answer_level.png"
 
     pva_nov = data["avg_pva_no_va"]
     pva_va  = data["avg_pva_va"]

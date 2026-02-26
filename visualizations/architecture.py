@@ -20,7 +20,7 @@ import seaborn as sns
 
 from visualizations.config import (
     VIZ_CONFIG, PLOT_DIRS, EXPERT_NAMES, EXPERT_COLORS,
-    apply_mpl_style, plot_filename, log_plot_error,
+    apply_mpl_style, plot_filename, log_plot_error, skip_no_data,
 )
 from visualizations.training_dynamics import _save_and_log
 from visualizations.wandb_utils import WandBLogger
@@ -175,6 +175,10 @@ class ArchitecturePlotter:
         key = "bitlinear_quantization_flow"
         out = PLOT_DIRS["model_diagrams"] / plot_filename("architecture", "model_diagrams", key)
         try:
+            if data is None:
+                skip_no_data("bitlinear_quantization_flow")
+                return out
+
             np.random.seed(99)
             fp_weights = np.random.normal(0, 0.5, (5, 8))
             gamma = np.mean(np.abs(fp_weights))
@@ -227,14 +231,12 @@ class ArchitecturePlotter:
             n_text_tokens = 20
             n_query_tokens = 20
             if data is None:
-                np.random.seed(50)
-                attn = np.random.dirichlet(
-                    np.ones(n_img_tokens + n_text_tokens), size=n_query_tokens
-                )
-            else:
-                attn = np.asarray(data["attn"])
-                n_img_tokens  = data.get("n_img_tokens",  64)
-                n_text_tokens = data.get("n_text_tokens", 20)
+                skip_no_data("cross_modal_attention_heatmap")
+                return out
+
+            attn = np.asarray(data["attn"])
+            n_img_tokens  = data.get("n_img_tokens",  64)
+            n_text_tokens = data.get("n_text_tokens", 20)
 
             fig, ax = plt.subplots(figsize=(14, 6))
             im = ax.imshow(attn, cmap="hot", aspect="auto", vmin=0)
@@ -262,13 +264,10 @@ class ArchitecturePlotter:
             n_layers = 16
             seq_len  = 32
             if data is None:
-                np.random.seed(51)
-                attn_all = []
-                for l in range(n_layers):
-                    a = np.random.dirichlet(np.ones(seq_len), size=seq_len)
-                    attn_all.append(a)
-            else:
-                attn_all = [np.asarray(a) for a in data["attn_all"]]
+                skip_no_data("layerwise_attention_grid")
+                return out
+
+            attn_all = [np.asarray(a) for a in data["attn_all"]]
 
             fig, axes = plt.subplots(4, 4, figsize=VIZ_CONFIG["figsize_grid22"])
             for l, ax in enumerate(axes.flatten()):
@@ -293,10 +292,8 @@ class ArchitecturePlotter:
         try:
             n_layers = 16
             if data is None:
-                np.random.seed(52)
-                layers = np.arange(1, n_layers + 1)
-                distances = 5 + layers * 1.8 + np.random.normal(0, 1, n_layers)
-                data = {"layers": layers, "distances": distances}
+                skip_no_data("avg_attention_distance_per_layer")
+                return out
 
             layers    = np.asarray(data["layers"])
             distances = np.asarray(data["distances"])
@@ -325,6 +322,10 @@ class ArchitecturePlotter:
         key = "token_routing_sankey"
         out = PLOT_DIRS["token_flow"] / plot_filename("architecture", "token_flow", key)
         try:
+            if data is None:
+                skip_no_data("token_routing_sankey")
+                return out
+
             try:
                 import plotly.graph_objects as go
                 import plotly.io as pio
@@ -378,10 +379,10 @@ class ArchitecturePlotter:
             n_experts = len(EXPERT_NAMES)
             n_tokens  = 128
             if data is None:
-                np.random.seed(61)
-                act_map = np.random.dirichlet(np.ones(n_experts), size=n_tokens).T
-            else:
-                act_map = np.asarray(data["act_map"])
+                skip_no_data("expert_activation_timeline")
+                return out
+
+            act_map = np.asarray(data["act_map"])
 
             fig, ax = plt.subplots(figsize=(16, 5))
             im = ax.imshow(act_map, cmap="hot", aspect="auto", vmin=0, vmax=act_map.max())

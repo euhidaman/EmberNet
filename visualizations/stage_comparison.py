@@ -19,7 +19,7 @@ import seaborn as sns
 from visualizations.config import (
     VIZ_CONFIG, PLOT_DIRS, STAGE_COLORS, EXPERT_NAMES, EXPERT_COLORS, EXPERT_LABELS,
     ALL_DATASETS, DATASET_DOMAINS, DOMAIN_COLORS,
-    apply_mpl_style, plot_filename, log_plot_error,
+    apply_mpl_style, plot_filename, log_plot_error, skip_no_data,
 )
 from visualizations.training_dynamics import _save_and_log, _mock_loss
 from visualizations.wandb_utils import WandBLogger
@@ -44,17 +44,8 @@ class StageComparisonPlotter:
         out = PLOT_DIRS["stage1_vs_stage2"] / plot_filename("stage_comparison", "stage_vs_stage", key)
         try:
             if data is None:
-                np.random.seed(150)
-                s1_n = 2000
-                s2_n = 3000
-                data = {
-                    "s1_steps": np.arange(s1_n),
-                    "s1_train":  _mock_loss(s1_n, start=4.0),
-                    "s1_val":    _mock_loss(s1_n, start=3.8),
-                    "s2_steps": np.arange(s2_n),
-                    "s2_train":  _mock_loss(s2_n, start=2.0),
-                    "s2_val":    _mock_loss(s2_n, start=1.9),
-                }
+                skip_no_data(key)
+                return out
 
             s1_steps = np.asarray(data["s1_steps"])
             s1_train = np.asarray(data["s1_train"])
@@ -102,22 +93,8 @@ class StageComparisonPlotter:
             ]
             n_ckpts = 8
             if data is None:
-                np.random.seed(151)
-                s1_updates = np.random.uniform(0, 0.1, (len(param_groups), n_ckpts))
-                s2_updates = np.random.uniform(0, 0.2, (len(param_groups), n_ckpts))
-                # Projector updates high in stage 1
-                proj_idx = param_groups.index("projector")
-                s1_updates[proj_idx] *= 3
-                # Router / expert updates high in stage 2
-                router_idx = param_groups.index("router")
-                s2_updates[router_idx] *= 2.5
-                ckpt_labels = [f"ckpt {i+1}" for i in range(n_ckpts)]
-                data = {
-                    "param_groups": param_groups,
-                    "s1_updates": s1_updates,
-                    "s2_updates": s2_updates,
-                    "ckpt_labels": ckpt_labels,
-                }
+                skip_no_data(key)
+                return out
 
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8), sharey=True)
             ckpt_labels = data.get("ckpt_labels", [str(i) for i in range(data["s1_updates"].shape[1])])
@@ -152,22 +129,8 @@ class StageComparisonPlotter:
             angles = np.linspace(0, 2 * np.pi, N, endpoint=False)
 
             if data is None:
-                np.random.seed(152)
-                # Before: near-uniform
-                before = {name: np.random.uniform(0.08, 0.18, N) for name in EXPERT_NAMES}
-                # After: specialized
-                after  = {}
-                for i, name in enumerate(EXPERT_NAMES):
-                    scores = np.random.uniform(0.05, 0.25, N)
-                    scores[i] = np.random.uniform(0.55, 0.85)
-                    after[name] = np.clip(scores, 0, 1)
-                # Ideal
-                ideal = {}
-                for i, name in enumerate(EXPERT_NAMES):
-                    s = np.full(N, 0.05)
-                    s[i] = 1.0
-                    ideal[name] = s
-                data = {"before": before, "after": after, "ideal": ideal}
+                skip_no_data(key)
+                return out
 
             def draw_spider_ax(ax, perf_dict, ideal_dict=None, title=""):
                 ax.set_theta_offset(np.pi / 2)
@@ -215,12 +178,8 @@ class StageComparisonPlotter:
         try:
             num_experts_list = [2, 4, 8, 16]
             if data is None:
-                np.random.seed(160)
-                acc_by_ds = {}
-                for ds in ALL_DATASETS[:5]:
-                    acc_by_ds[ds] = np.random.uniform(55, 80, len(num_experts_list)) + \
-                                    np.array([0, 3, 5, 4.5])
-                data = {"num_experts": num_experts_list, "acc_by_ds": acc_by_ds}
+                skip_no_data(key)
+                return out
 
             x = np.asarray(data["num_experts"])
             acc_by_ds = data["acc_by_ds"]
@@ -253,12 +212,8 @@ class StageComparisonPlotter:
         try:
             strategies = ["Top-1", "Top-2", "Top-4", "Soft\nRouting"]
             if data is None:
-                np.random.seed(161)
-                accuracy = np.array([64.5, 68.2, 67.8, 66.1])
-                size_mb  = np.array([100.0, 135.0, 200.0, 180.0])
-                speed    = np.array([320.0, 280.0, 180.0, 210.0])
-                data = {"strategies": strategies, "accuracy": accuracy,
-                        "size_mb": size_mb, "speed": speed}
+                skip_no_data(key)
+                return out
 
             strategies = data.get("strategies", strategies)
             accuracy   = np.asarray(data["accuracy"])
@@ -305,13 +260,8 @@ class StageComparisonPlotter:
             levels  = ["FP32", "FP16", "Ternary", "Binary"]
             metrics = ["Accuracy (%)", "Model Size (MB)", "Inference Speed\n(tok/s)", "Peak Memory\n(MB)"]
             if data is None:
-                table = np.array([
-                    [75.0, 1540.0, 120.0, 3200.0],  # FP32
-                    [74.5,  770.0, 230.0, 1600.0],  # FP16
-                    [72.0,  135.0, 280.0,  350.0],  # Ternary  (EmberNet)
-                    [65.0,  100.0, 310.0,  260.0],  # Binary
-                ])
-                data = {"table": table}
+                skip_no_data(key)
+                return out
 
             table = np.asarray(data["table"])
             # Normalise per column: 0=worst 1=best

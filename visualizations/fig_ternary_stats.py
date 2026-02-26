@@ -35,7 +35,7 @@ from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from visualizations.config import VIZ_CONFIG, EXPERT_NAMES, EXPERT_COLORS, apply_mpl_style
+from visualizations.config import VIZ_CONFIG, EXPERT_NAMES, EXPERT_COLORS, apply_mpl_style, skip_no_data
 
 apply_mpl_style()
 
@@ -106,7 +106,7 @@ def _extract_stats_from_model(model) -> Dict:
     try:
         from models.bitnet_moe import BitLinear, weight_quant
     except ImportError:
-        return _synthetic_stats()
+        return None
 
     def _ternary_fracs(module) -> Dict[str, float]:
         w = weight_quant(module.weight).detach().cpu().float()
@@ -117,7 +117,7 @@ def _extract_stats_from_model(model) -> Dict:
         return {"neg": neg_f, "zero": zero_f, "pos": pos_f}
 
     if not (hasattr(model, "decoder") and hasattr(model.decoder, "layers")):
-        return _synthetic_stats()
+        return None
 
     num_layers = len(model.decoder.layers)
     attn_stats  = []
@@ -158,7 +158,7 @@ def _extract_stats_from_model(model) -> Dict:
         attention_stats=attn_stats,
         expert_stats=expert_stats,
         shared_stats=shared_stats,
-        projector_stats=projector_stats if projector_stats else _synthetic_stats()["projector_stats"],
+        projector_stats=projector_stats if projector_stats else [],
     )
 
 
@@ -234,7 +234,14 @@ def generate(save_dir: Optional[Path] = None, model=None) -> Path:
         save_dir = Path("plots/paper_figures")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    stats = _extract_stats_from_model(model) if model is not None else _synthetic_stats()
+    if model is None:
+        skip_no_data("fig2_ternary_stats")
+        return save_dir / "fig2_ternary_stats.png"
+
+    stats = _extract_stats_from_model(model)
+    if stats is None:
+        skip_no_data("fig2_ternary_stats (extraction failed)")
+        return save_dir / "fig2_ternary_stats.png"
 
     num_layers = len(stats["attention_stats"])
     layer_labels = [f"L{i}" for i in range(num_layers)]

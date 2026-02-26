@@ -19,7 +19,7 @@ import seaborn as sns
 from visualizations.config import (
     VIZ_CONFIG, PLOT_DIRS, STAGE_COLORS, EXPERT_NAMES, EXPERT_COLORS, EXPERT_LABELS,
     ALL_DATASETS, DATASET_DOMAINS, DOMAIN_COLORS,
-    apply_mpl_style, plot_filename, log_plot_error,
+    apply_mpl_style, plot_filename, log_plot_error, skip_no_data,
 )
 from visualizations.training_dynamics import _save_and_log
 from visualizations.wandb_utils import WandBLogger
@@ -45,15 +45,8 @@ class PerformanceMetricsPlotter:
         try:
             n_steps = 5000
             if data is None:
-                np.random.seed(120)
-                steps = np.arange(0, n_steps, 500)
-                acc_curves = {}
-                for i, ds in enumerate(ALL_DATASETS):
-                    target = np.random.uniform(55, 90)
-                    curve  = target * (1 - np.exp(-steps / 2000)) + \
-                             np.random.normal(0, 1.5, len(steps))
-                    acc_curves[ds] = np.clip(curve, 0, 100)
-                data = {"steps": steps, "acc": acc_curves}
+                skip_no_data(key)
+                return out
 
             steps  = np.asarray(data["steps"])
             acc    = data["acc"]
@@ -88,15 +81,8 @@ class PerformanceMetricsPlotter:
             n_steps = 5000
             domains = list(DATASET_DOMAINS.keys())
             if data is None:
-                np.random.seed(121)
-                steps = np.arange(0, n_steps, 500)
-                domain_acc = {}
-                for domain in domains:
-                    target = np.random.uniform(60, 88)
-                    curve  = target * (1 - np.exp(-steps / 2000)) + \
-                             np.random.normal(0, 1.0, len(steps))
-                    domain_acc[domain] = np.clip(curve, 0, 100)
-                data = {"steps": steps, "domain_acc": domain_acc}
+                skip_no_data(key)
+                return out
 
             steps      = np.asarray(data["steps"])
             domain_acc = data["domain_acc"]
@@ -127,10 +113,8 @@ class PerformanceMetricsPlotter:
         out = PLOT_DIRS["accuracy_curves"] / plot_filename("performance", "accuracy_curves", key)
         try:
             if data is None:
-                np.random.seed(122)
-                target_acc = np.random.uniform(70, 92, len(EXPERT_NAMES))
-                others_acc = np.random.uniform(40, 65, len(EXPERT_NAMES))
-                data = {"target_acc": target_acc, "others_acc": others_acc}
+                skip_no_data(key)
+                return out
 
             target_acc = np.asarray(data["target_acc"])
             others_acc = np.asarray(data["others_acc"])
@@ -172,15 +156,8 @@ class PerformanceMetricsPlotter:
         try:
             domains = list(DATASET_DOMAINS.keys())
             if data is None:
-                np.random.seed(130)
-                steps = np.arange(0, 5000, 500)
-                overall_ppl = 80 * np.exp(-steps / 3000) + 10 + np.random.normal(0, 1, len(steps))
-                domain_ppl  = {}
-                for domain in domains:
-                    t = np.random.uniform(55, 120)
-                    domain_ppl[domain] = t * np.exp(-steps / 3000) + np.random.uniform(8, 15) + \
-                                         np.random.normal(0, 0.5, len(steps))
-                data = {"steps": steps, "overall": overall_ppl, "domain_ppl": domain_ppl}
+                skip_no_data(key)
+                return out
 
             steps       = np.asarray(data["steps"])
             overall_ppl = np.asarray(data["overall"])
@@ -213,16 +190,8 @@ class PerformanceMetricsPlotter:
         try:
             seq_len = 2048
             if data is None:
-                np.random.seed(131)
-                positions   = np.arange(seq_len)
-                img_ppl     = np.random.uniform(5, 15, seq_len)
-                early_txt   = 20 * np.exp(-positions[:512] / 200) + 8 + np.random.normal(0, 0.5, 512)
-                late_txt    = 10 * np.exp(-positions[512:] / 500) + 5 + np.random.normal(0, 0.3, seq_len - 512)
-                all_ppl     = np.concatenate([img_ppl[:64], early_txt[:min(seq_len - 64, 512)],
-                                              late_txt[:max(0, seq_len - 576)]])
-                # Pad to seq_len
-                all_ppl = np.pad(all_ppl, (0, max(0, seq_len - len(all_ppl))))[:seq_len]
-                data = {"positions": positions, "ppl": all_ppl, "n_img": 64}
+                skip_no_data(key)
+                return out
 
             positions = np.asarray(data["positions"])
             ppl       = np.asarray(data["ppl"])
@@ -261,14 +230,8 @@ class PerformanceMetricsPlotter:
             benchmarks = ["TextVQA", "DocVQA", "ChartQA", "VQAv2", "ScienceQA", "A-OKVQA", "MathVista"]
             models     = ["EmberNet", "SmolVLM", "MobileVLM", "Baseline"]
             if data is None:
-                np.random.seed(140)
-                scores = {
-                    "EmberNet":   np.random.uniform(55, 80, len(benchmarks)),
-                    "SmolVLM":    np.random.uniform(45, 72, len(benchmarks)),
-                    "MobileVLM":  np.random.uniform(40, 68, len(benchmarks)),
-                    "Baseline":   np.random.uniform(25, 50, len(benchmarks)),
-                }
-                data = {"benchmarks": benchmarks, "scores": scores}
+                skip_no_data(key)
+                return out
 
             benchmarks = data.get("benchmarks", benchmarks)
             scores = data["scores"]
@@ -303,13 +266,8 @@ class PerformanceMetricsPlotter:
         out = PLOT_DIRS["benchmark_comparisons"] / plot_filename("performance", "benchmark", key)
         try:
             if data is None:
-                models_info = {
-                    "EmberNet":   (135, 72.5, "#d62728", "*"),
-                    "SmolVLM":    (450, 69.0, "#1f77b4", "o"),
-                    "MobileVLM":  (800, 71.0, "#2ca02c", "o"),
-                    "Baseline":   (1540, 58.0, "#9467bd", "s"),
-                }
-                data = {"models": models_info}
+                skip_no_data(key)
+                return out
 
             models_info = data["models"]
             fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
@@ -350,13 +308,8 @@ class PerformanceMetricsPlotter:
             devices = ["CPU", "GPU (RTX 3090)", "Edge (Raspberry Pi)"]
             models  = ["EmberNet", "SmolVLM", "MobileVLM"]
             if data is None:
-                np.random.seed(141)
-                speeds = {
-                    "EmberNet":  np.array([45.0, 280.0, 8.5]),
-                    "SmolVLM":   np.array([25.0, 180.0, 4.5]),
-                    "MobileVLM": np.array([18.0, 130.0, 2.8]),
-                }
-                data = {"devices": devices, "speeds": speeds}
+                skip_no_data(key)
+                return out
 
             devices = data.get("devices", devices)
             speeds  = data["speeds"]
@@ -398,11 +351,8 @@ class PerformanceMetricsPlotter:
         try:
             task_types = ["OCR", "Chart", "Document", "Scene", "Generic VQA"]
             if data is None:
-                np.random.seed(150)
-                energy_data = {t: np.abs(np.random.normal(
-                    np.random.uniform(0.0001, 0.0008), 0.0001, 30
-                )) for t in task_types}
-                data = {"task_types": task_types, "energy_joules": energy_data}
+                skip_no_data(key)
+                return out
 
             task_types  = data.get("task_types", task_types)
             energy      = data.get("energy_joules", {})
@@ -434,15 +384,8 @@ class PerformanceMetricsPlotter:
         try:
             models = ["EmberNet", "SmolVLM-500M", "MobileVLM-3B", "LLaVA-7B", "Qwen-VL-7B"]
             if data is None:
-                np.random.seed(151)
-                bench_data = {
-                    "EmberNet":       {"acc": 72.5, "energy_kwh": 0.0008},
-                    "SmolVLM-500M":   {"acc": 61.0, "energy_kwh": 0.0012},
-                    "MobileVLM-3B":   {"acc": 68.0, "energy_kwh": 0.0025},
-                    "LLaVA-7B":       {"acc": 78.0, "energy_kwh": 0.0060},
-                    "Qwen-VL-7B":     {"acc": 80.0, "energy_kwh": 0.0065},
-                }
-                data = {"models": models, "data": bench_data}
+                skip_no_data(key)
+                return out
 
             models    = data.get("models", models)
             bdata     = data["data"]
@@ -492,14 +435,8 @@ class PerformanceMetricsPlotter:
         out = PLOT_DIRS["efficiency_tradeoffs"] / plot_filename("performance", "efficiency", key)
         try:
             if data is None:
-                models_info = {
-                    "EmberNet":       {"size_mb": 420,  "acc": 72.5, "energy_mwh": 0.8},
-                    "SmolVLM-500M":   {"size_mb": 980,  "acc": 61.0, "energy_mwh": 1.2},
-                    "MobileVLM-3B":   {"size_mb": 6000, "acc": 68.0, "energy_mwh": 2.5},
-                    "LLaVA-7B":       {"size_mb": 14000,"acc": 78.0, "energy_mwh": 6.0},
-                    "Qwen-VL-7B":     {"size_mb": 15000,"acc": 80.0, "energy_mwh": 6.5},
-                }
-                data = {"models": models_info}
+                skip_no_data(key)
+                return out
 
             models_info = data.get("models", {})
             mode_tag    = data.get("mode_tag", "")

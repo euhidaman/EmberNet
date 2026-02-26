@@ -35,7 +35,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from visualizations.config import VIZ_CONFIG, apply_mpl_style
+from visualizations.config import VIZ_CONFIG, apply_mpl_style, skip_no_data
 
 apply_mpl_style()
 
@@ -222,15 +222,16 @@ def generate(save_dir: Optional[Path] = None, model=None) -> Path:
         save_dir = Path("plots/paper_figures")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    if model is not None:
-        try:
-            device = next(model.parameters()).device
-            bench_data = _run_real_benchmark(model, device=str(device))
-        except Exception as e:
-            warnings.warn(f"[fig_latency_energy] Real benchmark failed ({e}), using synthetic data.")
-            bench_data = _synthetic_latency_energy()
-    else:
-        bench_data = _synthetic_latency_energy()
+    if model is None:
+        skip_no_data("fig4_latency_energy")
+        return save_dir / "fig4_latency_energy.png"
+
+    try:
+        device = next(model.parameters()).device
+        bench_data = _run_real_benchmark(model, device=str(device))
+    except Exception as e:
+        skip_no_data(f"fig4_latency_energy (benchmark failed: {e})")
+        return save_dir / "fig4_latency_energy.png"
 
     labels = list(bench_data.keys())
     colors = [bench_data[k]["color"] for k in labels]

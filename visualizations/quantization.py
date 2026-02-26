@@ -18,7 +18,7 @@ import seaborn as sns
 
 from visualizations.config import (
     VIZ_CONFIG, PLOT_DIRS, STAGE_COLORS,
-    apply_mpl_style, plot_filename, log_plot_error,
+    apply_mpl_style, plot_filename, log_plot_error, skip_no_data,
 )
 from visualizations.training_dynamics import _save_and_log
 from visualizations.wandb_utils import WandBLogger
@@ -43,12 +43,8 @@ class QuantizationPlotter:
         out = PLOT_DIRS["weight_distributions"] / plot_filename("quantization", "weight_distributions", key)
         try:
             if data is None:
-                np.random.seed(70)
-                fp16_weights   = np.random.normal(0, 0.35, 50000)
-                gamma          = np.mean(np.abs(fp16_weights))
-                q_weights      = np.round(fp16_weights / (gamma + 1e-8)).clip(-1, 1)
-                sparsity       = (q_weights == 0).mean() * 100
-                data = {"fp16": fp16_weights, "quant": q_weights, "sparsity": sparsity}
+                skip_no_data(key)
+                return out
 
             fp16     = np.asarray(data["fp16"])
             q        = np.asarray(data["quant"])
@@ -89,12 +85,8 @@ class QuantizationPlotter:
                 ["embed"] + [f"L{i}" for i in range(16)] + ["lm_head"]
             )
             if data is None:
-                np.random.seed(71)
-                sparsity_s1 = np.random.uniform(25, 45, len(layers))
-                sparsity_s2 = np.random.uniform(28, 50, len(layers))
-                sparsity_s2[0] = 0.0  # embed not quantized
-                sparsity_s1[0] = 0.0
-                data = {"layers": layers, "stage1": sparsity_s1, "stage2": sparsity_s2}
+                skip_no_data(key)
+                return out
 
             x = np.arange(len(layers))
             w = 0.35
@@ -127,15 +119,8 @@ class QuantizationPlotter:
             layer_types = ["attention", "FFN", "projector"]
             layer_colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
             if data is None:
-                np.random.seed(72)
-                n = 5000
-                steps = np.arange(n)
-                mag = {}
-                for lt, start in zip(layer_types, [0.45, 0.55, 0.6]):
-                    curve = start * np.exp(-steps / (n * 0.8)) + 0.1 + \
-                            np.random.normal(0, 0.005, n)
-                    mag[lt] = np.clip(curve, 0.05, None)
-                data = {"steps": steps, "magnitudes": mag}
+                skip_no_data(key)
+                return out
 
             steps = np.asarray(data["steps"])
             mag   = data["magnitudes"]
@@ -167,13 +152,8 @@ class QuantizationPlotter:
         out = PLOT_DIRS["activation_histograms"] / plot_filename("quantization", "activations", key)
         try:
             if data is None:
-                np.random.seed(80)
-                fp16_act = np.random.normal(0, 2.5, 100000)
-                # Quantize to integer range [-8, 7]
-                scale = 8.0 / (np.max(np.abs(fp16_act)) + 1e-8)
-                int_act = np.round(fp16_act * scale).clip(-8, 7)
-                rmse = float(np.sqrt(np.mean((fp16_act - int_act / scale) ** 2)))
-                data = {"fp16": fp16_act, "quant": int_act, "rmse": rmse}
+                skip_no_data(key)
+                return out
 
             fp16_act = np.asarray(data["fp16"])
             int_act  = np.asarray(data["quant"])
@@ -203,13 +183,8 @@ class QuantizationPlotter:
         out = PLOT_DIRS["activation_histograms"] / plot_filename("quantization", "activations", key)
         try:
             if data is None:
-                np.random.seed(81)
-                n = 5000
-                steps = np.arange(n)
-                clip_ratio = 0.3 * np.exp(-steps / (n * 0.4)) + 0.02 + \
-                             np.random.normal(0, 0.01, n)
-                clip_ratio = np.clip(clip_ratio * 100, 0, 100)
-                data = {"steps": steps, "clip_ratio": clip_ratio}
+                skip_no_data(key)
+                return out
 
             steps      = np.asarray(data["steps"])
             clip_ratio = np.asarray(data["clip_ratio"])
@@ -237,9 +212,8 @@ class QuantizationPlotter:
         try:
             layers = ["embed"] + [f"L{i}" for i in range(16)] + ["lm_head"]
             if data is None:
-                np.random.seed(82)
-                dist = {l: np.random.exponential(1.0 + i * 0.1, 100) for i, l in enumerate(layers)}
-                data = {"dist": dist}
+                skip_no_data(key)
+                return out
 
             dist = data["dist"]
             box_vals = [dist.get(l, [0.0]) for l in layers]
@@ -274,10 +248,8 @@ class QuantizationPlotter:
         try:
             components = ["Vision\nEncoder", "Projector", "Decoder", "Total"]
             if data is None:
-                fp16_mb    = np.array([400.0,  20.0, 350.0, 770.0])
-                ternary_mb = np.array([0.0,    12.0, 110.0, 122.0])
-                act_mb     = np.array([50.0,    5.0,  80.0, 135.0])
-                data = {"fp16": fp16_mb, "ternary": ternary_mb, "activations": act_mb}
+                skip_no_data(key)
+                return out
 
             fp16_mb    = np.asarray(data["fp16"])
             ternary_mb = np.asarray(data["ternary"])
@@ -315,12 +287,8 @@ class QuantizationPlotter:
         try:
             layers = ["embed"] + [f"L{i}" for i in range(16)] + ["lm_head"]
             if data is None:
-                np.random.seed(90)
-                # Bit entropy: ideal ternary = 1.585 bits; embed = 16 bits
-                bits = np.random.uniform(1.2, 1.58, len(layers))
-                bits[0]  = 16.0  # embedding
-                bits[-1] = 16.0  # lm head
-                data = {"layers": layers, "bits": bits}
+                skip_no_data(key)
+                return out
 
             bits = np.asarray(data["bits"])
 
@@ -349,11 +317,8 @@ class QuantizationPlotter:
         out = PLOT_DIRS["bitwidth_efficiency"] / plot_filename("quantization", "bitwidth", key)
         try:
             if data is None:
-                methods  = ["FP32", "FP16", "Ternary", "Binary"]
-                sizes_mb = [1540.0, 770.0, 135.0, 90.0]
-                ppl      = [8.5,    9.0,   11.5,  15.0]
-                colors   = ["#d62728", "#AED6F1", "#2ca02c", "#9467bd"]
-                data = {"methods": methods, "sizes_mb": sizes_mb, "ppl": ppl, "colors": colors}
+                skip_no_data(key)
+                return out
 
             methods  = data["methods"]
             sizes_mb = np.asarray(data["sizes_mb"])
