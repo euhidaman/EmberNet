@@ -1563,6 +1563,17 @@ def main():
                 del _ckpt
                 _torch.cuda.empty_cache()
                 print(f"  [viz] EmberNetVLM loaded on {_viz_device} for visualizations")
+
+                # Attach VA Refiner if requested via CLI
+                if getattr(args, 'use_va_refiner', False):
+                    try:
+                        from models.va_refiner import VARefiner, VARefinerConfig
+                        _va_cfg = VARefinerConfig(use_va_refiner=True)
+                        _refiner = VARefiner(_live_model, _va_cfg, _live_model.tokenizer)
+                        _live_model.set_va_refiner(_refiner)
+                        print("  [viz] VA Refiner attached for paper figures")
+                    except Exception as _va_err:
+                        print(f"  [viz] VA Refiner could not be attached: {_va_err}")
             except Exception as _ml_err:
                 print(f"  [viz] Could not load model (model-dependent plots will skip): {_ml_err}")
 

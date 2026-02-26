@@ -177,13 +177,19 @@ def _extract_real_trajectories(model, samples: List[Dict]) -> List[Dict]:
     Run the model with VA Refiner enabled and capture per-token scores.
     Falls back to synthetic data on failure.
     """
+    _created_refiner = False
     try:
         import torch
-        if model.va_refiner is None:
-            raise RuntimeError("VA Refiner not attached to model")
-
+        from models.va_refiner import VARefiner, VARefinerConfig
         from PIL import Image as PILImage
         from visualizations.fig_qualitative_grid import _load_hf_image
+
+        # Construct and attach VA Refiner if not already present
+        if model.va_refiner is None:
+            va_cfg = VARefinerConfig(use_va_refiner=True)
+            refiner = VARefiner(model, va_cfg, model.tokenizer)
+            model.set_va_refiner(refiner)
+            _created_refiner = True
 
         real_trajectories = []
         for samp in samples:
@@ -223,6 +229,12 @@ def _extract_real_trajectories(model, samples: List[Dict]) -> List[Dict]:
     except Exception as e:
         print(f"[fig_va_token_effects] Real extraction failed: {e}")
         return None
+    finally:
+        if _created_refiner:
+            try:
+                model.set_va_refiner(None)
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
