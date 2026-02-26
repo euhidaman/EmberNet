@@ -194,14 +194,9 @@ class ExpertAnalysisPlotter:
                 self.logger.log_image(out, "plots/expert_analysis/routing_patterns/sankey_snapshot", step=step)
                 self._generated.append(out)
                 return out
-            except (ImportError, Exception) as plotly_err:
-                # Fallback: save a placeholder text file
+            except (ImportError, Exception):
                 out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_text(
-                    f"Sankey plot requires plotly + kaleido.\nError: {plotly_err}\n"
-                    "Install with: pip install plotly kaleido"
-                )
-                print(f"  [WARNING] Sankey plot skipped (plotly not available): {plotly_err}")
+                skip_no_data("routing_sankey_snapshot (plotly/kaleido unavailable)")
                 return out
         except Exception as e:
             log_plot_error(key, e); plt.close("all"); return out

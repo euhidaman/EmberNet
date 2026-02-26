@@ -362,10 +362,9 @@ class ArchitecturePlotter:
                 fig_s.update_layout(title_text="Token Routing Sankey", font_size=11, height=500)
                 pio.write_image(fig_s, str(out), width=1400, height=600, scale=2)
                 self.logger.log_image(out, "plots/architecture/token_flow/routing_sankey", step=step)
-            except (ImportError, Exception) as e_plotly:
+            except (ImportError, Exception):
                 out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_text(f"Requires plotly+kaleido: {e_plotly}")
-                print(f"  [WARNING] Sankey skipped: {e_plotly}")
+                skip_no_data("token_routing_sankey (plotly/kaleido unavailable)")
             self._generated.append(out)
             return out
         except Exception as e:

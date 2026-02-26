@@ -86,10 +86,10 @@ def _extract_params_from_model(model) -> dict:
     return counts
 
 
-def _draw_block(ax, x, y, w, h, label, color, fontsize=8.5, text_color="white", edgecolor="none", alpha=0.92):
+def _draw_block(ax, x, y, w, h, label, color, fontsize=9, text_color="white", edgecolor="none", alpha=0.92):
     rect = FancyBboxPatch(
         (x - w / 2, y - h / 2), w, h,
-        boxstyle="round,pad=0.03",
+        boxstyle="round,pad=0.02",
         facecolor=color, edgecolor=edgecolor, alpha=alpha, zorder=3
     )
     ax.add_patch(rect)
@@ -108,47 +108,64 @@ def _draw_arrow(ax, x0, y0, x1, y1):
 
 def draw_pipeline_diagram(ax):
     """Left panel: pipeline block diagram."""
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.set_aspect("equal")
+    ax.set_xlim(-0.05, 1.05)
+    ax.set_ylim(-0.02, 1.02)
     ax.axis("off")
-    ax.set_title("EmberNet Pipeline", fontsize=11, fontweight="bold", pad=6)
+    ax.set_title("EmberNet Pipeline", fontsize=12, fontweight="bold", pad=10)
 
-    # Blocks: (x, y, width, height, label, color)
-    blocks = [
-        (0.50, 0.90, 0.30, 0.10, "Image\nInput", "#888888"),
-        (0.50, 0.75, 0.35, 0.10, "SigLIP Encoder\n(FP16, frozen)", _FP16_COLOR),
-        (0.50, 0.60, 0.35, 0.09, "Pixel Shuffle Compressor\n(FP16)", "#ef8c2c"),
-        (0.50, 0.46, 0.35, 0.10, "Ternary Projector\n(BitLinear, 1.58-bit)", _TERNARY_COLOR),
-        (0.50, 0.31, 0.38, 0.10, "BitNet-b1.58 MoE Decoder\n(16 layers, 8+1 experts)", _TERNARY_COLOR),
-        (0.82, 0.31, 0.26, 0.09, "Text Prompt\n(FP16 embeddings)", "#aaaaaa"),
-        (0.50, 0.14, 0.35, 0.10, "LM Head → Output Text", "#555555"),
-    ]
-    for bx, by, bw, bh, blabel, bcolor in blocks:
-        _draw_block(ax, bx, by, bw, bh, blabel, bcolor, fontsize=7.5)
+    # Vertical layout — evenly spaced blocks along the centre column
+    cx = 0.42          # centre x for the main pipeline column
+    bw = 0.52          # standard block width
+    bh = 0.095         # standard block height
+    gap = 0.025        # gap between blocks
 
-    # Arrows
-    arrows = [
-        (0.50, 0.85, 0.50, 0.80),  # Image → SigLIP
-        (0.50, 0.70, 0.50, 0.645),  # SigLIP → Compressor
-        (0.50, 0.555, 0.50, 0.51),  # Compressor → Projector
-        (0.50, 0.41, 0.50, 0.36),  # Projector → MoE Decoder
-        (0.82, 0.355, 0.67, 0.315),  # Text → MoE Decoder
-        (0.50, 0.26, 0.50, 0.19),  # MoE Decoder → LM Head
-    ]
-    for x0, y0, x1, y1 in arrows:
-        _draw_arrow(ax, x0, y0, x1, y1)
+    # y-centres, top to bottom
+    y_img   = 0.92
+    y_sig   = y_img  - bh - gap
+    y_comp  = y_sig  - bh - gap
+    y_proj  = y_comp - bh - gap
+    y_moe   = y_proj - bh - gap - 0.01   # slightly larger gap before decoder
+    y_lm    = y_moe  - bh - gap - 0.04   # extra room for MoE annotation
 
-    # MoE sub-diagram annotation
-    ax.text(0.50, 0.24, "Top-2 routing + Shared Expert", ha="center", va="top",
-            fontsize=6.5, color="#333333", style="italic")
+    # Main pipeline blocks
+    _draw_block(ax, cx, y_img,  0.30, bh * 0.85,  "Image\nInput",  "#888888", fontsize=9)
+    _draw_block(ax, cx, y_sig,  bw,   bh,  "SigLIP Encoder\n(FP16, frozen)", _FP16_COLOR, fontsize=9)
+    _draw_block(ax, cx, y_comp, bw,   bh,  "Pixel Shuffle Compressor\n(FP16)", "#ef8c2c", fontsize=9)
+    _draw_block(ax, cx, y_proj, bw,   bh,  "Ternary Projector\n(BitLinear, 1.58-bit)", _TERNARY_COLOR, fontsize=9)
+    _draw_block(ax, cx, y_moe,  bw + 0.04, bh + 0.01,
+                "BitNet-b1.58 MoE Decoder\n(16 layers, 8+1 experts)", _TERNARY_COLOR, fontsize=9)
+    _draw_block(ax, cx, y_lm,   bw,   bh,  "LM Head \u2192 Output Text", "#555555", fontsize=9)
 
-    # Legend patches
+    # Text prompt block — positioned to the right, feeding into MoE Decoder
+    tx = 0.88
+    _draw_block(ax, tx, y_moe + 0.065, 0.28, bh * 0.80,
+                "Text Prompt\n(FP16 embed)", "#999999", fontsize=7.5, text_color="white")
+
+    # Vertical arrows (main column)
+    for y_top, y_bot in [
+        (y_img  - bh * 0.85 / 2, y_sig  + bh / 2),
+        (y_sig  - bh / 2,        y_comp + bh / 2),
+        (y_comp - bh / 2,        y_proj + bh / 2),
+        (y_proj - bh / 2,        y_moe  + (bh + 0.01) / 2),
+        (y_moe  - (bh + 0.01) / 2, y_lm + bh / 2),
+    ]:
+        _draw_arrow(ax, cx, y_top, cx, y_bot)
+
+    # Side arrow: text prompt → MoE decoder (horizontal-ish)
+    _draw_arrow(ax, tx - 0.14, y_moe + 0.065 - bh * 0.80 / 2,
+                cx + (bw + 0.04) / 2 - 0.02, y_moe + (bh + 0.01) / 2 - 0.01)
+
+    # MoE annotation
+    ax.text(cx, y_moe - (bh + 0.01) / 2 - 0.015,
+            "Top-2 routing  |  Shared Expert",
+            ha="center", va="top", fontsize=7.5, color="#444444", style="italic")
+
+    # Legend
     leg = [
         mpatches.Patch(color=_TERNARY_COLOR, label="Ternary (1.58-bit)"),
         mpatches.Patch(color=_FP16_COLOR, label="FP16 (frozen / ancillary)"),
     ]
-    ax.legend(handles=leg, loc="lower left", fontsize=7, framealpha=0.85)
+    ax.legend(handles=leg, loc="lower left", fontsize=7.5, framealpha=0.85)
 
 
 def draw_param_breakdown(ax_top, ax_bot, param_dict: dict):
@@ -230,9 +247,9 @@ def generate(save_dir: Optional[Path] = None, model=None) -> Path:
         skip_no_data("fig1_architecture_overview (extraction failed)")
         return save_dir / "fig1_architecture_overview.png"
 
-    fig = plt.figure(figsize=(16, 8), dpi=VIZ_CONFIG["dpi"])
-    # Layout: left 40% = pipeline, right 60% = 2 stacked bars
-    gs = fig.add_gridspec(2, 2, width_ratios=[0.90, 1.10], hspace=0.55, wspace=0.30)
+    fig = plt.figure(figsize=(16, 9), dpi=VIZ_CONFIG["dpi"])
+    # Layout: left 45% = pipeline, right 55% = 2 stacked bars
+    gs = fig.add_gridspec(2, 2, width_ratios=[0.85, 1.15], hspace=0.50, wspace=0.35)
 
     ax_left  = fig.add_subplot(gs[:, 0])
     ax_right_top = fig.add_subplot(gs[0, 1])
