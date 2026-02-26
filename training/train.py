@@ -399,25 +399,31 @@ class Trainer:
 
         self.model = self.model.to(self.device)
 
-        # EMA setup
+        # Multi-GPU: wrap with DataParallel when >1 GPU available
+        self.n_gpus = torch.cuda.device_count() if self.device.type == "cuda" else 0
+        if self.n_gpus > 1:
+            self.model = nn.DataParallel(self.model)
+            print(f"✓ DataParallel enabled across {self.n_gpus} GPUs")
+
+        # EMA setup (on primary device only, uses raw model)
         self.ema_model = None
         if config.use_ema:
             from copy import deepcopy
-            self.ema_model = deepcopy(self.model)
+            self.ema_model = deepcopy(self._raw_model)
             for p in self.ema_model.parameters():
                 p.requires_grad = False
             print("✓ EMA model initialized")
 
         # Apply gradient checkpointing if configured
         if config.use_gradient_checkpointing:
-            self.model.decoder.gradient_checkpointing = True
+            self._raw_model.decoder.gradient_checkpointing = True
             print("✓ Gradient checkpointing enabled for decoder")
 
         # Apply parameter freezing based on stage
         self._setup_parameter_freezing()
 
         # Print model summary
-        self.model.print_model_summary()
+        self._raw_model.print_model_summary()
 
         # Initialize optimizer - use BitNet stable optimizer if enabled
         self.use_bitnet_optimizer = config.use_bitnet_optimizer
@@ -489,36 +495,43 @@ class Trainer:
         # Store model config for hub-push calls
         self._model_config = config.model_config or EmberNetConfig()
 
+    @property
+    def _raw_model(self):
+        """Unwrap DataParallel to get the underlying EmberNetVLM."""
+        if isinstance(self.model, nn.DataParallel):
+            return self.model.module
+        return self.model
+
     def _setup_parameter_freezing(self):
         """Freeze parameters based on training stage."""
         config = self.config
 
         # Always freeze vision encoder (unless fine-tuning)
         if config.freeze_vision:
-            for param in self.model.vision_encoder.encoder.parameters():
+            for param in self._raw_model.vision_encoder.encoder.parameters():
                 param.requires_grad = False
 
         if config.stage == 1:
             # Stage 1: Only train projector
-            for param in self.model.decoder.parameters():
+            for param in self._raw_model.decoder.parameters():
                 param.requires_grad = False
 
             # Unfreeze projector
-            for param in self.model.vision_encoder.projector.parameters():
+            for param in self._raw_model.vision_encoder.projector.parameters():
                 param.requires_grad = True
 
-            if self.model.vision_encoder.pooler is not None:
-                for param in self.model.vision_encoder.pooler.parameters():
+            if self._raw_model.vision_encoder.pooler is not None:
+                for param in self._raw_model.vision_encoder.pooler.parameters():
                     param.requires_grad = True
 
-            if self.model.vision_encoder.compressor is not None:
-                for param in self.model.vision_encoder.compressor.parameters():
+            if self._raw_model.vision_encoder.compressor is not None:
+                for param in self._raw_model.vision_encoder.compressor.parameters():
                     param.requires_grad = True
 
         elif config.stage == 2:
             # Stage 2: Train router and experts
             # Keep embeddings and some layers frozen for stability
-            for name, param in self.model.decoder.named_parameters():
+            for name, param in self._raw_model.decoder.named_parameters():
                 if "embed_tokens" in name:
                     param.requires_grad = False
                 elif "router" in name and config.train_router:
@@ -560,7 +573,7 @@ class Trainer:
             decay_params = []
             no_decay_params = []
 
-            for name, param in self.model.named_parameters():
+            for name, param in self._raw_model.named_parameters():
                 if not param.requires_grad:
                     continue
                 if "norm" in name or "bias" in name:
@@ -602,10 +615,10 @@ class Trainer:
                 raise e
 
         if "model_state_dict" in checkpoint:
-            self.model.load_state_dict(checkpoint["model_state_dict"])
+            self._raw_model.load_state_dict(checkpoint["model_state_dict"])
             self.global_step = checkpoint.get("global_step", 0)
         else:
-            self.model.load_state_dict(checkpoint)
+            self._raw_model.load_state_dict(checkpoint)
 
     def _save_checkpoint(self, filename: str, is_best: bool = False):
         """Save model checkpoint."""
@@ -613,7 +626,7 @@ class Trainer:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         checkpoint = {
-            "model_state_dict": self.model.state_dict(),
+            "model_state_dict": self._raw_model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "global_step": self.global_step,
             "stage": self.config.stage,
@@ -846,7 +859,7 @@ class Trainer:
 
             if has_images:
                 # Vision encoder outputs 64 tokens (from VisionEncoder config)
-                num_image_tokens = self.model.vision_encoder.num_output_tokens if hasattr(self.model, 'vision_encoder') else 64
+                num_image_tokens = self._raw_model.vision_encoder.num_output_tokens if hasattr(self._raw_model, 'vision_encoder') else 64
                 num_text_tokens = seq_length - num_image_tokens
             else:
                 # No images, all text
@@ -1099,7 +1112,7 @@ class Trainer:
                             from visualizations.fig_hallucination_activation import generate as _gen_halluc
                             self.model.eval()
                             _snap_dir = Path(self.config.output_dir) / "plots" / "paper_figures"
-                            _gen_halluc(save_dir=_snap_dir, model=self.model, step=self.global_step)
+                            _gen_halluc(save_dir=_snap_dir, model=self._raw_model, step=self.global_step)
                             self.model.train()
                         except Exception as _he:
                             print(f"  [halluc-snap] step {self.global_step} failed: {_he}")
@@ -1153,7 +1166,7 @@ class Trainer:
                 try:
                     elapsed_so_far = time.time() - start_time
                     _push_to_hub(
-                        model=self.model,
+                        model=self._raw_model,
                         vlm_config=self._model_config,
                         training_config=self.config,
                         stage=self.config.stage,
@@ -1238,16 +1251,23 @@ class Trainer:
 def run_training(args, stage: int, resume_from: Optional[str] = None):
     """Run training for a single stage. Returns the final checkpoint path."""
 
-    # Determine device - pick GPU with most free memory when auto
+    # Determine device - use cuda:0 as primary when multiple GPUs (DataParallel handles the rest)
     if args.device == "auto":
         if torch.cuda.is_available():
-            best_gpu, best_free = 0, 0
-            for i in range(torch.cuda.device_count()):
-                free, _ = torch.cuda.mem_get_info(i)
-                if free > best_free:
-                    best_free, best_gpu = free, i
-            device = f"cuda:{best_gpu}"
-            print(f"Auto-selected GPU {best_gpu} ({best_free / 1024**3:.1f} GB free)")
+            n_gpus = torch.cuda.device_count()
+            if n_gpus > 1:
+                device = "cuda:0"
+                gpu_info = []
+                for i in range(n_gpus):
+                    free, total = torch.cuda.mem_get_info(i)
+                    gpu_info.append(f"GPU {i}: {free / 1024**3:.1f}/{total / 1024**3:.1f} GB free")
+                print(f"Multi-GPU: {n_gpus} GPUs detected → DataParallel (primary cuda:0)")
+                for g in gpu_info:
+                    print(f"  {g}")
+            else:
+                device = "cuda:0"
+                free, total = torch.cuda.mem_get_info(0)
+                print(f"Single GPU: cuda:0 ({free / 1024**3:.1f}/{total / 1024**3:.1f} GB)")
         else:
             device = "cpu"
     else:
@@ -1332,8 +1352,9 @@ def run_training(args, stage: int, resume_from: Optional[str] = None):
     print(f"{'='*70}")
     print(f"Epochs: {config.epochs}")
     print(f"Batch size: {config.batch_size}")
+    n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
     print(f"Gradient accumulation: {config.gradient_accumulation_steps}")
-    print(f"Effective batch size: {config.batch_size * config.gradient_accumulation_steps}")
+    print(f"Effective batch size: {config.batch_size * config.gradient_accumulation_steps * n_gpus} (bs={config.batch_size} × accum={config.gradient_accumulation_steps} × gpus={n_gpus})")
     print(f"Max samples per dataset: {max_samples if max_samples else 'ALL'}")
     print(f"Output directory: {config.output_dir}")
     print(f"Resume from: {resume_from or 'None'}")
