@@ -1584,7 +1584,7 @@ def main():
         # ------------------------------------------------------------------
         # Paper figures (Figs 1-7) — reuse the model loaded above.
         # ------------------------------------------------------------------
-        print(f"  [viz] Generating 7 paper figures …")
+        print(f"  [viz] Generating 8 paper figures …")
         _paper_dir = Path("plots/paper_figures")
         for _fig_name in _PAPER_FIGS:
             try:

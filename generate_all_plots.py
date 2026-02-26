@@ -92,6 +92,7 @@ _PAPER_FIGS = {
     "fig_va_token_effects":      "visualizations.fig_va_token_effects",
     "fig_va_answer_level":       "visualizations.fig_va_answer_level",
     "fig_qualitative_grid":      "visualizations.fig_qualitative_grid",
+    "fig_hallucination_activation": "visualizations.fig_hallucination_activation",
 }
 
 
