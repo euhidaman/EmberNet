@@ -347,7 +347,7 @@ def compute_quantization_metrics(
 # Plotting
 # ---------------------------------------------------------------------------
 
-def _plot_figure(data: Dict, save_dir: Path) -> Path:
+def _plot_figure(data: Dict, save_dir: Path, step: Optional[int] = None) -> Path:
     """Render the 3-panel hallucination activation figure."""
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -511,16 +511,24 @@ def _plot_figure(data: Dict, save_dir: Path) -> Path:
     # Build subtitle from first image
     im_hash = data["image_ids"][0] if data["image_ids"] else "N/A"
     sub_q = f'"Is there a {img_labels[0][0]} in this image?"'
+    step_str = f"  •  Step {step}" if step is not None else ""
     fig.suptitle(
         r"Activation Patterns of High $S^{VA}$ Neurons Across Varying Visual Contexts"
-        f"\nInput: {sub_q}   •   Image: {im_hash}[hash:{im_hash[:8]}]",
+        f"\nInput: {sub_q}   •   Image: {im_hash}[hash:{im_hash[:8]}]{step_str}",
         fontsize=14, fontweight="bold", y=1.02,
     )
 
     fig.tight_layout(pad=1.5, rect=[0, 0, 1, 0.95])
 
-    out_pdf = save_dir / "fig_hallucination_activation.pdf"
-    out_png = save_dir / "fig_hallucination_activation.png"
+    if step is not None:
+        snap_dir = save_dir / "hallucination_snapshots"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        stem = f"fig_hallucination_activation-step{step}"
+        out_pdf = snap_dir / f"{stem}.pdf"
+        out_png = snap_dir / f"{stem}.png"
+    else:
+        out_pdf = save_dir / "fig_hallucination_activation.pdf"
+        out_png = save_dir / "fig_hallucination_activation.png"
     fig.savefig(out_pdf, bbox_inches="tight", dpi=300)
     fig.savefig(out_png, bbox_inches="tight", dpi=300)
     plt.close(fig)
@@ -536,6 +544,7 @@ def generate(
     save_dir: Optional[Path] = None,
     model=None,
     eval_dataset_path: Optional[str] = None,
+    step: Optional[int] = None,
 ) -> Path:
     """
     Generate the hallucination activation figure.
@@ -548,6 +557,9 @@ def generate(
         Live model for real activation capture.
     eval_dataset_path : str, optional
         Path or HF name for evaluation dataset with object annotations.
+    step : int, optional
+        Training step number. When provided, saves to
+        hallucination_snapshots/fig_hallucination_activation-step{N}.{png,pdf}
 
     Returns
     -------
@@ -583,7 +595,7 @@ def generate(
     if data is None:
         data = generate_synthetic_data()
 
-    return _plot_figure(data, save_dir)
+    return _plot_figure(data, save_dir, step=step)
 
 
 # ---------------------------------------------------------------------------
