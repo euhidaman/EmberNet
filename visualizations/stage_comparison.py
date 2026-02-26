@@ -21,7 +21,7 @@ from visualizations.config import (
     ALL_DATASETS, DATASET_DOMAINS, DOMAIN_COLORS,
     apply_mpl_style, plot_filename, log_plot_error, skip_no_data,
 )
-from visualizations.training_dynamics import _save_and_log, _mock_loss
+from visualizations.training_dynamics import _save_and_log
 from visualizations.wandb_utils import WandBLogger
 
 apply_mpl_style()
