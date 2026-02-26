@@ -24,6 +24,7 @@ import sys
 import time
 import argparse
 import math
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Iterator
@@ -495,6 +496,14 @@ class Trainer:
         # Store model config for hub-push calls
         self._model_config = config.model_config or EmberNetConfig()
 
+        # Graceful shutdown on SIGTERM / Ctrl-C
+        self._interrupted = False
+        def _handle_signal(signum, frame):
+            print(f"\n[SIGNAL] Received signal {signum} — saving emergency checkpoint and exiting cleanly...")
+            self._interrupted = True
+        signal.signal(signal.SIGTERM, _handle_signal)
+        signal.signal(signal.SIGINT, _handle_signal)
+
     @property
     def _raw_model(self):
         """Unwrap DataParallel to get the underlying EmberNetVLM."""
@@ -648,18 +657,35 @@ class Trainer:
     ) -> Dict[str, float]:
         """Training step with BitNet-specific gradient handling."""
         # Move batch to device
-        pixel_values = batch["pixel_values"].to(self.device)
-        input_ids = batch["input_ids"].to(self.device)
-        attention_mask = batch["attention_mask"].to(self.device)
-        labels = batch["labels"].to(self.device)
+        try:
+            pixel_values = batch["pixel_values"].to(self.device)
+            input_ids = batch["input_ids"].to(self.device)
+            attention_mask = batch["attention_mask"].to(self.device)
+            labels = batch["labels"].to(self.device)
+        except RuntimeError as _oom:
+            if "out of memory" in str(_oom).lower():
+                print(f"  [OOM] CUDA out of memory moving batch to device — skipping batch, freeing cache")
+                torch.cuda.empty_cache()
+                self.optimizer.zero_grad()
+                return {"loss": float("nan"), "ce_loss": float("nan"), "expert_probs": None}
+            raise
 
-        # Forward pass
-        outputs = self.model(
-            pixel_values=pixel_values,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels,
-        )
+        # Forward pass (with OOM recovery)
+        try:
+            outputs = self.model(
+                pixel_values=pixel_values,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+            )
+        except RuntimeError as _oom:
+            if "out of memory" in str(_oom).lower():
+                used = torch.cuda.memory_reserved(self.device) // 1024**2
+                print(f"  [OOM] CUDA out of memory during forward (reserved {used} MiB) — skipping batch, freeing cache")
+                torch.cuda.empty_cache()
+                self.optimizer.zero_grad()
+                return {"loss": float("nan"), "ce_loss": float("nan"), "expert_probs": None}
+            raise
         loss = outputs["loss"]
 
         # Check logits for NaN - FAIL FAST instead of skipping
@@ -722,17 +748,24 @@ class Trainer:
         # Scale loss for gradient accumulation
         loss = loss / self.config.gradient_accumulation_steps
 
-        # Backward pass with BitNet gradient scaling
-        if self.bitnet_scaler is not None:
-            # Use BitNet gradient scaler
-            scaled_loss = self.bitnet_scaler.scale_loss(loss)
-            scaled_loss.backward()
-            self.bitnet_scaler.unscale_gradients(self.optimizer)
-        elif self.scaler is not None:
-            # Use standard AMP scaler
-            self.scaler.scale(loss).backward()
-        else:
-            loss.backward()
+        # Backward pass with BitNet gradient scaling (with OOM recovery)
+        try:
+            if self.bitnet_scaler is not None:
+                scaled_loss = self.bitnet_scaler.scale_loss(loss)
+                scaled_loss.backward()
+                self.bitnet_scaler.unscale_gradients(self.optimizer)
+            elif self.scaler is not None:
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
+        except RuntimeError as _oom:
+            if "out of memory" in str(_oom).lower():
+                used = torch.cuda.memory_reserved(self.device) // 1024**2
+                print(f"  [OOM] CUDA out of memory during backward (reserved {used} MiB) — skipping batch, freeing cache")
+                torch.cuda.empty_cache()
+                self.optimizer.zero_grad()
+                return {"loss": float("nan"), "ce_loss": float("nan"), "expert_probs": None}
+            raise
 
         # Check gradients for NaN/Inf - FAIL FAST
         is_finite, bad_param = check_gradients_finite(self.model)
@@ -982,9 +1015,18 @@ class Trainer:
                 # Training step
                 metrics = self._train_step(batch)
 
+                # OOM-skipped step returns nan — count and continue
                 raw_loss = metrics["loss"]
+                if raw_loss != raw_loss:  # nan check
+                    continue
                 epoch_loss  += raw_loss
                 epoch_steps += 1
+
+                # Graceful interrupt check
+                if self._interrupted:
+                    print(f"  [SIGNAL] Saving emergency checkpoint at step {self.global_step}...")
+                    self._save_checkpoint(f"emergency_step_{self.global_step}.pt")
+                    raise KeyboardInterrupt("Training interrupted by signal")
 
                 # Update rolling window (used for avg loss display)
                 _window_losses.append(raw_loss)
