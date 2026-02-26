@@ -641,7 +641,11 @@ def _extract_performance(output_dir: Optional[str]) -> Optional[Dict]:
                 try:
                     data = json.loads(jf.read_text())
                     if isinstance(data, dict):
-                        scores.update(data)
+                        # save_scores_json wraps as {"mode":..., "scores":{...}, "timestamp":...}
+                        inner = data.get("scores", data)
+                        if isinstance(inner, dict):
+                            scores.update({k: float(v) for k, v in inner.items()
+                                           if isinstance(v, (int, float))})
                 except Exception:
                     pass
 
