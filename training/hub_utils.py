@@ -76,20 +76,7 @@ preserving strong visual understanding across 8 specialised domains.
 
 ## Architecture
 
-```
-EmberNet VLM
-├── Vision Encoder  (frozen)
-│   ├── SigLIP-base-patch16-224       ~92.9 M params
-│   ├── Token Compressor (pixel-shuffle + pooling) → 64 tokens
-│   ├── Spatial Pooler                ~2.4 M params
-│   └── BitLinear Projector           ~10.1 M params
-│
-└── BitNet b1.58 MoE Decoder
-    ├── Layers: 16   Hidden: 768   Heads: 12 (GQA kv=6)
-    ├── Experts: 8 domain specialists + 1 shared expert (always active)
-    ├── Routing: Top-2 per token
-    └── Quantisation: ternary weights, 4-bit activations
-```
+{arch_block}
 
 ### Expert Domains
 
@@ -227,6 +214,67 @@ def _estimate_carbon(training_seconds: float, gpu_count: int = 1) -> str:
     return f"{co2:.4f} kg CO₂eq"
 
 
+def _extract_param_breakdown(model) -> dict:
+    """Extract per-component parameter counts from EmberNetVLM."""
+    pb = {}
+    ve = {}
+
+    # Vision encoder components
+    vision = getattr(model, "vision_encoder", None)
+    if vision is not None:
+        for attr in ("encoder", "compressor", "pooler", "projector"):
+            sub = getattr(vision, attr, None)
+            if sub is not None:
+                ve[attr] = sum(p.numel() for p in sub.parameters())
+    pb["vision_encoder"] = ve
+
+    # Decoder
+    decoder = getattr(model, "decoder", None)
+    if decoder is not None:
+        pb["decoder"] = sum(p.numel() for p in decoder.parameters())
+
+        # Sub-components
+        embed = getattr(decoder, "embed_tokens", None)
+        if embed is not None:
+            pb["decoder_embed"] = sum(p.numel() for p in embed.parameters())
+
+        # Attention params across all layers
+        layers = getattr(decoder, "layers", None)
+        if layers is not None:
+            attn_total = 0
+            for layer in layers:
+                attn = getattr(layer, "self_attn", None)
+                if attn:
+                    attn_total += sum(p.numel() for p in attn.parameters())
+            pb["decoder_attn"] = attn_total
+
+        # Router, shared expert, domain experts
+        if layers is not None:
+            router_total = expert_total = shared_total = 0
+            n_experts = 0
+            for layer in layers:
+                moe = getattr(layer, "moe", None) or getattr(layer, "mlp", None)
+                if moe is None:
+                    continue
+                router = getattr(moe, "router", None) or getattr(moe, "gate", None)
+                if router:
+                    router_total += sum(p.numel() for p in router.parameters())
+                shared = getattr(moe, "shared_expert", None)
+                if shared:
+                    shared_total += sum(p.numel() for p in shared.parameters())
+                experts = getattr(moe, "experts", None)
+                if experts:
+                    expert_total += sum(p.numel() for p in experts.parameters())
+                    if n_experts == 0:
+                        n_experts = len(experts)
+            pb["decoder_router"] = router_total
+            pb["decoder_shared"] = shared_total
+            pb["decoder_experts"] = expert_total
+            pb["n_experts"] = n_experts
+
+    return pb
+
+
 def _build_model_card(
     total_params: int,
     trainable_params: int,
@@ -236,19 +284,64 @@ def _build_model_card(
     avg_loss: float,
     is_trial: bool,
     training_seconds: float = 0.0,
+    param_breakdown: Optional[dict] = None,
 ) -> str:
     trial_suffix = "-Trial" if is_trial else ""
     stage_name = "Projector Alignment" if stage == 1 else "Expert SFT"
-    # active params = shared expert + 2 of 8 domain experts + attention layers
-    # rough estimate: 2/8 of FFN params + non-FFN params
-    # non-FFN params per layer ≈ 4 * hidden^2 * layers  (attn)
-    # FFN params ≈ intermediate * hidden * 2 * num_experts * layers  ← just 2 of 8 active
-    active_params = max(1, int(total_params * 0.28))  # ~28% active (top-2 + shared)
+    active_params = max(1, int(total_params * 0.28))
     status_line = (
         f"Trial run — Stage {stage}/2, Epoch {epoch}/{total_epochs}, Loss {avg_loss:.4f}"
         if is_trial
         else f"Stage {stage}/2, Epoch {epoch}/{total_epochs}, Loss {avg_loss:.4f}"
     )
+
+    # Build architecture block with real values when available
+    pb = param_breakdown or {}
+    ve = pb.get("vision_encoder", {})
+    enc_str  = _fmt(ve.get("encoder", 92_884_224))
+    comp_str = _fmt(ve.get("compressor", 2_363_904))
+    pool_str = _fmt(ve.get("pooler", 2_412_288))
+    proj_str = _fmt(ve.get("projector", 10_088_448))
+    dec_total = pb.get("decoder", 733_055_360)
+    dec_str  = _fmt(dec_total)
+
+    # Compute decoder sub-components if model was passed
+    embed_str  = _fmt(pb.get("decoder_embed", 0))
+    attn_str   = _fmt(pb.get("decoder_attn", 0))
+    router_str = _fmt(pb.get("decoder_router", 0))
+    shared_str = _fmt(pb.get("decoder_shared", 0))
+    expert_str = _fmt(pb.get("decoder_experts", 0))
+    n_experts  = pb.get("n_experts", 8)
+    per_exp    = _fmt(pb.get("decoder_experts", 0) // max(n_experts, 1))
+
+    arch_block = f"""\
+```
+EmberNet VLM
+├── Vision Encoder  (frozen)
+│   ├── SigLIP-base-patch16-224       {enc_str} params
+│   ├── Token Compressor              {comp_str} params
+│   ├── Spatial Pooler                {pool_str} params
+│   └── BitLinear Projector           {proj_str} params
+│
+└── BitNet b1.58 MoE Decoder          {dec_str} params total
+    ├── Layers: 16   Hidden: 768   Heads: 12 (GQA kv=6)
+    ├── Experts: {n_experts} domain + 1 shared (always active)
+    ├── Routing: Top-2 per token
+    └── Quantisation: ternary weights, 4-bit activations
+```"""
+
+    # Add decoder breakdown table if we have real numbers
+    if pb.get("decoder_embed"):
+        arch_block += f"""
+
+| Decoder Component | Parameters |
+|---|---|
+| Embeddings | {embed_str} |
+| Attention (all layers) | {attn_str} |
+| Router (all layers) | {router_str} |
+| Shared Expert | {shared_str} |
+| Domain Experts ({n_experts}×) | {expert_str} ({per_exp}/expert) |"""
+
     return _CARD_TEMPLATE.format(
         trial_suffix=trial_suffix,
         trial_suffix_nobrace=trial_suffix,
@@ -263,12 +356,13 @@ def _build_model_card(
         total_epochs=total_epochs,
         avg_loss=avg_loss,
         timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        arch_block=arch_block,
     )
 
 
-def _build_config_json(vlm_config, model_config) -> dict:
+def _build_config_json(vlm_config, model_config, param_breakdown: Optional[dict] = None) -> dict:
     """Serialise EmberNetConfig + BitNetMoEConfig to a JSON-serialisable dict."""
-    return {
+    cfg = {
         "model_type": "embernet_vlm",
         "architecture": "BitNet b1.58 MoE VLM",
         "vision_encoder": {
@@ -294,6 +388,20 @@ def _build_config_json(vlm_config, model_config) -> dict:
         "torch_dtype": "bfloat16",
         "transformers_version": ">=4.36.0",
     }
+    if param_breakdown:
+        ve = param_breakdown.get("vision_encoder", {})
+        cfg["parameter_counts"] = {
+            "vision_encoder": sum(ve.values()),
+            "vision_encoder_breakdown": ve,
+            "decoder_total": param_breakdown.get("decoder", 0),
+            "decoder_embeddings": param_breakdown.get("decoder_embed", 0),
+            "decoder_attention": param_breakdown.get("decoder_attn", 0),
+            "decoder_router": param_breakdown.get("decoder_router", 0),
+            "decoder_shared_expert": param_breakdown.get("decoder_shared", 0),
+            "decoder_domain_experts": param_breakdown.get("decoder_experts", 0),
+            "num_domain_experts": param_breakdown.get("n_experts", 8),
+        }
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +485,9 @@ def push_to_hub(
     total_params     = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+    # Extract per-component breakdown for model card
+    param_breakdown = _extract_param_breakdown(model)
+
     # ------------------------------------------------------------------
     # Ensure repo exists
     # ------------------------------------------------------------------
@@ -407,7 +518,7 @@ def push_to_hub(
         # 2. Config
         decoder_config = getattr(model, "decoder", None)
         decoder_cfg_obj = getattr(decoder_config, "config", None) if decoder_config else None
-        cfg_dict = _build_config_json(vlm_config, decoder_cfg_obj or vlm_config)
+        cfg_dict = _build_config_json(vlm_config, decoder_cfg_obj or vlm_config, param_breakdown)
         (tmp / "config.json").write_text(json.dumps(cfg_dict, indent=2), encoding="utf-8")
 
         # 3. README / model card
@@ -420,6 +531,7 @@ def push_to_hub(
             avg_loss=avg_loss,
             is_trial=is_trial,
             training_seconds=training_seconds,
+            param_breakdown=param_breakdown,
         )
         (tmp / "README.md").write_text(card, encoding="utf-8")
 

@@ -788,22 +788,83 @@ class EmberNetVLM(nn.Module):
     def print_model_summary(self):
         """Print a summary of the model architecture."""
         sizes = self.get_model_size()
-        print("\n" + "="*50)
-        print("EmberNet VLM Model Summary")
-        print("="*50)
-        print(f"\nVision Encoder ({self.config.vision_model_name}):")
+
+        def _count(module, trainable_only=False):
+            if trainable_only:
+                return sum(p.numel() for p in module.parameters() if p.requires_grad)
+            return sum(p.numel() for p in module.parameters())
+
+        def _fmt(n):
+            if n >= 1e9: return f"{n/1e9:.2f}B"
+            if n >= 1e6: return f"{n/1e6:.1f}M"
+            if n >= 1e3: return f"{n/1e3:.1f}K"
+            return str(n)
+
+        sep = "=" * 62
+        print(f"\n{sep}")
+        print("  EmberNet VLM — Model Summary")
+        print(sep)
+
+        # --- Vision ---
+        print(f"\n  Vision Encoder ({self.config.vision_model_name}):")
         for k, v in sizes["vision_encoder"].items():
-            print(f"  {k}: {v:,} params")
-        print(f"\nLanguage Decoder (BitNet MoE):")
-        print(f"  Layers: {self.config.num_layers}")
-        print(f"  Hidden size: {self.config.hidden_size}")
-        print(f"  Experts: {self.config.num_experts} (top-{self.config.num_experts_per_tok})")
-        print(f"  Total params: {sizes['decoder']:,}")
-        print(f"\nTotal Parameters: {sizes['total']:,}")
-        print(f"Trainable Parameters: {sizes['trainable']:,}")
-        print(f"\nImage tokens: {self.config.num_image_tokens}")
-        print(f"Max sequence length: {self.config.max_position_embeddings}")
-        print("="*50 + "\n")
+            frozen = " (frozen)" if k == "encoder" else ""
+            print(f"    {k:20s} {v:>12,} params{frozen}")
+
+        # --- Decoder overview ---
+        dec = self.decoder
+        print(f"\n  Language Decoder (BitNet MoE):")
+        print(f"    Layers:              {self.config.num_layers}")
+        print(f"    Hidden size:         {self.config.hidden_size}")
+        print(f"    Intermediate size:   {self.config.intermediate_size}")
+        print(f"    Attention heads:     {self.config.num_attention_heads} Q, {self.config.num_kv_heads} KV (GQA)")
+        print(f"    Experts:             {self.config.num_experts} domain + 1 shared (top-{self.config.num_experts_per_tok} routing)")
+        print(f"    Total decoder:       {sizes['decoder']:>12,} params")
+
+        # --- Per-component decoder breakdown ---
+        embed_p = sum(p.numel() for n, p in dec.named_parameters() if "embed_tokens" in n)
+        lm_head_p = sum(p.numel() for n, p in dec.named_parameters() if "lm_head" in n)
+        norm_p = sum(p.numel() for n, p in dec.named_parameters()
+                     if "norm" in n and "layer" not in n)
+        attn_p = sum(p.numel() for n, p in dec.named_parameters() if "attention" in n)
+        router_p = sum(p.numel() for n, p in dec.named_parameters() if "router" in n)
+        shared_p = sum(p.numel() for n, p in dec.named_parameters() if "shared_expert" in n)
+        expert_p = sum(p.numel() for n, p in dec.named_parameters()
+                       if "experts." in n and "shared" not in n)
+        per_expert = expert_p // max(self.config.num_experts, 1)
+
+        print(f"\n    Decoder Breakdown:")
+        print(f"      Embeddings:        {embed_p:>12,}  ({_fmt(embed_p)})")
+        print(f"      LM Head:           {lm_head_p:>12,}  ({_fmt(lm_head_p)})")
+        print(f"      Norms:             {norm_p:>12,}  ({_fmt(norm_p)})")
+        print(f"      Attention (all):   {attn_p:>12,}  ({_fmt(attn_p)})")
+        print(f"      Router (all):      {router_p:>12,}  ({_fmt(router_p)})")
+        print(f"      Shared Expert:     {shared_p:>12,}  ({_fmt(shared_p)})")
+        print(f"      Domain Experts:    {expert_p:>12,}  ({_fmt(expert_p)}, {_fmt(per_expert)}/expert)")
+
+        # --- Totals ---
+        total = sizes["total"]
+        trainable = sizes["trainable"]
+        frozen = total - trainable
+        print(f"\n  Totals:")
+        print(f"    Total parameters:    {total:>12,}  ({_fmt(total)})")
+        print(f"    Trainable:           {trainable:>12,}  ({_fmt(trainable)}, {trainable/total*100:.1f}%)")
+        print(f"    Frozen:              {frozen:>12,}  ({_fmt(frozen)}, {frozen/total*100:.1f}%)")
+
+        # --- Quantization ---
+        ternary_p = expert_p + shared_p + attn_p + router_p
+        fp16_p = embed_p + lm_head_p + norm_p + sizes["vision_encoder"]["total"]
+        eff_bits = (ternary_p * 1.58 + fp16_p * 16) / total
+        print(f"\n  Quantization:")
+        print(f"    Ternary (1.58-bit):  {ternary_p:>12,}  ({_fmt(ternary_p)})")
+        print(f"    FP16 (frozen/misc):  {fp16_p:>12,}  ({_fmt(fp16_p)})")
+        print(f"    Effective avg bits:  {eff_bits:.2f} bit/param")
+        print(f"    vs FP32 size:        {total * 32 / (ternary_p * 1.58 + fp16_p * 16):.1f}x smaller")
+
+        print(f"\n  Sequence:")
+        print(f"    Image tokens:        {self.config.num_image_tokens}")
+        print(f"    Max seq length:      {self.config.max_position_embeddings}")
+        print(sep + "\n")
 
 
 # Convenience function to create model
