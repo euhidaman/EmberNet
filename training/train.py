@@ -1646,6 +1646,8 @@ def main():
     except Exception as _viz_err:
         print(f"  [viz] Post-training plot generation skipped: {_viz_err}")
 
+    print("\nEverything Done!")
+
 
 if __name__ == "__main__":
     main()
