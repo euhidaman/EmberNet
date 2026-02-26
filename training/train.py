@@ -1580,7 +1580,7 @@ def main():
                 _torch.cuda.empty_cache()
                 print(f"  [viz] EmberNetVLM loaded from {checkpoint_path} on {_viz_device} for paper figures")
             except Exception as _ml_err:
-                print(f"  [viz] Could not load model for paper figures (will use synthetic): {_ml_err}")
+                print(f"  [viz] Could not load model for paper figures (will skip model-dependent figs): {_ml_err}")
         for _fig_name in _PAPER_FIGS:
             try:
                 _r = generate_paper_fig(_fig_name, save_dir=_paper_dir, model=_live_model)
