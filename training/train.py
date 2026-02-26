@@ -1213,7 +1213,19 @@ class Trainer:
             print(f"\nEpoch {epoch+1} Complete")
             print(f"  Cumulative Avg Loss : {epoch_avg_loss:.4f}")
             print(f"  Final Window Avg    : {window_avg_final:.4f}  (last {len(_window_losses)} batches)")
-            print(f"  Valid batches       : {epoch_steps} / {len(train_loader)}\n")
+            print(f"  Valid batches       : {epoch_steps} / {len(train_loader)}")
+
+            # Image load summary
+            ds = train_loader.dataset
+            _all_ds = ds.datasets.values() if hasattr(ds, 'datasets') else [ds]
+            _tok, _skp = 0, 0
+            for _d in _all_ds:
+                _tok += getattr(_d, '_img_ok', 0)
+                _skp += getattr(_d, '_img_fail', 0)
+            if _tok + _skp > 0:
+                print(f"  Images loaded       : {_tok:,} valid, {_skp:,} skipped "
+                      f"({100*_skp/(_tok+_skp):.3f}% miss rate)")
+            print()
 
             # Log epoch metrics to wandb
             if self.use_wandb:

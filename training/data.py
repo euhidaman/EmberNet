@@ -174,6 +174,8 @@ class EmberNetDataset(Dataset):
         self.max_samples = max_samples
 
         self.image_processor = ImageProcessor(self.config.image_size)
+        self._img_ok = 0
+        self._img_fail = 0
 
         # Load tokenizer
         self.tokenizer = None
@@ -1360,16 +1362,10 @@ class EmberNetDataset(Dataset):
                 continue
             result = self._resolve_image(val, base_dir)
             if result is not None:
+                self._img_ok += 1
                 return result
 
-        img_val = sample.get("image")
-        print(
-            f"[IMAGE LOAD FAILURE] domain='{self.domain}' "
-            f"type={type(img_val).__name__} repr={repr(img_val)[:120]}\n"
-            f"  _base_dir={sample.get('_base_dir')} question={str(sample.get('question',''))[:60]}\n"
-            f"  → returning zero tensor (this sample contributes no visual signal)",
-            flush=True,
-        )
+        self._img_fail += 1
         return torch.zeros(3, self.config.image_size, self.config.image_size)
 
     def _resolve_image(self, val: Any, base_dir: Optional[str]) -> Optional[torch.Tensor]:
