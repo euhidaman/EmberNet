@@ -25,6 +25,7 @@ import time
 import argparse
 import math
 import signal
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Iterator
@@ -34,6 +35,9 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
+
+# Suppress expected DataParallel scalar-gather warning
+warnings.filterwarnings("ignore", message=".*Was asked to gather along dimension 0.*")
 
 # Weights & Biases for experiment tracking
 try:
@@ -728,6 +732,17 @@ class Trainer:
             and outputs.get("router_logits", None) is not None
         ):
             router_logits_list = outputs["router_logits"]
+            # DataParallel concatenates per-GPU lists: [gpu0_l0,..,gpu0_l15, gpu1_l0,..,gpu1_l15]
+            # De-duplicate by taking every n_gpus-th element starting from the last GPU chunk
+            if self.n_gpus > 1 and len(router_logits_list) > 0:
+                n_layers = len(router_logits_list) // self.n_gpus
+                if n_layers > 0:
+                    # Concatenate matching layers across GPUs (already gathered along dim 0)
+                    merged = []
+                    for li in range(n_layers):
+                        chunks = [router_logits_list[g * n_layers + li] for g in range(self.n_gpus)]
+                        merged.append(torch.cat(chunks, dim=0))
+                    router_logits_list = merged
             router_logits_last = router_logits_list[-1]
             expert_targets = batch["expert_targets"].to(router_logits_last.device)
 
@@ -806,12 +821,22 @@ class Trainer:
         _expert_probs = None
         if outputs.get("router_logits"):
             try:
+                rl_list = outputs["router_logits"]
+                # De-duplicate DP-gathered list (same logic as expert supervision)
+                if self.n_gpus > 1 and len(rl_list) > 0:
+                    n_layers = len(rl_list) // self.n_gpus
+                    if n_layers > 0:
+                        merged = []
+                        for li in range(n_layers):
+                            chunks = [rl_list[g * n_layers + li] for g in range(self.n_gpus)]
+                            merged.append(torch.cat(chunks, dim=0))
+                        rl_list = merged
                 probs_layers = []
-                for rl in outputs["router_logits"]:
-                    p = torch.softmax(rl.detach().float(), dim=-1).mean(0)  # (n_experts,)
+                for rl in rl_list:
+                    p = torch.softmax(rl.detach().float(), dim=-1).mean(0)
                     probs_layers.append(p.cpu().numpy())
                 if probs_layers:
-                    _expert_probs = np.mean(probs_layers, axis=0)  # avg over layers
+                    _expert_probs = np.mean(probs_layers, axis=0)
             except Exception:
                 pass
 
@@ -1287,7 +1312,10 @@ class Trainer:
                 labels=labels,
             )
 
-            total_loss += outputs["loss"].item()
+            val_loss = outputs["loss"]
+            if val_loss.dim() > 0:
+                val_loss = val_loss.mean()
+            total_loss += val_loss.item()
             num_batches += 1
 
         self.model.train()
