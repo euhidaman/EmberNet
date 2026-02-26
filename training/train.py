@@ -688,6 +688,10 @@ class Trainer:
             raise
         loss = outputs["loss"]
 
+        # DataParallel gathers scalars into vectors — reduce to scalar
+        if loss.dim() > 0:
+            loss = loss.mean()
+
         # Check logits for NaN - FAIL FAST instead of skipping
         if "logits" in outputs and outputs["logits"] is not None:
             logits = outputs["logits"]
@@ -787,6 +791,8 @@ class Trainer:
             self.bitnet_scaler.update(found_inf=False)
 
         ce_loss_scalar = outputs.get("ce_loss")
+        if ce_loss_scalar is not None and ce_loss_scalar.dim() > 0:
+            ce_loss_scalar = ce_loss_scalar.mean()
         ce_loss_val = ce_loss_scalar.item() if ce_loss_scalar is not None else float("nan")
         total_val = loss.item() * self.config.gradient_accumulation_steps
         if total_val > 100.0:
