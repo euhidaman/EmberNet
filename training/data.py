@@ -271,6 +271,14 @@ class EmberNetDataset(Dataset):
                     if snapshot_dir.exists():
                         snapshot_samples = self._load_snapshot_dataset(snapshot_dir, key)
                         if snapshot_samples:
+                            # Apply train/val split for snapshot datasets
+                            # (they don't have native split info like HF datasets)
+                            n = len(snapshot_samples)
+                            val_start = max(0, n - max(1, n // 10))
+                            if self.split == "validation":
+                                snapshot_samples = snapshot_samples[val_start:]
+                            else:
+                                snapshot_samples = snapshot_samples[:val_start]
                             all_samples.extend(snapshot_samples)
                         else:
                             print(f"  Snapshot empty for {key}; trying HuggingFace hub...")
@@ -288,7 +296,7 @@ class EmberNetDataset(Dataset):
 
     def _load_snapshot_dataset(self, snapshot_dir: Path, dataset_key: str) -> List[Dict[str, Any]]:
         """Load a dataset from a snapshot directory (raw HuggingFace repo layout)."""
-        cache_key = f"snap:{dataset_key}:{self.max_samples}"
+        cache_key = f"snap:{dataset_key}:{self.max_samples}:{self.split}"
         if cache_key in _DATASET_SAMPLE_CACHE:
             cached = _DATASET_SAMPLE_CACHE[cache_key]
             print(f"  [Cache HIT] {dataset_key}: {len(cached)} samples (skipping reload)")

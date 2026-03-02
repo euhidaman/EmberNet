@@ -747,7 +747,7 @@ def _snapshot_download_dataset(
     }
 
 
-def _download_image_from_url(url: str, save_path: Path, timeout: int = 30) -> bool:
+def _download_image_from_url(url: str, save_path: Path, timeout: int = 5) -> bool:
     """Download a single image from URL with retry logic."""
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -765,7 +765,7 @@ def _download_images_from_dataset(
     dataset,
     save_path: Path,
     url_field: str,
-    max_workers: int = 8,
+    max_workers: int = 64,
     max_images: Optional[int] = None,
 ) -> tuple[int, int]:
     """Download images from URLs in dataset to local directory."""
@@ -900,10 +900,38 @@ def download_dataset(
         )
         return False
 
-    # Check if already exists
+    # Check if already exists — verify data integrity, not just directory
     if save_path.exists() and not force:
-        print(f"✓ {dataset_key} already downloaded at {save_path}")
-        return True
+        meta_path = save_path / "metadata.json"
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r") as _mf:
+                    _meta = json.load(_mf)
+                _saved_total = _meta.get("total_samples", 0)
+                _img_downloaded = _meta.get("images_downloaded", 0)
+                # For URL-image datasets, verify enough images were obtained
+                if info.get("download_images_from_urls") and dataset_key == "conceptual_captions":
+                    img_dir = save_path / "images"
+                    _actual_images = sum(1 for _ in img_dir.iterdir()) if img_dir.is_dir() else 0
+                    if _actual_images < 50_000:
+                        print(f"! {dataset_key}: only {_actual_images} images on disk (need more). Re-downloading...")
+                    else:
+                        print(f"✓ {dataset_key} already downloaded ({_actual_images} images) at {save_path}")
+                        return True
+                else:
+                    print(f"✓ {dataset_key} already downloaded ({_saved_total} samples) at {save_path}")
+                    return True
+            except Exception:
+                print(f"✓ {dataset_key} exists at {save_path} (metadata unreadable, assuming OK)")
+                return True
+        else:
+            # Directory exists but no metadata — check for actual data files
+            has_data = any(save_path.glob("**/*.parquet")) or any(save_path.glob("**/*.json"))
+            if has_data:
+                print(f"✓ {dataset_key} already downloaded at {save_path} (no metadata)")
+                return True
+            # Empty dir, re-download
+            print(f"! {dataset_key}: directory exists but empty, downloading...")
 
     print(f"\n{'='*70}")
     print(f"DOWNLOADING: {dataset_key}")
@@ -998,14 +1026,18 @@ def download_dataset(
                 downloaded_count = 0
                 failed_count = 0
                 
+                # CC3M / large URL-only datasets: download up to 1M images
+                _cc3m_cap = 1_000_000 if dataset_key == "conceptual_captions" else None
+                _url_cap = _cc3m_cap if _cc3m_cap else (None if info.get("priority") != "optional" else 100_000)
+                _url_workers = 64 if dataset_key == "conceptual_captions" else 32
                 for split_name in ds.keys():
                     print(f"  Processing split: {split_name}")
                     down, fail = _download_images_from_dataset(
                         ds[split_name],
                         save_path,
                         url_field=url_field,
-                        max_workers=16,
-                        max_images=10000 if info.get("priority") == "optional" else None,
+                        max_workers=_url_workers,
+                        max_images=_url_cap,
                     )
                     downloaded_count += down
                     failed_count += fail
@@ -1269,6 +1301,115 @@ Result: A tiny VLM that can handle diverse visual tasks efficiently!
     print(f"{'='*70}\n")
 
 
+def verify_data_sufficiency(output_dir: Path) -> bool:
+    """Check that downloaded data is sufficient for training both stages."""
+    print(f"\n{'='*70}")
+    print("DATA SUFFICIENCY VERIFICATION")
+    print(f"{'='*70}\n")
+
+    issues = []
+    stage1_samples = 0
+    stage2_experts_covered = set()
+
+    # Required minimums for good output
+    MIN_STAGE1_SAMPLES = 100_000   # need at least 100K for decent alignment
+    MIN_EXPERT_SAMPLES = 1_000     # at least 1K per expert domain
+    EXPERT_DOMAINS = {
+        "vision_ocr", "vision_diagram", "code_math_chart",
+        "code_math_formula", "spatial_scene", "spatial_reasoning",
+        "agentic_knowledge", "agentic_reasoning",
+    }
+
+    for key, info in DATASETS.items():
+        ds_path = output_dir / key
+        if not ds_path.exists():
+            if info["priority"] == "critical":
+                issues.append(f"MISSING critical dataset: {key}")
+            continue
+
+        meta_path = ds_path / "metadata.json"
+        total = 0
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                total = meta.get("total_samples", 0)
+                img_dl = meta.get("images_downloaded", 0)
+                splits = meta.get("splits", [])
+                if total == 0 and img_dl > 0:
+                    total = img_dl
+            except Exception:
+                pass
+
+        # For URL-image datasets, count actual images on disk
+        if info.get("download_images_from_urls"):
+            img_dir = ds_path / "images"
+            if img_dir.is_dir():
+                actual = sum(1 for _ in img_dir.iterdir())
+                total = max(total, actual)
+
+        if total == 0:
+            # Check for parquet/json files as proxy
+            has_parquet = any(ds_path.glob("**/*.parquet"))
+            has_json = any(ds_path.glob("**/*.json"))
+            if has_parquet or has_json:
+                total = 1  # at least something exists
+
+        if info["stage"] == 1:
+            stage1_samples += total
+            print(f"  Stage 1  {key:25s}  {total:>8,} samples  [{info['priority']}]")
+        else:
+            domain = info["domain"]
+            if total > MIN_EXPERT_SAMPLES:
+                stage2_experts_covered.add(domain)
+            print(f"  Stage 2  {key:25s}  {total:>8,} samples  [{domain}]")
+
+    # Stage 1 check
+    print(f"\n{'='*70}")
+    if stage1_samples < MIN_STAGE1_SAMPLES:
+        issues.append(f"Stage 1 has only {stage1_samples:,} samples (need {MIN_STAGE1_SAMPLES:,}+ for alignment)")
+        print(f"✗ Stage 1: {stage1_samples:,} samples (INSUFFICIENT)")
+    else:
+        print(f"✓ Stage 1: {stage1_samples:,} samples (OK)")
+
+    # Stage 2 expert coverage
+    missing_experts = EXPERT_DOMAINS - stage2_experts_covered
+    if missing_experts:
+        issues.append(f"Missing expert data for: {', '.join(sorted(missing_experts))}")
+        print(f"✗ Stage 2: Missing data for experts: {', '.join(sorted(missing_experts))}")
+    else:
+        print(f"✓ Stage 2: All 8 expert domains covered")
+
+    # Train/val split check
+    has_any_val = False
+    for key in DATASETS:
+        meta_path = output_dir / key / "metadata.json"
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r") as f:
+                    splits = json.load(f).get("splits", [])
+                if "validation" in splits or "val" in splits:
+                    has_any_val = True
+                    break
+            except Exception:
+                pass
+    if has_any_val:
+        print(f"✓ Validation splits: Found in downloaded data")
+    else:
+        print(f"! Validation splits: Not found (will auto-carve 10% from training data)")
+
+    print(f"{'='*70}")
+    if issues:
+        print(f"\n⚠ {len(issues)} issue(s) found:")
+        for issue in issues:
+            print(f"  ✗ {issue}")
+        print(f"\nRun with --recommended or --all to download missing data.")
+        return False
+    else:
+        print(f"\n✓ Data is sufficient for training. Ready to proceed!")
+        return True
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -1323,6 +1464,11 @@ Examples:
         action="store_true",
         help="Explain vision-language alignment and exit"
     )
+    action_group.add_argument(
+        "--verify",
+        action="store_true",
+        help="Verify existing data sufficiency for training (no downloads)"
+    )
 
     # Configuration arguments
     parser.add_argument(
@@ -1359,6 +1505,11 @@ Examples:
     if args.explain:
         explain_alignment()
         return
+
+    if args.verify:
+        output_dir = Path(args.output_dir)
+        success = verify_data_sufficiency(output_dir)
+        sys.exit(0 if success else 1)
 
     # Check dependencies
     check_dependencies()
