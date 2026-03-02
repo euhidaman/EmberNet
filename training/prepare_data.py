@@ -462,7 +462,7 @@ DATASETS = {
         "domain": "agentic_reasoning",
         "expert": "Expert 7: agentic_reasoning",
         "size_gb": 0.2,
-        "priority": "optional",
+        "priority": "recommended",
         "samples": "800",
         "requires_hf_token": True,
     },
@@ -902,28 +902,29 @@ def download_dataset(
 
     # Check if already exists — verify data integrity, not just directory
     # Minimum usable samples per dataset (below this = broken, re-download)
+    # Set to ~50-80% of expected train split size so partial downloads get caught
     _MIN_USABLE = {
-        "llava_instruct_150k": 50_000,
-        "sharegpt4v": 10_000,
-        "allava_instruct": 50_000,
-        "coco_captions": 20_000,
-        "conceptual_captions": 50_000,  # actual images on disk
-        "textvqa": 10_000,
-        "docvqa": 5_000,
-        "ai2d": 2_000,
-        "chartqa": 5_000,
-        "plotqa": 10_000,
-        "mathvista": 2_000,
-        "vqav2": 100_000,
-        "gqa": 10_000,
-        "visual_genome_region": 5_000,
-        "okvqa": 3_000,
-        "aokvqa": 5_000,
-        "scienceqa": 5_000,
-        "refcoco": 5_000,
-        "nlvr2": 5_000,
-        "vsr": 1_000,
-        "winoground": 100,
+        "llava_instruct_150k": 100_000,
+        "sharegpt4v": 50_000,
+        "allava_instruct": 200_000,
+        "coco_captions": 80_000,
+        "conceptual_captions": 100_000,  # actual images on disk
+        "textvqa": 30_000,
+        "docvqa": 8_000,
+        "ai2d": 2_500,
+        "chartqa": 20_000,
+        "plotqa": 150_000,
+        "mathvista": 4_000,
+        "vqav2": 500_000,
+        "gqa": 500_000,
+        "visual_genome_region": 50_000,
+        "okvqa": 9_000,
+        "aokvqa": 17_000,
+        "scienceqa": 12_000,
+        "refcoco": 100_000,
+        "nlvr2": 80_000,
+        "vsr": 5_000,
+        "winoground": 400,
     }
     _required_min = _MIN_USABLE.get(dataset_key, 500)
 
@@ -1061,8 +1062,7 @@ def download_dataset(
                 downloaded_count = 0
                 failed_count = 0
                 
-                # CC3M: download up to 1M images; other URL datasets: no cap
-                _cc3m_cap = 1_000_000 if dataset_key == "conceptual_captions" else None
+                # Download all available images — no artificial caps
                 _url_workers = 64 if dataset_key == "conceptual_captions" else 32
                 for split_name in ds.keys():
                     print(f"  Processing split: {split_name}")
@@ -1071,7 +1071,7 @@ def download_dataset(
                         save_path,
                         url_field=url_field,
                         max_workers=_url_workers,
-                        max_images=_cc3m_cap,
+                        max_images=None,
                     )
                     downloaded_count += down
                     failed_count += fail
