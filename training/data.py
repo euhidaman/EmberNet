@@ -739,17 +739,56 @@ class EmberNetDataset(Dataset):
 
             # Check for URL-only datasets (e.g. conceptual_captions) — images must
             # be fetched from external URLs which is very slow and many URLs are dead.
+            # If pre-downloaded images exist locally, build an index and match by
+            # filename stem so we use local files instead of HTTP fetches.
             _cols = getattr(ds, "column_names", []) or []
+            _local_image_index: Optional[Dict[str, str]] = None
+            _URL_ONLY_CAP = 1_000_000  # hard cap for URL-only datasets
             if isinstance(_cols, list) and "image_url" in _cols and "image" not in _cols:
-                print(f"  [WARNING] {dataset_name} has only image URLs (no embedded images). "
-                      f"Image loading will be slow and many URLs may be expired. "
-                      f"Consider pre-downloading images or removing this dataset.")
+                # Scan for pre-downloaded images in base_dir/images/
+                _img_dir = Path(base_dir) / "images" if base_dir else None
+                if _img_dir and _img_dir.is_dir():
+                    _local_image_index = {}
+                    _img_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+                    for _f in _img_dir.iterdir():
+                        if _f.suffix.lower() in _img_exts:
+                            _local_image_index[_f.stem] = str(_f)
+                    print(f"  [URL-only dataset] {dataset_name}: found {len(_local_image_index)} "
+                          f"pre-downloaded images in {_img_dir}")
+                    if not _local_image_index:
+                        print(f"  [SKIP] {dataset_name}: no local images found, skipping to avoid URL deadlocks")
+                        _DATASET_SAMPLE_CACHE[cache_key] = []
+                        return []
+                else:
+                    print(f"  [SKIP] {dataset_name}: URL-only with no local images dir, skipping")
+                    _DATASET_SAMPLE_CACHE[cache_key] = []
+                    return []
+                print(f"  [URL-only dataset] Capping {dataset_name} at {_URL_ONLY_CAP:,} samples")
 
             samples = []
             _trial_cap = (self.max_samples or 0) * 3 if self.max_samples else 0
+            # For URL-only datasets, also enforce the 1M cap
+            if _local_image_index is not None:
+                _trial_cap = min(_trial_cap, _URL_ONLY_CAP) if _trial_cap else _URL_ONLY_CAP
             _skip_count = 0
             for item in ds:
                 try:
+                    # For URL-only datasets, resolve image_url → local file before parsing
+                    if _local_image_index is not None:
+                        url = item.get("image_url") or item.get("url") or ""
+                        if url:
+                            # Extract filename stem from URL (last path segment without ext)
+                            import posixpath
+                            _url_fname = posixpath.basename(url.split("?")[0])
+                            _url_stem = Path(_url_fname).stem
+                            _local_path = _local_image_index.get(_url_stem)
+                            if _local_path:
+                                item = dict(item)
+                                item["image_path"] = _local_path
+                            else:
+                                # No local image for this URL — skip instead of HTTP fetch
+                                continue
+
                     sample = self._parse_dataset_item(item, dataset_name, base_dir)
                     if isinstance(sample, tuple):
                         sample = sample[0]
@@ -1456,7 +1495,7 @@ class EmberNetDataset(Dataset):
         if img_path.startswith(("http://", "https://")):
             try:
                 import urllib.request
-                with urllib.request.urlopen(img_path, timeout=15) as resp:
+                with urllib.request.urlopen(img_path, timeout=3) as resp:
                     return self.image_processor(Image.open(io.BytesIO(resp.read())))
             except Exception:
                 pass
@@ -1732,6 +1771,8 @@ def create_dataloaders(
         num_workers=num_workers,
         collate_fn=collate_fn,
         pin_memory=True,
+        timeout=120,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     val_loader = None
@@ -1743,6 +1784,8 @@ def create_dataloaders(
             num_workers=num_workers,
             collate_fn=collate_fn,
             pin_memory=True,
+            timeout=120,
+            prefetch_factor=2 if num_workers > 0 else None,
         )
 
     return train_loader, val_loader

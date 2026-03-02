@@ -35,6 +35,7 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from tqdm import tqdm
 
 # Suppress expected DataParallel scalar-gather warning
 warnings.filterwarnings("ignore", message=".*Was asked to gather along dimension 0.*")
@@ -1027,6 +1028,7 @@ class Trainer:
             print(f"  └─ Text tokens:  {text_training:,}")
 
         print(f"{'='*70}\n")
+        sys.stdout.flush()
 
         self.model.train()
         start_time = time.time()
@@ -1039,7 +1041,26 @@ class Trainer:
             _WINDOW         = 50
             _window_losses: List[float] = []
 
-            for step, batch in enumerate(train_loader):
+            pbar = tqdm(
+                total=len(train_loader),
+                desc=f"Epoch {epoch+1}/{self.config.epochs}",
+                dynamic_ncols=True,
+                file=sys.stdout,
+            )
+            _loader_iter = iter(train_loader)
+            for step in range(len(train_loader)):
+                try:
+                    batch = next(_loader_iter)
+                except StopIteration:
+                    break
+                except RuntimeError as _dl_err:
+                    if "DataLoader worker" in str(_dl_err) or "Timeout" in str(_dl_err):
+                        pbar.write(f"  [DataLoader] Worker timeout at step {step}, skipping batch")
+                        sys.stdout.flush()
+                        pbar.update(1)
+                        continue
+                    raise
+                pbar.update(1)
                 # Warmup
                 self._warmup_lr()
 
@@ -1121,7 +1142,7 @@ class Trainer:
                         cumul_avg  = epoch_loss / epoch_steps
                         elapsed = time.time() - start_time
 
-                        print(
+                        log_msg = (
                             f"Epoch {epoch+1}/{self.config.epochs} | "
                             f"Step {self.global_step} | "
                             f"Loss: {raw_loss:.4f} | "
@@ -1130,6 +1151,9 @@ class Trainer:
                             f"LR: {_cur_lr:.2e} | "
                             f"Time: {elapsed:.1f}s"
                         )
+                        pbar.write(log_msg)
+                        pbar.set_postfix(loss=f"{raw_loss:.4f}", avg=f"{window_avg:.4f}", lr=f"{_cur_lr:.2e}")
+                        sys.stdout.flush()
 
                         log_dict = {
                             "train/loss": raw_loss,
@@ -1189,6 +1213,9 @@ class Trainer:
                             self.model.train()
                         except Exception as _he:
                             print(f"  [halluc-snap] step {self.global_step} failed: {_he}")
+
+            # Close progress bar for this epoch
+            pbar.close()
 
             # End of epoch - handle case where all batches were skipped
             if epoch_steps == 0:
