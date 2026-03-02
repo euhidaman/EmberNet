@@ -114,6 +114,21 @@ from typing import List, Dict, Optional
 import concurrent.futures
 import hashlib
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
+
+def _progress(iterable, **kwargs):
+    if tqdm is not None:
+        return tqdm(iterable, **kwargs)
+    return iterable
+
+def _progress_bar(**kwargs):
+    if tqdm is not None:
+        return tqdm(**kwargs)
+    return None
+
 # =============================================================================
 # COMPLETE DATASET CONFIGURATIONS
 # =============================================================================
@@ -807,15 +822,23 @@ def _download_images_from_dataset(
                 break
             futures.append(executor.submit(download_sample, (idx, row)))
         
-        for idx, future in enumerate(concurrent.futures.as_completed(futures)):
+        pbar = _progress_bar(total=len(futures), desc="    Images", unit="img",
+                             ncols=100, miniinterval=2)
+        for future in concurrent.futures.as_completed(futures):
             result = future.result()
             if result is True:
                 downloaded += 1
             elif result is False:
                 failed += 1
-            
-            if (idx + 1) % 100 == 0:
-                print(f"    Progress: {idx + 1}/{len(futures)} ({downloaded} ok, {failed} failed)")
+            if pbar is not None:
+                pbar.set_postfix(ok=downloaded, fail=failed, refresh=False)
+                pbar.update(1)
+            else:
+                done = downloaded + failed
+                if done % 500 == 0:
+                    print(f"    Progress: {done}/{len(futures)} ({downloaded} ok, {failed} failed)")
+        if pbar is not None:
+            pbar.close()
     
     print(f"  ✓ Downloaded {downloaded} images, {failed} failed")
     return downloaded, failed
@@ -840,8 +863,16 @@ def _download_coco_images(save_path: Path, splits: List[str] = None) -> bool:
             continue
         
         try:
-            print(f"    Downloading {split}.zip...")
-            urllib.request.urlretrieve(zip_url, zip_path)
+            print(f"    Downloading {split}.zip (this is large, please wait)...")
+            def _reporthook(block_num, block_size, total_size):
+                downloaded = block_num * block_size
+                if total_size > 0:
+                    pct = min(100, downloaded * 100 // total_size)
+                    mb = downloaded / (1024 * 1024)
+                    total_mb = total_size / (1024 * 1024)
+                    print(f"\r    {split}: {mb:.0f}/{total_mb:.0f} MB ({pct}%)", end="", flush=True)
+            urllib.request.urlretrieve(zip_url, zip_path, reporthook=_reporthook)
+            print()  # newline after progress
             
             print(f"    Extracting {split}.zip...")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -1230,10 +1261,8 @@ def download_multiple_datasets(
         )
         results[dataset_key] = success
 
-        if success:
-            print(f"✓ [{i}/{total}] Completed: {dataset_key}")
-        else:
-            print(f"✗ [{i}/{total}] Failed: {dataset_key}")
+        status = "✓" if success else "✗"
+        print(f"{status} [{i}/{total}] {'Completed' if success else 'Failed'}: {dataset_key}")
 
     return results
 
