@@ -901,37 +901,72 @@ def download_dataset(
         return False
 
     # Check if already exists — verify data integrity, not just directory
+    # Minimum usable samples per dataset (below this = broken, re-download)
+    _MIN_USABLE = {
+        "llava_instruct_150k": 50_000,
+        "sharegpt4v": 10_000,
+        "allava_instruct": 50_000,
+        "coco_captions": 20_000,
+        "conceptual_captions": 50_000,  # actual images on disk
+        "textvqa": 10_000,
+        "docvqa": 5_000,
+        "ai2d": 2_000,
+        "chartqa": 5_000,
+        "plotqa": 10_000,
+        "mathvista": 2_000,
+        "vqav2": 100_000,
+        "gqa": 10_000,
+        "visual_genome_region": 5_000,
+        "okvqa": 3_000,
+        "aokvqa": 5_000,
+        "scienceqa": 5_000,
+        "refcoco": 5_000,
+        "nlvr2": 5_000,
+        "vsr": 1_000,
+        "winoground": 100,
+    }
+    _required_min = _MIN_USABLE.get(dataset_key, 500)
+
     if save_path.exists() and not force:
+        # Count actual usable data
+        _actual_count = 0
         meta_path = save_path / "metadata.json"
-        if meta_path.exists():
+
+        # For URL-image datasets, count actual downloaded images
+        if info.get("download_images_from_urls"):
+            img_dir = save_path / "images"
+            if img_dir.is_dir():
+                _actual_count = sum(1 for _ in img_dir.iterdir())
+        elif meta_path.exists():
             try:
                 with open(meta_path, "r") as _mf:
                     _meta = json.load(_mf)
-                _saved_total = _meta.get("total_samples", 0)
-                _img_downloaded = _meta.get("images_downloaded", 0)
-                # For URL-image datasets, verify enough images were obtained
-                if info.get("download_images_from_urls") and dataset_key == "conceptual_captions":
-                    img_dir = save_path / "images"
-                    _actual_images = sum(1 for _ in img_dir.iterdir()) if img_dir.is_dir() else 0
-                    if _actual_images < 50_000:
-                        print(f"! {dataset_key}: only {_actual_images} images on disk (need more). Re-downloading...")
-                    else:
-                        print(f"✓ {dataset_key} already downloaded ({_actual_images} images) at {save_path}")
-                        return True
-                else:
-                    print(f"✓ {dataset_key} already downloaded ({_saved_total} samples) at {save_path}")
-                    return True
+                _actual_count = _meta.get("total_samples", 0)
             except Exception:
-                print(f"✓ {dataset_key} exists at {save_path} (metadata unreadable, assuming OK)")
-                return True
+                _actual_count = 0
+
+        # If no metadata, count parquet rows as proxy
+        if _actual_count == 0:
+            parquet_files = list(save_path.glob("**/*.parquet"))
+            if parquet_files:
+                try:
+                    import pandas as pd
+                    _actual_count = sum(len(pd.read_parquet(p)) for p in parquet_files)
+                except Exception:
+                    _actual_count = 1  # at least files exist
+
+        if _actual_count >= _required_min:
+            print(f"✓ {dataset_key}: {_actual_count:,} samples (>= {_required_min:,} required). Skipping.")
+            return True
+        elif _actual_count > 0:
+            print(f"! {dataset_key}: only {_actual_count:,} samples (need {_required_min:,}). Re-downloading...")
+            # Remove broken data to start fresh
+            import shutil
+            shutil.rmtree(save_path, ignore_errors=True)
         else:
-            # Directory exists but no metadata — check for actual data files
-            has_data = any(save_path.glob("**/*.parquet")) or any(save_path.glob("**/*.json"))
-            if has_data:
-                print(f"✓ {dataset_key} already downloaded at {save_path} (no metadata)")
-                return True
-            # Empty dir, re-download
-            print(f"! {dataset_key}: directory exists but empty, downloading...")
+            print(f"! {dataset_key}: directory exists but no usable data. Re-downloading...")
+            import shutil
+            shutil.rmtree(save_path, ignore_errors=True)
 
     print(f"\n{'='*70}")
     print(f"DOWNLOADING: {dataset_key}")
@@ -1308,22 +1343,28 @@ def verify_data_sufficiency(output_dir: Path) -> bool:
     print(f"{'='*70}\n")
 
     issues = []
+    warnings = []
     stage1_samples = 0
     stage2_experts_covered = set()
 
     # Required minimums for good output
     MIN_STAGE1_SAMPLES = 100_000   # need at least 100K for decent alignment
     MIN_EXPERT_SAMPLES = 1_000     # at least 1K per expert domain
+    LOW_SAMPLE_THRESHOLD = 100     # anything below this is basically broken
     EXPERT_DOMAINS = {
         "vision_ocr", "vision_diagram", "code_math_chart",
         "code_math_formula", "spatial_scene", "spatial_reasoning",
         "agentic_knowledge", "agentic_reasoning",
     }
 
+    # Track which critical datasets are present
+    missing_critical = []
+
     for key, info in DATASETS.items():
         ds_path = output_dir / key
         if not ds_path.exists():
             if info["priority"] == "critical":
+                missing_critical.append(key)
                 issues.append(f"MISSING critical dataset: {key}")
             continue
 
@@ -1341,12 +1382,14 @@ def verify_data_sufficiency(output_dir: Path) -> bool:
             except Exception:
                 pass
 
-        # For URL-image datasets, count actual images on disk
+        # For URL-image datasets, the real count is downloaded images, not metadata rows
         if info.get("download_images_from_urls"):
             img_dir = ds_path / "images"
             if img_dir.is_dir():
                 actual = sum(1 for _ in img_dir.iterdir())
-                total = max(total, actual)
+                total = actual  # USE actual images, not metadata row count
+            else:
+                total = 0  # no images dir = no usable data
 
         if total == 0:
             # Check for parquet/json files as proxy
