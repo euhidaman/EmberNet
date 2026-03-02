@@ -340,6 +340,10 @@ class TrainingConfig:
     # Hallucination snapshot interval (0 = disabled)
     hallucination_snapshot_interval: int = 50
 
+    # PCA backbone comparison interval (0 = disabled)
+    pca_backbones_interval: int = 50
+    disable_pca_backbones: bool = False
+
     # Hardware
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     mixed_precision: bool = True
@@ -1213,6 +1217,23 @@ class Trainer:
                             self.model.train()
                         except Exception as _he:
                             print(f"  [halluc-snap] step {self.global_step} failed: {_he}")
+
+                    # PCA backbone comparison snapshot
+                    if (self.config.pca_backbones_interval > 0
+                            and not self.config.disable_pca_backbones
+                            and self.global_step % self.config.pca_backbones_interval == 0):
+                        try:
+                            from visualizations.fig_pca_backbones import pca_backbones_hook
+                            _pca_dir = Path(self.config.output_dir) / "plots" / "pca_backbones"
+                            pca_backbones_hook(
+                                model=self.model,
+                                batch=batch,
+                                global_step=self.global_step,
+                                stage=self.config.stage,
+                                save_dir=_pca_dir,
+                            )
+                        except Exception as _pe:
+                            print(f"  [pca-snap] step {self.global_step} failed: {_pe}")
 
             # Close progress bar for this epoch
             pbar.close()

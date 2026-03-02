@@ -16,6 +16,7 @@ from visualizations.stage_comparison import StageComparisonPlotter
 from visualizations.wandb_utils import WandBLogger
 from visualizations.live_plotter import LivePlotter
 from visualizations.benchmark_viz import BenchmarkVisualizer
+from visualizations.fig_pca_backbones import pca_backbones_hook, plot_pca as plot_pca_backbones
 
 __all__ = [
     "VIZ_CONFIG",
@@ -31,4 +32,6 @@ __all__ = [
     "WandBLogger",
     "LivePlotter",
     "BenchmarkVisualizer",
+    "pca_backbones_hook",
+    "plot_pca_backbones",
 ]
