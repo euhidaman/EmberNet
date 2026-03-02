@@ -783,49 +783,63 @@ def _download_images_from_dataset(
     max_workers: int = 64,
     max_images: Optional[int] = None,
 ) -> tuple[int, int]:
-    """Download images from URLs in dataset to local directory."""
+    """Download images from URLs in dataset to local directory.
+
+    Uses chunked submission (batches of 5 000) so progress appears
+    immediately instead of blocking while iterating the full dataset.
+    """
     images_dir = save_path / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
-    
+
     downloaded = 0
     failed = 0
-    
-    def download_sample(idx_row):
-        idx, row = idx_row
-        if max_images and idx >= max_images:
-            return None
-            
-        url = row.get(url_field)
+    total_target = max_images if max_images else len(dataset)
+
+    def _download_one(idx, url):
         if not url or not isinstance(url, str):
             return False
-            
-        # Generate filename from URL hash to avoid collisions
         url_hash = hashlib.md5(url.encode()).hexdigest()
         ext = url.split('.')[-1].split('?')[0].lower()
         if ext not in {'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'}:
             ext = 'jpg'
-        
         img_path = images_dir / f"{idx:08d}_{url_hash}.{ext}"
-        
         if img_path.exists():
             return True
-            
         return _download_image_from_url(url, img_path)
-    
-    print(f"  Downloading images from URLs (using {max_workers} workers)...")
-    
-    # Use ThreadPoolExecutor for concurrent downloads
+
+    print(f"  Downloading up to {total_target:,} images (using {max_workers} workers)...")
+
+    CHUNK = 5_000
+    pbar = _progress_bar(total=total_target, desc="    Images", unit="img",
+                         ncols=100, miniinterval=2)
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
+        chunk_futures = []
+        submitted = 0
+
         for idx, row in enumerate(dataset):
             if max_images and idx >= max_images:
                 break
-            futures.append(executor.submit(download_sample, (idx, row)))
-        
-        pbar = _progress_bar(total=len(futures), desc="    Images", unit="img",
-                             ncols=100, miniinterval=2)
-        for future in concurrent.futures.as_completed(futures):
-            result = future.result()
+            url = row.get(url_field)
+            chunk_futures.append(executor.submit(_download_one, idx, url))
+            submitted += 1
+
+            # Drain completed futures every CHUNK submissions
+            if len(chunk_futures) >= CHUNK:
+                for fut in concurrent.futures.as_completed(chunk_futures):
+                    result = fut.result()
+                    if result is True:
+                        downloaded += 1
+                    elif result is False:
+                        failed += 1
+                    if pbar is not None:
+                        pbar.set_postfix(ok=downloaded, fail=failed, refresh=False)
+                        pbar.update(1)
+                chunk_futures = []
+
+        # Drain remaining
+        for fut in concurrent.futures.as_completed(chunk_futures):
+            result = fut.result()
             if result is True:
                 downloaded += 1
             elif result is False:
@@ -833,14 +847,11 @@ def _download_images_from_dataset(
             if pbar is not None:
                 pbar.set_postfix(ok=downloaded, fail=failed, refresh=False)
                 pbar.update(1)
-            else:
-                done = downloaded + failed
-                if done % 500 == 0:
-                    print(f"    Progress: {done}/{len(futures)} ({downloaded} ok, {failed} failed)")
-        if pbar is not None:
-            pbar.close()
-    
-    print(f"  ✓ Downloaded {downloaded} images, {failed} failed")
+
+    if pbar is not None:
+        pbar.close()
+
+    print(f"  ✓ Downloaded {downloaded:,} images, {failed:,} failed")
     return downloaded, failed
 
 
@@ -1093,8 +1104,10 @@ def download_dataset(
                 downloaded_count = 0
                 failed_count = 0
                 
-                # Download all available images — no artificial caps
+                # CC3M has 3.3M URLs but most are dead; cap at 1M to
+                # keep download time reasonable (~hours, not days).
                 _url_workers = 64 if dataset_key == "conceptual_captions" else 32
+                _img_cap = 1_000_000 if dataset_key == "conceptual_captions" else None
                 for split_name in ds.keys():
                     print(f"  Processing split: {split_name}")
                     down, fail = _download_images_from_dataset(
@@ -1102,7 +1115,7 @@ def download_dataset(
                         save_path,
                         url_field=url_field,
                         max_workers=_url_workers,
-                        max_images=None,
+                        max_images=_img_cap,
                     )
                     downloaded_count += down
                     failed_count += fail
