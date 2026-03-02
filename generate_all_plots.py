@@ -94,6 +94,7 @@ _PAPER_FIGS = {
     "fig_qualitative_grid":      "visualizations.fig_qualitative_grid",
     "fig_hallucination_activation": "visualizations.fig_hallucination_activation",
     "fig_pca_backbones":        "visualizations.fig_pca_backbones",
+    "fig_robot_risk_benchmarks": "visualizations.fig_robot_risk_benchmarks",
 }
 
 
