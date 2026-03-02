@@ -187,7 +187,7 @@ DATASETS = {
         "download_images_from_urls": True,
         "image_url_field": "image_url",
         "size_gb": 12.0,
-        "priority": "optional",
+        "priority": "recommended",
         "samples": "3.3M",
     },
 
@@ -281,7 +281,7 @@ DATASETS = {
         "domain": "code_math_chart",
         "expert": "Expert 2: code_math_chart",
         "size_gb": 8.0,
-        "priority": "optional",
+        "priority": "recommended",
         "samples": "224K",
     },
     # NOTE: FigureQA doesn't exist as standalone - exists in HuggingFaceM4/the_cauldron
@@ -370,7 +370,7 @@ DATASETS = {
         "expert": "Expert 4: spatial_scene",
         "preferred_download": "snapshot",
         "size_gb": 10.0,
-        "priority": "optional",
+        "priority": "recommended",
         "samples": "108K",
     },
     "okvqa": {
@@ -421,7 +421,7 @@ DATASETS = {
         "domain": "spatial_scene",
         "expert": "Expert 4: spatial_scene",
         "size_gb": 2.3,
-        "priority": "optional",
+        "priority": "recommended",
         "samples": "142K",
     },
 
@@ -451,7 +451,7 @@ DATASETS = {
         "download_images_from_urls": True,
         "image_url_field": "image",
         "size_gb": 0.5,
-        "priority": "optional",
+        "priority": "recommended",
         "samples": "10K",
     },
     "winoground": {
@@ -1061,9 +1061,8 @@ def download_dataset(
                 downloaded_count = 0
                 failed_count = 0
                 
-                # CC3M / large URL-only datasets: download up to 1M images
+                # CC3M: download up to 1M images; other URL datasets: no cap
                 _cc3m_cap = 1_000_000 if dataset_key == "conceptual_captions" else None
-                _url_cap = _cc3m_cap if _cc3m_cap else (None if info.get("priority") != "optional" else 100_000)
                 _url_workers = 64 if dataset_key == "conceptual_captions" else 32
                 for split_name in ds.keys():
                     print(f"  Processing split: {split_name}")
@@ -1072,7 +1071,7 @@ def download_dataset(
                         save_path,
                         url_field=url_field,
                         max_workers=_url_workers,
-                        max_images=_url_cap,
+                        max_images=_cc3m_cap,
                     )
                     downloaded_count += down
                     failed_count += fail
