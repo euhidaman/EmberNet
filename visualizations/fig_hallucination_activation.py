@@ -162,28 +162,12 @@ def collect_activation_data(model, layer_indices: List[int]) -> Dict:
             print(f"  [halluc] hook layer {li}: {e}")
 
     model.eval()
-    present_mat = None
-    absent_mat = None
     qe_acc = np.zeros(n)
     passes = 0
 
-    def _extract_mat():
-        mat = np.zeros((n, TOP_K_NEURONS))
-        for li_i in range(n):
-            if li_i not in hook_data:
-                continue
-            post = hook_data[li_i]["post"]
-            mag = post.abs().mean(dim=0).numpy()
-            if len(mag) >= TOP_K_NEURONS:
-                top = np.argsort(mag)[-TOP_K_NEURONS:]
-                vals = mag[top]
-            else:
-                vals = np.pad(mag, (0, TOP_K_NEURONS - len(mag)))
-            lo, hi = vals.min(), vals.max()
-            if hi - lo > 1e-6:
-                vals = (vals - lo) / (hi - lo)
-            mat[li_i] = vals
-        return mat
+    # Collect RAW per-layer mean-abs magnitudes for both queries
+    raw_present = {}  # layer_idx → 1-D numpy magnitude vector
+    raw_absent  = {}
 
     with torch.no_grad():
         # Present query
@@ -192,9 +176,9 @@ def collect_activation_data(model, layer_indices: List[int]) -> Dict:
             ids = _build_probe_ids(model, PRESENT_QUERY, device)
             _ = model(input_ids=ids, pixel_values=pix)
             if hook_data:
-                present_mat = _extract_mat()
                 for li_i in range(n):
                     if li_i in hook_data:
+                        raw_present[li_i] = hook_data[li_i]["post"].abs().mean(dim=0).numpy()
                         qe_acc[li_i] += hook_data[li_i].get("qe", 0.0)
                 passes += 1
         except Exception as e:
@@ -206,9 +190,9 @@ def collect_activation_data(model, layer_indices: List[int]) -> Dict:
             ids = _build_probe_ids(model, ABSENT_QUERY, device)
             _ = model(input_ids=ids, pixel_values=pix)
             if hook_data:
-                absent_mat = _extract_mat()
                 for li_i in range(n):
                     if li_i in hook_data:
+                        raw_absent[li_i] = hook_data[li_i]["post"].abs().mean(dim=0).numpy()
                         qe_acc[li_i] += hook_data[li_i].get("qe", 0.0)
                 passes += 1
         except Exception as e:
@@ -219,9 +203,34 @@ def collect_activation_data(model, layer_indices: List[int]) -> Dict:
     if passes > 0:
         qe_acc /= passes
 
-    if present_mat is None or absent_mat is None:
+    if not raw_present or not raw_absent:
         print("  [halluc] ABORT: forward pass produced no activations")
         return None
+
+    # Build activation matrices using SAME neuron indices & SHARED normalization
+    present_mat = np.zeros((n, TOP_K_NEURONS))
+    absent_mat  = np.zeros((n, TOP_K_NEURONS))
+
+    for li_i in range(n):
+        mag_p = raw_present.get(li_i)
+        mag_a = raw_absent.get(li_i)
+        if mag_p is None or mag_a is None:
+            continue
+        # Select top-K neurons from the PRESENT query as reference set
+        if len(mag_p) >= TOP_K_NEURONS:
+            top_idx = np.argsort(mag_p)[-TOP_K_NEURONS:]
+        else:
+            top_idx = np.arange(len(mag_p))
+        vals_p = mag_p[top_idx] if len(mag_p) >= TOP_K_NEURONS else np.pad(mag_p, (0, TOP_K_NEURONS - len(mag_p)))
+        vals_a = mag_a[top_idx] if len(mag_a) >= TOP_K_NEURONS else np.pad(mag_a, (0, TOP_K_NEURONS - len(mag_a)))
+        # SHARED normalization across both queries
+        global_lo = min(vals_p.min(), vals_a.min())
+        global_hi = max(vals_p.max(), vals_a.max())
+        if global_hi - global_lo > 1e-6:
+            vals_p = (vals_p - global_lo) / (global_hi - global_lo)
+            vals_a = (vals_a - global_lo) / (global_hi - global_lo)
+        present_mat[li_i] = vals_p
+        absent_mat[li_i] = vals_a
 
     # cosine similarity between present and absent
     def _cos(a, b):
