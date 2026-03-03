@@ -142,6 +142,8 @@ class StageComparisonPlotter:
                 ax.set_ylim(0, 1)
                 for name in EXPERT_NAMES:
                     vals = np.asarray(perf_dict.get(name, np.full(N, 0.1)))
+                    if vals.shape[0] != N:
+                        vals = np.full(N, float(vals.mean()))
                     vals_loop = np.concatenate([vals, [vals[0]]])
                     angs_loop = np.concatenate([angles, [angles[0]]])
                     ax.plot(angs_loop, vals_loop, color=EXPERT_COLORS[name], lw=1.5)

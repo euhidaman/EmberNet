@@ -48,9 +48,16 @@ class DatasetAnalysisPlotter:
                 return out
 
             n_ds = len(ALL_DATASETS)
-            datasets   = data.get("datasets", ALL_DATASETS)
-            img_tok    = np.asarray(data["img_tokens_M"])
-            text_tok   = np.asarray(data["text_tokens_M"])
+            if "img_tokens_M" in data:
+                datasets = data.get("datasets", ALL_DATASETS)
+                img_tok  = np.asarray(data["img_tokens_M"])
+                text_tok = np.asarray(data["text_tokens_M"])
+            else:
+                # data is {domain: token_count} from dataset_stats.json
+                datasets = list(data.keys())
+                total_M  = np.asarray([float(v) / 1e6 for v in data.values()])
+                img_tok  = total_M * 0.3
+                text_tok = total_M * 0.7
             x = np.arange(len(datasets))
 
             fig, ax = plt.subplots(figsize=(18, 6))

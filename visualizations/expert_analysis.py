@@ -394,9 +394,9 @@ class ExpertAnalysisPlotter:
                 skip_no_data("dead_expert_detection")
                 return out
 
-            n_ckpts = 10
             active = np.asarray(data["active"])
             ckpt_labels = data.get("ckpt_labels", [str(i) for i in range(active.shape[1])])
+            n_ckpts = active.shape[1]
 
             cmap = plt.cm.RdYlGn  # red=dead, green=active
             fig, ax = plt.subplots(figsize=(12, 5))
@@ -575,15 +575,17 @@ class ExpertAnalysisPlotter:
             expert_probs = np.asarray(data["expert_probs"])  # (N_experts, T)
             mode_tag    = data.get("mode_tag", "")
 
+            n_exp = expert_probs.shape[0]
+            _exp_names = EXPERT_NAMES[:n_exp]
             fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
             ax.stackplot(
                 steps,
-                [expert_probs[i] * 100 for i in range(N_EXPERTS)],
-                labels=[EXPERT_LABELS[e] for e in EXPERT_NAMES],
-                colors=_COLORS,
+                [expert_probs[i] * 100 for i in range(n_exp)],
+                labels=[EXPERT_LABELS[e] for e in _exp_names],
+                colors=_COLORS[:n_exp],
                 alpha=0.85,
             )
-            ax.axhline(100.0 / N_EXPERTS, color="white", lw=1.0, ls="--",
+            ax.axhline(100.0 / n_exp, color="white", lw=1.0, ls="--",
                        alpha=0.6, label="uniform (1/8)")
             ax.set_xlabel("Training Step")
             ax.set_ylabel("% of Tokens Routed to Expert")

@@ -605,7 +605,7 @@ class TrainingDynamicsPlotter:
             losses   = np.asarray(data["losses"])
             k        = float(data.get("spike_k", 2.5))
             mode_tag = data.get("mode_tag", "")
-            window   = max(10, len(steps) // 40)
+            window   = max(3, min(max(10, len(steps) // 40), max(1, len(steps) - 1)))
             roll_m   = np.convolve(losses, np.ones(window) / window, mode="same")
             roll_s   = np.array([losses[max(0, i - window // 2): i + window // 2].std()
                                   for i in range(len(losses))])
@@ -640,6 +640,8 @@ class TrainingDynamicsPlotter:
             epochs   = np.asarray(data["epochs"])
             s1_rate  = np.asarray(data.get("s1_clip_rate", np.zeros_like(epochs)))
             s2_rate  = np.asarray(data.get("s2_clip_rate", np.zeros_like(epochs)))
+            if len(s1_rate) != len(epochs): s1_rate = np.zeros_like(epochs)
+            if len(s2_rate) != len(epochs): s2_rate = np.zeros_like(epochs)
             mode_tag = data.get("mode_tag", "")
 
             fig, ax = plt.subplots(figsize=VIZ_CONFIG["figsize_single"])
