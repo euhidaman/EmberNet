@@ -112,22 +112,27 @@ def compute_metrics(predictions: list[tuple[set, set]]) -> dict:
     }
 
 
-def run(args):
+def run(args, model=None):
     data = load_dataset(args.dataset)
     if args.limit:
         data = data[:args.limit]
 
-    # Load model
+    # Load model (reuse if passed in)
     sys.path.insert(0, str(Path(__file__).parent.parent))
-    from inference import EmberVLM
-    model = EmberVLM(model_path=args.model, device=args.device)
+    if model is None:
+        from inference import EmberVLM
+        model = EmberVLM(model_path=args.model, device=args.device)
 
     predictions = []
     for i, entry in enumerate(data):
         prompt = build_prompt(entry)
         gold = gold_robots(entry)
 
-        response = model.chat(prompt=prompt, reset=True)
+        # Text-only benchmark — use generate directly (no image needed)
+        response = model.model.generate(
+            image=None, prompt=prompt, max_new_tokens=512,
+            temperature=0.7, top_p=0.9,
+        )
         pred = parse_predicted_robots(response)
         predictions.append((pred, gold))
 

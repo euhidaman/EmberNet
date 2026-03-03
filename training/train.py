@@ -1752,15 +1752,24 @@ def main():
         _mode_label = f"TRIAL (limit={_bench_limit})" if args.trial else "FULL"
         print(f"  POST-TRAINING: Risk Benchmarks [{_mode_label}]")
         print(f"{'='*70}")
-        for _bench_name, _bench_fn in [("topn_robots", run_topn_robots),
-                                        ("veri_emergency", run_veri),
-                                        ("geobench_vlm", run_geobench)]:
-            try:
-                _bm = _bench_fn(str(checkpoint_path), _bench_dir, _bench_out,
-                                _bench_device, _bench_limit)
-                print(f"  [bench] {_bench_name}: OK")
-            except Exception as _be:
-                print(f"  [bench] {_bench_name}: FAILED — {_be}")
+        # Load model once for all benchmarks
+        try:
+            from eval.run_risk_benchmarks import _load_model_once
+            _bench_model = _load_model_once(str(checkpoint_path), _bench_device)
+        except Exception as _ml_err:
+            print(f"  [bench] Model load failed: {_ml_err}")
+            _bench_model = None
+        if _bench_model is not None:
+            for _bench_name, _bench_fn in [("topn_robots", run_topn_robots),
+                                            ("veri_emergency", run_veri),
+                                            ("geobench_vlm", run_geobench)]:
+                try:
+                    _bm = _bench_fn(str(checkpoint_path), _bench_dir, _bench_out,
+                                    _bench_device, _bench_limit, model=_bench_model)
+                    print(f"  [bench] {_bench_name}: OK")
+                except Exception as _be:
+                    print(f"  [bench] {_bench_name}: FAILED — {_be}")
+            del _bench_model
     elif not _HAS_RISK_BENCH:
         print("\n[bench] Skipped — eval/run_risk_benchmarks.py not importable.")
 

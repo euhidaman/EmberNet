@@ -179,21 +179,35 @@ def compute_metrics(results: list[dict]) -> dict:
     }
 
 
-def run(args):
+def _resolve_image(row, benchmarks_dir):
+    """Resolve image_path relative to project root, or return PIL image."""
+    img = row.get("image_path")
+    if img and isinstance(img, str):
+        p = Path(img)
+        if not p.is_absolute():
+            project_root = Path(benchmarks_dir).parent
+            p = project_root / img
+        if p.exists():
+            return str(p)
+    return row.get("image")
+
+
+def run(args, model=None):
     data = load_geobench(args.benchmarks_dir, args.hf_dataset, args.split,
                           limit=args.limit)
     print(f"  Loaded {len(data)} GEO-Bench-VLM samples")
 
     sys.path.insert(0, str(Path(__file__).parent.parent))
-    from inference import EmberVLM
-    model = EmberVLM(model_path=args.model, device=args.device)
+    if model is None:
+        from inference import EmberVLM
+        model = EmberVLM(model_path=args.model, device=args.device)
 
     results = []
     for i, row in enumerate(data):
         task = row.get("task", "unknown")
         gt_option = row.get("ground_truth_option", "").strip().upper()
         options_list = row.get("options_list", [])
-        image = row.get("image_path") or row.get("image")
+        image = _resolve_image(row, args.benchmarks_dir)
 
         prompt = build_prompt(row)
 

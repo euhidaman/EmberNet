@@ -19,32 +19,44 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-def run_topn_robots(model: str, benchmarks_dir: str, output_dir: str,
-                     device: str | None, limit: int | None) -> dict:
+def _load_model_once(model_path: str, device: str | None):
+    """Load EmberVLM once and return the instance."""
+    project_root = str(Path(__file__).parent.parent)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from inference import EmberVLM
+    return EmberVLM(model_path=model_path, device=device)
+
+
+def run_topn_robots(model_path: str, benchmarks_dir: str, output_dir: str,
+                     device: str | None, limit: int | None,
+                     model=None) -> dict:
     from eval.eval_topn_robots import run
     dataset = str(Path(benchmarks_dir) / "robot-selection-dataset" /
                   "multi_robot_selection_dataset.json")
-    args = SimpleNamespace(model=model, dataset=dataset, output_dir=output_dir,
+    args = SimpleNamespace(model=model_path, dataset=dataset, output_dir=output_dir,
                            device=device, limit=limit)
-    return run(args)
+    return run(args, model=model)
 
 
-def run_veri(model: str, benchmarks_dir: str, output_dir: str,
-             device: str | None, limit: int | None) -> dict:
+def run_veri(model_path: str, benchmarks_dir: str, output_dir: str,
+             device: str | None, limit: int | None,
+             model=None) -> dict:
     from eval.eval_veri_emergency import run
-    args = SimpleNamespace(model=model, benchmarks_dir=benchmarks_dir,
+    args = SimpleNamespace(model=model_path, benchmarks_dir=benchmarks_dir,
                            split="train", output_dir=output_dir,
                            device=device, limit=limit)
-    return run(args)
+    return run(args, model=model)
 
 
-def run_geobench(model: str, benchmarks_dir: str, output_dir: str,
-                  device: str | None, limit: int | None) -> dict:
+def run_geobench(model_path: str, benchmarks_dir: str, output_dir: str,
+                  device: str | None, limit: int | None,
+                  model=None) -> dict:
     from eval.eval_geobench_vlm import run
-    args = SimpleNamespace(model=model, benchmarks_dir=benchmarks_dir,
+    args = SimpleNamespace(model=model_path, benchmarks_dir=benchmarks_dir,
                            hf_dataset="aialliance/GEOBench-VLM", split="single",
                            output_dir=output_dir, device=device, limit=limit)
-    return run(args)
+    return run(args, model=model)
 
 
 BENCHMARKS = {
@@ -74,6 +86,11 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load model ONCE and share across all benchmarks
+    print("  Loading model (once for all benchmarks)...")
+    shared_model = _load_model_once(args.model, args.device)
+    print("  Model ready.")
+
     summary = {}
     timings = {}
     skip_set = set(args.skip or [])
@@ -87,7 +104,7 @@ def main():
         print(f"{'#'*60}")
         t0 = time.time()
         metrics = func(args.model, args.benchmarks_dir, args.output_dir,
-                        args.device, args.limit)
+                        args.device, args.limit, model=shared_model)
         elapsed = time.time() - t0
         timings[name] = round(elapsed, 1)
         summary[name] = metrics
