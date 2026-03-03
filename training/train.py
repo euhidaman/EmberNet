@@ -1257,10 +1257,8 @@ class Trainer:
                             from visualizations.fig_hallucination_activation import generate as _gen_halluc
                             self.model.eval()
                             _snap_dir = Path(self.config.output_dir) / "plots" / "paper_figures"
-                            # Pass real pixel_values from current batch
-                            _halluc_pix = batch.get("pixel_values") if isinstance(batch, dict) else None
                             _gen_halluc(save_dir=_snap_dir, model=self._raw_model,
-                                        step=self.global_step, pixel_values=_halluc_pix)
+                                        step=self.global_step)
                             self.model.train()
                         except Exception as _he:
                             print(f"  [halluc-snap] step {self.global_step} failed: {_he}")
@@ -1744,35 +1742,41 @@ def main():
         print("\n[auto_eval] Skipped — no checkpoint path available.")
 
     # =========================================================================
+    # Shared model load — used by BOTH benchmarks and visualizations
+    # =========================================================================
+    _shared_device = args.device if args.device != "auto" else "cuda"
+    _shared_model = None  # EmberVLM wrapper
+    if checkpoint_path and Path(checkpoint_path).exists():
+        try:
+            from eval.run_risk_benchmarks import _load_model_once
+            _shared_model = _load_model_once(str(checkpoint_path), _shared_device)
+            print(f"  [model] Loaded once on {_shared_device} (reused for benchmarks + viz)")
+        except Exception as _ml_err:
+            print(f"  [model] Load failed: {_ml_err}")
+
+    # =========================================================================
     # Post-training: risk benchmark evaluation
     # =========================================================================
     if _HAS_RISK_BENCH and checkpoint_path:
         _bench_limit = 10 if args.trial else None
-        _bench_device = args.device if args.device != "auto" else "cuda"
         _bench_out = str(Path(checkpoint_path).parent.parent / "results")
         _bench_dir = str(Path(args.data_dir).parent / "benchmarks")
         print(f"\n{'='*70}")
         _mode_label = f"TRIAL (limit={_bench_limit})" if args.trial else "FULL"
         print(f"  POST-TRAINING: Risk Benchmarks [{_mode_label}]")
         print(f"{'='*70}")
-        # Load model once for all benchmarks
-        try:
-            from eval.run_risk_benchmarks import _load_model_once
-            _bench_model = _load_model_once(str(checkpoint_path), _bench_device)
-        except Exception as _ml_err:
-            print(f"  [bench] Model load failed: {_ml_err}")
-            _bench_model = None
-        if _bench_model is not None:
+        if _shared_model is not None:
             for _bench_name, _bench_fn in [("topn_robots", run_topn_robots),
                                             ("veri_emergency", run_veri),
                                             ("geobench_vlm", run_geobench)]:
                 try:
                     _bm = _bench_fn(str(checkpoint_path), _bench_dir, _bench_out,
-                                    _bench_device, _bench_limit, model=_bench_model)
+                                    _shared_device, _bench_limit, model=_shared_model)
                     print(f"  [bench] {_bench_name}: OK")
                 except Exception as _be:
                     print(f"  [bench] {_bench_name}: FAILED — {_be}")
-            del _bench_model
+        else:
+            print("  [bench] Skipped — model not available.")
     elif not _HAS_RISK_BENCH:
         print("\n[bench] Skipped — eval/run_risk_benchmarks.py not importable.")
 
@@ -1804,37 +1808,26 @@ def main():
                 pass
 
         # ------------------------------------------------------------------
-        # Load model EARLY so both sections and paper figures can use it.
+        # Reuse the shared model loaded earlier (no second load).
         # ------------------------------------------------------------------
         import json as _json
         _ckpt_base = Path(checkpoint_path).parent.parent if checkpoint_path else Path("checkpoints")
-        _live_model = None
-        if checkpoint_path and Path(checkpoint_path).exists():
-            try:
-                import torch as _torch
-                _torch.cuda.empty_cache()
-                _viz_device = "cuda" if _torch.cuda.is_available() else "cpu"
-                _ckpt = _torch.load(checkpoint_path, map_location=_viz_device, weights_only=False)
-                _viz_cfg = EmberNetConfig()
-                _live_model = EmberNetVLM(_viz_cfg).to(_viz_device)
-                _live_model.load_state_dict(_ckpt["model_state_dict"], strict=False)
-                _live_model.eval()
-                del _ckpt
-                _torch.cuda.empty_cache()
-                print(f"  [viz] EmberNetVLM loaded on {_viz_device} for visualizations")
-
-                # Attach VA Refiner if requested via CLI
-                if getattr(args, 'use_va_refiner', False):
-                    try:
-                        from models.va_refiner import VARefiner, VARefinerConfig
-                        _va_cfg = VARefinerConfig(use_va_refiner=True)
-                        _refiner = VARefiner(_live_model, _va_cfg, _live_model.tokenizer)
-                        _live_model.set_va_refiner(_refiner)
-                        print("  [viz] VA Refiner attached for paper figures")
-                    except Exception as _va_err:
-                        print(f"  [viz] VA Refiner could not be attached: {_va_err}")
-            except Exception as _ml_err:
-                print(f"  [viz] Could not load model (model-dependent plots will skip): {_ml_err}")
+        # _shared_model is EmberVLM wrapper; viz code needs raw EmberNetVLM
+        _live_model = _shared_model.model if _shared_model is not None else None
+        if _live_model is not None:
+            _live_model.eval()
+            print(f"  [viz] Reusing shared model (no reload)")
+            if getattr(args, 'use_va_refiner', False):
+                try:
+                    from models.va_refiner import VARefiner, VARefinerConfig
+                    _va_cfg = VARefinerConfig(use_va_refiner=True)
+                    _refiner = VARefiner(_live_model, _va_cfg, _live_model.tokenizer)
+                    _live_model.set_va_refiner(_refiner)
+                    print("  [viz] VA Refiner attached for paper figures")
+                except Exception as _va_err:
+                    print(f"  [viz] VA Refiner could not be attached: {_va_err}")
+        else:
+            print(f"  [viz] No model available — model-dependent plots will skip")
 
         _ctx = _build_context(
             _raw,
@@ -1863,33 +1856,41 @@ def main():
         _paths: List[Path] = []
         _fails: List[str]  = []
 
-        for _sec in SECTION_NAMES:
+        print(f"  [viz] Generating {len(SECTION_NAMES)} dashboard sections …")
+        for _i, _sec in enumerate(SECTION_NAMES, 1):
+            print(f"  [viz] [{_i}/{len(SECTION_NAMES)}] {_sec} …", end=" ", flush=True)
             try:
                 _ps = generate_section(_sec, _log, _ctx)
+                _n = sum(1 for p in _ps if p and p.exists())
                 _paths.extend(p for p in _ps if p and p.exists())
+                print(f"✓ ({_n} plots)")
             except Exception as _se:
                 _fails.append(f"{_sec}: {_se}")
+                print(f"✗ {_se}")
 
         # ------------------------------------------------------------------
-        # Paper figures (Figs 1-7) — reuse the model loaded above.
+        # Paper figures — reuse the shared model.
         # ------------------------------------------------------------------
-        print(f"  [viz] Generating 8 paper figures …")
+        print(f"  [viz] Generating {len(_PAPER_FIGS)} paper figures …")
         _paper_dir = Path("plots/paper_figures")
-        for _fig_name in _PAPER_FIGS:
+        for _i, _fig_name in enumerate(list(_PAPER_FIGS), 1):
+            print(f"  [viz] [{_i}/{len(_PAPER_FIGS)}] {_fig_name} …", end=" ", flush=True)
             try:
                 _r = generate_paper_fig(_fig_name, save_dir=_paper_dir, model=_live_model)
                 if _r and _r.exists():
                     _paths.append(_r)
-                    print(f"  [viz] ✓ {_fig_name}")
+                    print(f"✓")
                 else:
                     _fails.append(f"{_fig_name}: returned None or file missing")
+                    print(f"✗ (no output)")
             except Exception as _fe:
                 _fails.append(f"{_fig_name}: {_fe}")
-                print(f"  [viz] ✗ {_fig_name}: {_fe}")
+                print(f"✗ {_fe}")
 
-        # Free the viz model from GPU memory
-        if _live_model is not None:
-            del _live_model
+        # Free the shared model from GPU memory
+        if _shared_model is not None:
+            del _shared_model
+            _live_model = None
             try:
                 import torch as _torch2
                 _torch2.cuda.empty_cache()
