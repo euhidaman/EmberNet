@@ -49,7 +49,7 @@ except ImportError:
 
 # Special tokens for image embedding
 IMAGE_TOKEN = "<image>"
-IMAGE_TOKEN_ID = 32001  # Assuming vocab_size = 32000, add special tokens after
+IMAGE_TOKEN_ID = 32000  # TinyLlama base vocab is 0-31999; first added special token = 32000
 BOS_TOKEN_ID = 1
 EOS_TOKEN_ID = 2
 PAD_TOKEN_ID = 0
@@ -153,9 +153,33 @@ class EmberNetVLM(nn.Module):
         # VA Refiner (optional, set via set_va_refiner())
         self.va_refiner: Optional["VARefiner"] = None
 
+        # Expert routing info captured during the most recent generate() call
+        self._last_routing_info: Optional[Dict] = None
+
     def set_va_refiner(self, va_refiner: Optional["VARefiner"]) -> None:
         """Attach or detach a VARefiner.  Pass None to disable."""
         self.va_refiner = va_refiner
+
+    def _extract_step_routing(self, router_logits_list: list) -> list:
+        """Extract per-layer expert selections for the last token position."""
+        step_info = []
+        for layer_idx, router_logits in enumerate(router_logits_list):
+            logits = router_logits[-1:, :]  # last token: [1, num_experts]
+            weights = F.softmax(logits, dim=-1)
+            top_w, top_i = torch.topk(
+                weights, self.config.num_experts_per_tok, dim=-1
+            )
+            step_info.append({
+                "layer": layer_idx,
+                "selected_experts": top_i[0].tolist(),
+                "routing_weights": [round(w, 4) for w in top_w[0].tolist()],
+                "all_probs": [round(p, 4) for p in weights[0].tolist()],
+            })
+        return step_info
+
+    def get_expert_routing(self) -> Optional[Dict]:
+        """Return routing info from the most recent generate() call."""
+        return self._last_routing_info
 
     def _initialize_decoder(self):
         """Decoder is already properly initialized by its own _init_weights method.
@@ -529,16 +553,23 @@ class EmberNetVLM(nn.Module):
         # Generate tokens autoregressively with KV-cache
         generated_ids = []
         past_key_values = None
+        _routing_steps = []  # per-step routing decisions
+        _expert_hit_counts = [0] * self.config.num_experts
+        _expert_domains = getattr(self.decoder.config, 'expert_domains', None)
 
         # First forward pass with full context
         outputs = self.decoder(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
             use_cache=use_cache,
+            return_router_logits=True,
         )
         logits = outputs[0]
+        _ri = 2 if use_cache else 1  # router_logits index in tuple
         if use_cache:
             past_key_values = outputs[1]
+        _first_router_logits = outputs[_ri]  # list of [seq_len, num_experts] per layer
+        _routing_steps.append(self._extract_step_routing(_first_router_logits))
 
         for step in range(max_new_tokens):
             next_token_logits = logits[:, -1, :]
@@ -604,9 +635,11 @@ class EmberNetVLM(nn.Module):
                     attention_mask=new_attention_mask,
                     past_key_values=past_key_values,
                     use_cache=True,
+                    return_router_logits=True,
                 )
                 logits = outputs[0]
                 past_key_values = outputs[1]
+                _routing_steps.append(self._extract_step_routing(outputs[2]))
                 attention_mask = new_attention_mask
             else:
                 # No cache - recompute everything (slower)
@@ -619,8 +652,31 @@ class EmberNetVLM(nn.Module):
                 outputs = self.decoder(
                     inputs_embeds=inputs_embeds,
                     attention_mask=attention_mask,
+                    return_router_logits=True,
                 )
                 logits = outputs[0]
+                _routing_steps.append(self._extract_step_routing(outputs[1]))
+
+        # Aggregate expert routing statistics
+        for step_layers in _routing_steps:
+            for layer_info in step_layers:
+                for eidx in layer_info["selected_experts"]:
+                    _expert_hit_counts[eidx] += 1
+        _domain_names = list(_expert_domains) if _expert_domains else [
+            f"expert_{i}" for i in range(self.config.num_experts)
+        ]
+        self._last_routing_info = {
+            "num_steps": len(_routing_steps),
+            "num_layers": self.config.num_layers,
+            "num_experts_per_tok": self.config.num_experts_per_tok,
+            "expert_names": _domain_names,
+            "expert_hit_counts": _expert_hit_counts,
+            "expert_usage_pct": [
+                round(c / max(len(_routing_steps) * self.config.num_layers, 1) * 100, 1)
+                for c in _expert_hit_counts
+            ],
+            "per_step": _routing_steps,
+        }
 
         # Decode generated tokens
         if self.tokenizer is not None:

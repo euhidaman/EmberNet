@@ -329,15 +329,13 @@ class EmberVLM:
         """
         Get information about which experts were activated for the last query.
 
-        Useful for understanding model behavior and debugging.
+        Returns routing decisions captured during the most recent generate() call,
+        including per-step per-layer expert selections and aggregate usage stats.
         """
-        # This would require tracking router outputs during generation
-        # For now, return placeholder
-        return {
-            "last_query": "N/A",
-            "activated_experts": [],
-            "routing_weights": [],
-        }
+        info = getattr(self.model, '_last_routing_info', None)
+        if info is None:
+            return {"error": "No routing info available. Run a query first."}
+        return info
 
     def clear_history(self):
         """Clear conversation history and cached image."""
