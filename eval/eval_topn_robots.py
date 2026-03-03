@@ -22,6 +22,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from tqdm import tqdm
+
 ROBOT_TYPES = [
     "Drone",
     "Underwater Robot",
@@ -124,7 +126,7 @@ def run(args, model=None):
         model = EmberVLM(model_path=args.model, device=args.device)
 
     predictions = []
-    for i, entry in enumerate(data):
+    for entry in tqdm(data, desc="  Robot Selection", unit="sample"):
         prompt = build_prompt(entry)
         gold = gold_robots(entry)
 
@@ -135,9 +137,6 @@ def run(args, model=None):
         )
         pred = parse_predicted_robots(response)
         predictions.append((pred, gold))
-
-        if (i + 1) % 100 == 0 or i == 0:
-            print(f"  [{i+1}/{len(data)}] pred={sorted(pred)} gold={sorted(gold)}")
 
     metrics = compute_metrics(predictions)
 

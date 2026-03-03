@@ -26,6 +26,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from tqdm import tqdm
+
 # Task → high-level category mapping based on the GEO-Bench-VLM paper
 TASK_CATEGORY = {
     "Ship Type Classification": "Object Classification",
@@ -203,7 +205,7 @@ def run(args, model=None):
         model = EmberVLM(model_path=args.model, device=args.device)
 
     results = []
-    for i, row in enumerate(data):
+    for row in tqdm(data, desc="  GEO-Bench-VLM", unit="sample"):
         task = row.get("task", "unknown")
         gt_option = row.get("ground_truth_option", "").strip().upper()
         options_list = row.get("options_list", [])
@@ -227,9 +229,6 @@ def run(args, model=None):
             "correct": is_correct,
             "raw": response,
         })
-
-        if (i + 1) % 200 == 0 or i == 0:
-            print(f"  [{i+1}/{len(data)}] task={task} gold={gt_option} pred={pred_letter}")
 
     metrics = compute_metrics(results)
 
