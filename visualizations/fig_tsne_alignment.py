@@ -99,7 +99,7 @@ def _run_tsne(combined: np.ndarray, perplexity: float = 30.0) -> np.ndarray:
 
     perp = min(perplexity, max(5.0, combined.shape[0] / 4.0))
     tsne = TSNE(n_components=2, perplexity=perp, random_state=42,
-                init="pca", learning_rate="auto", n_iter=800)
+                init="pca", learning_rate="auto", max_iter=800)
     return tsne.fit_transform(combined)
 
 
