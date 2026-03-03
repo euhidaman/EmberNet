@@ -71,55 +71,6 @@ INTERMEDIATE_SIZE = 2048
 _HISTORY_FILENAME = "hallucination_history.jsonl"
 
 
-# ---- synthetic fallback ---------------------------------------------------
-
-def generate_synthetic_data() -> Dict:
-    rng = np.random.default_rng(42)
-    n = len(LAYER_INDICES)
-
-    def _mat(mu, sig):
-        raw = rng.normal(mu, sig, (n, TOP_K_NEURONS)).clip(0, 1)
-        for i in range(n):
-            lo, hi = raw[i].min(), raw[i].max()
-            if hi - lo > 1e-6:
-                raw[i] = (raw[i] - lo) / (hi - lo)
-        return raw
-
-    present = [_mat(0.40, 0.20), _mat(0.38, 0.22)]
-    absent = [_mat(0.70, 0.10), _mat(0.72, 0.08)]
-
-    cos_sims = {
-        "absent_absent":   0.65 + rng.normal(0, 0.02),
-        "present_present":  0.62 + rng.normal(0, 0.02),
-        "present_absent":   0.25 + rng.normal(0, 0.03),
-    }
-
-    tw_p = [rng.choice([-1, 0, 1], 500, p=[.30, .40, .30]) for _ in range(2)]
-    tw_a = [rng.choice([-1, 0, 1], 500, p=[.25, .50, .25]) for _ in range(2)]
-
-    mag = {
-        "present": np.array([45., 35., 20.]),
-        "absent":  np.array([15., 30., 55.]),
-    }
-
-    qe = 0.02 + rng.exponential(0.005, n)
-    ad = 0.10 + rng.exponential(0.04, n)
-    ad = np.abs(ad + 1.5 * qe + rng.normal(0, 0.01, n))
-
-    return dict(
-        activation_matrices_present=present,
-        activation_matrices_absent=absent,
-        cosine_similarities=cos_sims,
-        ternary_weights_present=tw_p,
-        ternary_weights_absent=tw_a,
-        activation_magnitude_bins=mag,
-        per_layer_quant_error=qe,
-        per_layer_activation_diff=ad,
-        image_labels=[("person", "elephant"), ("sky", "submarine")],
-        image_ids=["synth_0", "synth_1"],
-    )
-
-
 # ---- real data collection --------------------------------------------------
 
 def _build_probe_ids(model, query: str, device):
@@ -611,10 +562,12 @@ def generate(
             if valid:
                 data = collect_activation_data(model, valid, pixel_values=pixel_values)
     except Exception as e:
-        print(f"  [halluc] collection failed ({e}), using synthetic")
+        print(f"  [halluc] ABORT: activation collection failed — {e}")
+        return save_dir / "fig_hallucination_activation.png"
 
     if data is None:
-        data = generate_synthetic_data()
+        print("  [halluc] ABORT: no real activation data collected (need real image + model)")
+        return save_dir / "fig_hallucination_activation.png"
 
     out = _plot_snapshot(data, save_dir, step=step)
 
