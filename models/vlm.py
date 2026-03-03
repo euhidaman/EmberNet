@@ -486,7 +486,10 @@ class EmberNetVLM(nn.Module):
         # Load and preprocess image
         if image is not None:
             pixel_values = self._prepare_image(image, device, dtype)
-            image_embeds = self.vision_encoder(pixel_values)
+            # Scale matches forward() training path (image_embeds * 0.1)
+            image_embeds = self.vision_encoder(pixel_values) * 0.1
+            # Cache so multi-turn follow-up calls (image=None) work
+            self._cached_image_embeds = image_embeds
         else:
             image_embeds = self._cached_image_embeds
 
@@ -675,7 +678,8 @@ class EmberNetVLM(nn.Module):
             device = next(self.parameters()).device
             dtype = next(self.parameters()).dtype
             pixel_values = self._prepare_image(image, device, dtype)
-            self._cached_image_embeds = self.vision_encoder(pixel_values)
+            # Scale matches forward() training path (image_embeds * 0.1)
+            self._cached_image_embeds = self.vision_encoder(pixel_values) * 0.1
 
             # Add image to conversation history
             self._conversation_history.append({
