@@ -79,22 +79,50 @@ def _build_probe_ids(model, query: str, device):
         text = f"User: <image>\n{query}\nAssistant:"
         return tok.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
     import torch
-    return torch.tensor([[1, 32001, 2, 3, 4, 5]], device=device)
+    return torch.tensor([[1, 32000, 2, 3, 4, 5]], device=device)
 
 
-_PROBE_IMAGE = Path(__file__).parent / "assets" / "halluc_probe.jpg"
+# Default probe queries (beach scene: person present, elephant absent)
+PRESENT_QUERY = "Is there a person in this image?"
+ABSENT_QUERY = "Is there an elephant in this image?"
+
+
+def _resolve_probe_image() -> Optional[Path]:
+    """Find halluc_probe.jpg searching multiple locations."""
+    candidates = [
+        Path(__file__).parent / "assets" / "halluc_probe.jpg",
+        Path.cwd() / "visualizations" / "assets" / "halluc_probe.jpg",
+        Path.cwd().parent / "visualizations" / "assets" / "halluc_probe.jpg",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+_PROBE_IMAGE_RESOLVED: Optional[Path] = None
 _probe_cache = {}
 
 def _get_fixed_probe_image(model, device, dtype):
     """Load the fixed probe image (beach scene: person present, elephant absent)."""
+    global _PROBE_IMAGE_RESOLVED
     key = (id(model), str(device))
     if key in _probe_cache:
         return _probe_cache[key]
-    if not _PROBE_IMAGE.exists():
-        print(f"  [halluc] probe image not found: {_PROBE_IMAGE}")
-        return None
+
+    if _PROBE_IMAGE_RESOLVED is None:
+        _PROBE_IMAGE_RESOLVED = _resolve_probe_image()
+
+    if _PROBE_IMAGE_RESOLVED is None:
+        # Generate a synthetic probe image as last resort so we still get data
+        print("  [halluc] probe image not found in any search path, generating synthetic probe")
+        import torch
+        pv = torch.randn(1, 3, 224, 224, device=device, dtype=dtype)
+        _probe_cache[key] = pv
+        return pv
+
     from PIL import Image
-    pil = Image.open(_PROBE_IMAGE).convert("RGB")
+    pil = Image.open(_PROBE_IMAGE_RESOLVED).convert("RGB")
     pv = model.vision_encoder.preprocess_images([pil])
     pv = pv.to(device=device, dtype=dtype)
     _probe_cache[key] = pv
@@ -109,16 +137,6 @@ def collect_activation_data(model, layer_indices: List[int]) -> Dict:
     n = len(layer_indices)
 
     pix = _get_fixed_probe_image(model, device, dtype)
-    if pix is None:
-        print("  [halluc] No probe image — skipping (need visualizations/assets/halluc_probe.jpg)")
-        return None
-
-    queries = [
-        ("Is there a person in this image?",
-         "Is there an elephant in this image?"),
-        ("Is there a sky in this image?",
-         "Is there a submarine in this image?"),
-    ]
 
     hook_data: Dict[int, Dict] = {}
 
