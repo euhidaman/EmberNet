@@ -499,6 +499,12 @@ class Trainer:
         self.global_step = 0
         self.best_loss = float('inf')
         self.training_log: List[Dict] = []
+        self._cumulative_tokens = 0
+        self._last_grad_norm = 0.0
+        self._last_grad_clipped = False
+
+        # Full metrics history for training_metrics.json (feeds post-training viz)
+        self._metrics_history: List[Dict] = []
 
         # Early stopping state
         self._es_counter = 0
@@ -679,6 +685,86 @@ class Trainer:
             best_path = output_dir / "best_model.pt"
             torch.save(checkpoint, best_path)
             print(f"Saved best model to {best_path}")
+
+    def _save_training_metrics(self):
+        """Save accumulated training metrics to JSON for post-training visualization.
+
+        Writes training_metrics.json with the same key format as W&B raw_data
+        so that _build_context in generate_all_plots.py can consume it directly.
+        """
+        import json as _json
+
+        if not self._metrics_history:
+            return
+
+        output_dir = Path(self.config.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Transpose list-of-dicts into dict-of-lists (same shape as W&B raw_data)
+        keys = set()
+        for entry in self._metrics_history:
+            keys.update(entry.keys())
+
+        payload = {}
+        for k in sorted(keys):
+            vals = [entry.get(k) for entry in self._metrics_history]
+            # Filter None values for optional keys (e.g. expert probs in stage 1)
+            if all(v is None for v in vals):
+                continue
+            # Convert to float list where possible
+            try:
+                payload[k] = [float(v) if v is not None else 0.0 for v in vals]
+            except (TypeError, ValueError):
+                payload[k] = vals
+
+        metrics_path = output_dir / "training_metrics.json"
+        with open(metrics_path, "w") as f:
+            _json.dump(payload, f)
+        print(f"✓ Saved training metrics ({len(self._metrics_history)} steps) to {metrics_path}")
+
+    def _save_dataset_stats(self, train_loader):
+        """Save dataset statistics JSON for post-training visualization."""
+        import json as _json
+
+        output_dir = Path(self.config.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        stats = {}
+        ds = train_loader.dataset
+
+        # Gather per-domain sample counts
+        token_counts = {}
+        domain_samples = {}
+        if hasattr(ds, 'datasets'):
+            # MixedDomainDataset with sub-datasets
+            for domain_name, sub_ds in ds.datasets.items():
+                n = len(sub_ds)
+                domain_samples[domain_name] = n
+                # Estimate token count: samples * seq_length
+                token_counts[domain_name] = n * getattr(sub_ds, 'max_length', 512)
+        else:
+            # Single dataset
+            n = len(ds)
+            domain_name = getattr(ds, 'domain', 'general')
+            domain_samples[domain_name] = n
+            token_counts[domain_name] = n * getattr(ds, 'max_length', 512)
+
+        stats["domain_samples"] = domain_samples
+        stats["token_counts"] = token_counts
+        stats["total_samples"] = sum(domain_samples.values())
+        stats["stage"] = self.config.stage
+        stats["batch_size"] = self.config.batch_size
+
+        stats_path = output_dir / "dataset_stats.json"
+        with open(stats_path, "w") as f:
+            _json.dump(stats, f, indent=2)
+        print(f"✓ Saved dataset stats to {stats_path}")
+
+        # Also save to parent dir so _build_context finds it at the checkpoint base level
+        parent_stats = output_dir.parent / "dataset_stats.json"
+        if not parent_stats.exists():
+            with open(parent_stats, "w") as f:
+                _json.dump(stats, f, indent=2)
 
     def _train_step(
         self,
@@ -871,16 +957,30 @@ class Trainer:
             "expert_probs": _expert_probs,
         }
 
+    def _compute_grad_norm(self) -> float:
+        """Compute total gradient norm across all parameters (before clipping)."""
+        total_norm_sq = 0.0
+        for p in self.model.parameters():
+            if p.grad is not None:
+                total_norm_sq += p.grad.detach().float().norm().item() ** 2
+        return total_norm_sq ** 0.5
+
     def _optimizer_step(self):
         """Perform optimizer step with gradient clipping."""
+        # Compute grad norm BEFORE clipping for logging
+        self._last_grad_norm = self._compute_grad_norm()
+
         if self.use_bitnet_optimizer:
             # BitNet optimizer handles its own gradient clipping internally
+            self._last_grad_clipped = self._last_grad_norm > self.config.max_grad_norm
             self.optimizer.step()
             self.optimizer.zero_grad()
         else:
             # Standard optimizer flow
             if self.scaler is not None:
                 self.scaler.unscale_(self.optimizer)
+
+            self._last_grad_clipped = self._last_grad_norm > self.config.max_grad_norm
 
             # Adaptive or fixed gradient clipping
             if self.config.use_adaptive_grad_clip:
@@ -994,6 +1094,9 @@ class Trainer:
         # Calculate training steps
         steps_per_epoch = len(train_loader)
         total_steps = steps_per_epoch * self.config.epochs
+
+        # Save dataset_stats.json for post-training visualization
+        self._save_dataset_stats(train_loader)
 
         # In trial mode auto-lower eval_interval so at least one eval runs per epoch
         if self.config.max_samples_per_dataset is not None:
@@ -1115,37 +1218,43 @@ class Trainer:
                 else:
                     _cur_lr = self.optimizer.param_groups[0]["lr"]
 
+                # Compute routing entropy and expert probs per step (used by
+                # live plotter, W&B logging, and training_metrics.json)
+                _ep = metrics.get("expert_probs")
+                _routing_ent = 0.0
+                if _ep is not None and len(_ep) > 0:
+                    import math as _math
+                    _routing_ent = float(-sum(
+                        p * _math.log(p + 1e-8)
+                        for p in _ep
+                    ))
+
+                # Track cumulative tokens processed
+                _batch_tokens = batch["input_ids"].shape[0] * batch["input_ids"].shape[1]
+                self._cumulative_tokens += _batch_tokens
+
+                # Per-group LR: scale base LR by per-component multipliers.
+                _lr_groups = {
+                    "projector":     _cur_lr * 1.0,
+                    "router":        _cur_lr * 0.7,
+                    "experts":       _cur_lr * 1.0,
+                    "shared_expert": _cur_lr * 0.9,
+                    "norm_layers":   _cur_lr * 0.5,
+                }
+
                 # Feed every batch into the live plotter so epoch-end plots are
                 # always populated — even when gradient accumulation means there
                 # are zero full optimizer steps (e.g. Stage-1 trial with 2 batches
                 # and accum=4).
                 if self.live_plotter is not None:
                     try:
-                        # Use a monotone batch counter so the x-axis is meaningful
-                        # even before the first optimizer step.
                         _viz_step = epoch * len(train_loader) + step + 1
-                        _ep = metrics.get("expert_probs")
-                        _routing_ent = 0.0
-                        if _ep is not None and len(_ep) > 0:
-                            import math as _math
-                            _routing_ent = float(-sum(
-                                p * _math.log(p + 1e-8)
-                                for p in _ep
-                            ))
-                        # Per-group LR: scale base LR by per-component multipliers.
-                        # projector/experts get full LR; router/norms get less to
-                        # keep routing decisions and normalisation parameters stable.
-                        _lr_groups = {
-                            "projector":     _cur_lr * 1.0,
-                            "router":        _cur_lr * 0.7,
-                            "experts":       _cur_lr * 1.0,
-                            "shared_expert": _cur_lr * 0.9,
-                            "norm_layers":   _cur_lr * 0.5,
-                        }
                         self.live_plotter.record_step(
                             step=_viz_step,
                             loss=raw_loss,
                             lr=_cur_lr,
+                            grad_norm=self._last_grad_norm,
+                            clipped=self._last_grad_clipped,
                             expert_probs=_ep,
                             routing_entropy=_routing_ent,
                             lr_groups=_lr_groups,
@@ -1184,9 +1293,17 @@ class Trainer:
                             "train/window_avg_loss": window_avg,
                             "train/cumul_avg_loss": cumul_avg,
                             "train/lr": _cur_lr,
+                            "train/grad_norm": self._last_grad_norm,
+                            "train/grad_clipped": 1.0 if self._last_grad_clipped else 0.0,
+                            "train/routing_entropy": _routing_ent,
+                            "train/cumulative_tokens": self._cumulative_tokens,
                             "train/epoch": epoch + 1,
                             "train/step": self.global_step,
                         }
+                        # Per-expert routing probabilities
+                        if _ep is not None:
+                            for _ei, _ev in enumerate(_ep):
+                                log_dict[f"train/expert_{_ei}"] = float(_ev)
 
                         self.training_log.append({
                             "step": self.global_step,
@@ -1194,7 +1311,16 @@ class Trainer:
                             "window_avg_loss": window_avg,
                             "cumul_avg_loss": cumul_avg,
                             "lr": _cur_lr,
+                            "grad_norm": self._last_grad_norm,
+                            "grad_clipped": self._last_grad_clipped,
+                            "routing_entropy": _routing_ent,
+                            "cumulative_tokens": self._cumulative_tokens,
+                            "expert_probs": [float(x) for x in _ep] if _ep is not None else None,
                         })
+
+                        # Accumulate full metrics history for training_metrics.json
+                        _mh_entry = dict(log_dict)
+                        self._metrics_history.append(_mh_entry)
 
                         # Log to wandb
                         if self.use_wandb:
@@ -1380,6 +1506,9 @@ class Trainer:
 
         # Final save
         self._save_checkpoint("final_model.pt")
+
+        # Save training metrics JSON for post-training visualization
+        self._save_training_metrics()
 
         # Force one final evaluation so best_loss is always populated
         if val_loader is not None:

@@ -203,6 +203,54 @@ def load_checkpoint_data(checkpoint_path: str) -> Dict:
 
 
 # ===========================================================================
+# Local training metrics loader (replaces W&B when unavailable)
+# ===========================================================================
+
+def _load_local_training_metrics(output_dir: str) -> Dict:
+    """
+    Load training_metrics.json from both stage directories and merge them
+    into a single dict with the same key format as W&B raw_data.
+
+    Searches for:
+      {output_dir}/stage1/training_metrics.json
+      {output_dir}/stage2/training_metrics.json
+    and concatenates arrays from both stages.
+    """
+    import json
+
+    ckpt_base = Path(output_dir)
+    merged: Dict = {}
+
+    for stage_dir in ("stage1", "stage2"):
+        metrics_file = ckpt_base / stage_dir / "training_metrics.json"
+        if not metrics_file.exists():
+            continue
+
+        try:
+            data = json.loads(metrics_file.read_text())
+            if not data:
+                continue
+            n_steps = len(next(iter(data.values())))
+            print(f"  [local] Loaded {n_steps} metric steps from {metrics_file}")
+
+            for key, vals in data.items():
+                arr = np.array(vals, dtype=float)
+                if key in merged:
+                    merged[key] = np.concatenate([merged[key], arr])
+                else:
+                    merged[key] = arr
+        except Exception as e:
+            print(f"  [local] Could not load {metrics_file}: {e}")
+
+    if merged:
+        print(f"  [local] Merged {len(merged)} metric keys from local training_metrics.json files")
+    else:
+        print(f"  [local] No training_metrics.json found in {ckpt_base}/stage*/")
+
+    return merged
+
+
+# ===========================================================================
 # Plot registry
 # ===========================================================================
 
@@ -221,28 +269,114 @@ def _build_context(
       - output_dir    : path to training output (benchmark JSON for performance)
       - checkpoint_path: path to final checkpoint (stage comparison)
     """
-    # ---- Training dynamics (from W&B) ----
+    # ---- Load local training_metrics.json if W&B raw_data is empty ----
+    if not raw_data and output_dir is not None:
+        raw_data = _load_local_training_metrics(output_dir)
+
+    # ---- Training dynamics (from W&B or local metrics) ----
     td = {}
     if "train/loss" in raw_data:
         n = len(raw_data["train/loss"])
+        steps = raw_data.get("train/step", np.arange(n))
+        loss = raw_data["train/loss"]
+        val_loss = raw_data.get("val/loss", raw_data.get("train/window_avg_loss", loss))
+        half = n // 2
+
         td["loss"] = {
-            "stage1_steps":      raw_data.get("train/step",     np.arange(n))[:n // 2],
-            "stage2_steps":      raw_data.get("train/step",     np.arange(n))[n // 2:],
-            "stage1_train_loss": raw_data["train/loss"][:n // 2],
-            "stage2_train_loss": raw_data["train/loss"][n // 2:],
-            "stage1_val_loss":   raw_data.get("val/loss", raw_data["train/loss"])[:n // 2],
-            "stage2_val_loss":   raw_data.get("val/loss", raw_data["train/loss"])[n // 2:],
+            "stage1_steps":      steps[:half],
+            "stage2_steps":      steps[half:],
+            "stage1_train_loss": loss[:half],
+            "stage2_train_loss": loss[half:],
+            "stage1_val_loss":   val_loss[:half],
+            "stage2_val_loss":   val_loss[half:],
         }
+
+        # Loss spike detection
+        td["loss_spike"] = {
+            "steps": steps,
+            "losses": loss,
+        }
+
+        # Convergence rate (uses val/window_avg as proxy for val loss)
+        if half > 0:
+            td["convergence"] = {
+                "s1_steps": steps[:half],
+                "s1_val":   val_loss[:half],
+                "s2_steps": steps[half:],
+                "s2_val":   val_loss[half:],
+            }
+
     if "train/lr" in raw_data:
         td["lr_schedule"] = {
             "steps": raw_data.get("train/step"),
             "actual_lr": raw_data["train/lr"],
         }
+
     if "train/grad_norm" in raw_data:
         td["grad_norms"] = {
             "steps":       raw_data.get("train/step"),
             "global_norm": raw_data["train/grad_norm"],
             "clip_threshold": 1.0,
+        }
+
+    # Gradient clipping frequency (aggregate per-step clipped flag by epoch)
+    if "train/grad_clipped" in raw_data and "train/epoch" in raw_data:
+        epochs_arr = raw_data["train/epoch"]
+        clipped_arr = raw_data["train/grad_clipped"]
+        unique_epochs = sorted(set(int(e) for e in epochs_arr))
+        clip_rates = []
+        for ep in unique_epochs:
+            mask = epochs_arr == ep
+            if mask.sum() > 0:
+                clip_rates.append(float(clipped_arr[mask].mean()))
+            else:
+                clip_rates.append(0.0)
+        td["grad_clip_freq"] = {
+            "epochs": np.array(unique_epochs),
+            "fixed": np.array(clip_rates),
+        }
+        td["grad_clip_line"] = {
+            "epochs": np.array(unique_epochs),
+            "s1_clip_rate": np.array(clip_rates[:len(unique_epochs)//2 or len(unique_epochs)]),
+            "s2_clip_rate": np.array(clip_rates[len(unique_epochs)//2:]) if len(unique_epochs) > 1 else np.array([]),
+        }
+
+    # Loss vs tokens
+    if "train/cumulative_tokens" in raw_data and "train/loss" in raw_data:
+        cum_tok = raw_data["train/cumulative_tokens"]
+        loss_arr = raw_data["train/loss"]
+        n_min = min(len(cum_tok), len(loss_arr))
+        val_arr = raw_data.get("val/loss", raw_data.get("train/window_avg_loss", loss_arr))
+        td["loss_vs_tokens"] = {
+            "tokens_m": cum_tok[:n_min] / 1e6,
+            "train_loss": loss_arr[:n_min],
+            "val_loss": val_arr[:n_min],
+        }
+
+        # Tokens to convergence
+        thresholds = [4.0, 3.0, 2.5, 2.0, 1.8, 1.5]
+        tokens_needed = []
+        for th in thresholds:
+            idx = np.where(loss_arr[:n_min] <= th)[0]
+            if len(idx) > 0:
+                tokens_needed.append(float(cum_tok[idx[0]] / 1e6))
+            else:
+                tokens_needed.append(float(cum_tok[n_min - 1] / 1e6))
+        td["tokens_convergence"] = {
+            "thresholds": thresholds,
+            "tokens_needed_m": np.array(tokens_needed),
+        }
+
+    # Training efficiency
+    if "train/loss" in raw_data and "train/cumulative_tokens" in raw_data:
+        n_steps = len(raw_data["train/loss"])
+        # Estimate time uniformly across steps (no real time available)
+        time_h = np.linspace(0, n_steps / 3600, n_steps)
+        td["efficiency"] = {
+            "time_h": time_h,
+            "train_loss": raw_data["train/loss"],
+            "val_loss": raw_data.get("val/loss", raw_data.get("train/window_avg_loss", raw_data["train/loss"])),
+            "cum_tokens": raw_data["train/cumulative_tokens"][:n_steps],
         }
 
     if "energy/stage1_kwh" in raw_data or "energy/stage2_kwh" in raw_data:
@@ -283,21 +417,96 @@ def _build_context(
             "s2_co2_kg":    raw_data.get("energy/stage2_co2_kg", np.zeros(len(steps_all) - half)),
         }
 
-    # ---- Expert analysis (from W&B) ----
+    # ---- Expert analysis (from W&B or local metrics) ----
     ea = {}
     if "train/routing_entropy" in raw_data:
         ea["routing_entropy"] = {
             "steps":   raw_data.get("train/step"),
             "entropy": raw_data["train/routing_entropy"],
         }
+
     _expert_cols = [k for k in raw_data if k.startswith("train/expert_") and k[len("train/expert_"):].isdigit()]
-    if len(_expert_cols) == 8:
+    if _expert_cols:
         _expert_cols_sorted = sorted(_expert_cols, key=lambda k: int(k.rsplit("_", 1)[-1]))
+        n_experts = len(_expert_cols_sorted)
         _n = min(len(raw_data[c]) for c in _expert_cols_sorted)
+        steps_ea = raw_data.get("train/step", np.arange(_n))[:_n]
+        expert_probs = np.column_stack([raw_data[c][:_n] for c in _expert_cols_sorted])
+
         ea["stacked_area"] = {
-            "steps":         raw_data.get("train/step", np.arange(_n))[:_n],
-            "expert_probs":  np.column_stack([raw_data[c][:_n] for c in _expert_cols_sorted]),
+            "steps":        steps_ea,
+            "expert_probs": expert_probs,
         }
+
+        # Load balancing: imbalance = std/mean of expert probs per step
+        ep_std = expert_probs.std(axis=1)
+        ep_mean = np.maximum(expert_probs.mean(axis=1), 1e-9)
+        ea["load_balancing"] = {
+            "steps": steps_ea,
+            "imbalance": ep_std / ep_mean,
+        }
+
+        # Expert usage violin: per-expert distribution of selection probabilities
+        try:
+            from visualizations.config import EXPERT_NAMES
+        except ImportError:
+            EXPERT_NAMES = [f"expert_{i}" for i in range(n_experts)]
+        usage_dict = {}
+        for ei, col in enumerate(_expert_cols_sorted):
+            ename = EXPERT_NAMES[ei] if ei < len(EXPERT_NAMES) else f"expert_{ei}"
+            usage_dict[ename] = raw_data[col][:_n].tolist()
+        ea["usage_violin"] = {"usage": usage_dict}
+
+        # Selection frequency heatmap: expert probs across checkpoint intervals
+        n_ckpts = min(10, _n)
+        chunk = max(1, _n // n_ckpts)
+        freq_data = np.zeros((n_experts, n_ckpts))
+        ckpt_labels = []
+        for ci in range(n_ckpts):
+            start = ci * chunk
+            end = min(start + chunk, _n)
+            freq_data[:, ci] = expert_probs[start:end].mean(axis=0)
+            ckpt_labels.append(f"step {int(steps_ea[min(start, _n-1)])}")
+        ea["selection_freq"] = {
+            "freq": freq_data,
+            "ckpt_labels": ckpt_labels,
+        }
+
+        # Dead expert detection: mark experts with < 1% avg usage as inactive
+        active = (freq_data > 0.01).astype(float)
+        ea["dead_expert"] = {
+            "active": active,
+            "ckpt_labels": ckpt_labels,
+        }
+
+        # Expert specialization index over time
+        spec_steps = []
+        spec_indices = {EXPERT_NAMES[ei] if ei < len(EXPERT_NAMES) else f"expert_{ei}": []
+                        for ei in range(n_experts)}
+        for ci in range(n_ckpts):
+            start = ci * chunk
+            end = min(start + chunk, _n)
+            spec_steps.append(float(steps_ea[min(start, _n-1)]))
+            probs_chunk = expert_probs[start:end]
+            for ei in range(n_experts):
+                ename = EXPERT_NAMES[ei] if ei < len(EXPERT_NAMES) else f"expert_{ei}"
+                ep_vals = probs_chunk[:, ei]
+                # Specialization = how concentrated routing is to this expert
+                spec_indices[ename].append(float(ep_vals.std()))
+        ea["specialization_index"] = {
+            "steps": np.array(spec_steps),
+            "indices": {k: np.array(v) for k, v in spec_indices.items()},
+        }
+
+        # Co-occurrence matrix (approximate from per-step top-2 experts)
+        cooc = np.zeros((n_experts, n_experts))
+        for t in range(min(_n, 500)):  # sample up to 500 steps
+            top2 = np.argsort(expert_probs[t])[-2:]
+            cooc[top2[0], top2[1]] += 1
+            cooc[top2[1], top2[0]] += 1
+        if cooc.sum() > 0:
+            cooc /= cooc.sum()
+        ea["cooccurrence"] = {"matrix": cooc}
 
     # ---- Architecture (from live model) ----
     arch = _extract_architecture(model) if model is not None else None
@@ -589,10 +798,16 @@ def _extract_dataset_analysis(output_dir: Optional[str]) -> Optional[Dict]:
 
         ckpt_base = Path(output_dir)
         # Look for dataset_stats.json written during data loading
-        stats_file = ckpt_base / "dataset_stats.json"
-        if not stats_file.exists():
-            # Try parent dir
-            stats_file = ckpt_base.parent / "dataset_stats.json"
+        stats_file = None
+        for candidate in [
+            ckpt_base / "dataset_stats.json",
+            ckpt_base.parent / "dataset_stats.json",
+            ckpt_base / "stage1" / "dataset_stats.json",
+            ckpt_base / "stage2" / "dataset_stats.json",
+        ]:
+            if candidate.exists():
+                stats_file = candidate
+                break
 
         result = {}
 
@@ -602,15 +817,20 @@ def _extract_dataset_analysis(output_dir: Optional[str]) -> Optional[Dict]:
             domain_tokens[domain] = float(len(datasets))
         result["domain_pie"] = {"domain_tokens_B": domain_tokens}
 
-        # Architecture diagrams that just need a truthy value
         result["samples"] = {}
         result["failures"] = {}
 
-        if stats_file.exists():
+        if stats_file is not None:
             import json
             stats = json.loads(stats_file.read_text())
             if "token_counts" in stats:
                 result["token_dist"] = stats["token_counts"]
+            if "domain_samples" in stats:
+                # Use real domain sample counts instead of architectural defaults
+                real_domain_tokens = {}
+                for domain_name, count in stats["domain_samples"].items():
+                    real_domain_tokens[domain_name] = float(count)
+                result["domain_pie"] = {"domain_tokens_B": real_domain_tokens}
             print(f"  [dataset] Loaded stats from {stats_file}")
         else:
             print(f"  [dataset] No dataset_stats.json found — domain_pie available, others will skip")
@@ -704,12 +924,12 @@ def _extract_stage_comparison(
     try:
         result = {}
 
-        # Loss side-by-side (from W&B)
+        # Loss side-by-side (from W&B or local metrics)
         if "train/loss" in raw_data:
             n = len(raw_data["train/loss"])
             steps = raw_data.get("train/step", np.arange(n))
             loss = raw_data["train/loss"]
-            val_loss = raw_data.get("val/loss", loss)
+            val_loss = raw_data.get("val/loss", raw_data.get("train/window_avg_loss", loss))
             half = n // 2
 
             if half > 0:
@@ -724,8 +944,11 @@ def _extract_stage_comparison(
 
         # Routing before/after from expert probability columns
         _expert_cols = [k for k in raw_data if k.startswith("train/expert_") and k[len("train/expert_"):].isdigit()]
-        if len(_expert_cols) == 8:
-            from visualizations.config import EXPERT_NAMES
+        if _expert_cols:
+            try:
+                from visualizations.config import EXPERT_NAMES
+            except ImportError:
+                EXPERT_NAMES = [f"expert_{i}" for i in range(len(_expert_cols))]
             _expert_cols_sorted = sorted(_expert_cols, key=lambda k: int(k.rsplit("_", 1)[-1]))
             _n = min(len(raw_data[c]) for c in _expert_cols_sorted)
             half = _n // 2
