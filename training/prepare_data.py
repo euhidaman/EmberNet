@@ -161,6 +161,8 @@ DATASETS = {
         "domain": "general",
         "expert": "Projector (not experts)",
         "prefer_parquet": True,
+        "requires_coco_images": True,
+        "coco_images_subdir": "coco",
         "size_gb": 2.0,
         "priority": "critical",
         "samples": "102K",
@@ -179,17 +181,16 @@ DATASETS = {
         "priority": "recommended",
         "samples": "469K",
     },
-    # NOTE: COCO captions from HuggingFaceM4/COCO
     "coco_captions": {
-        "hf_name": "HuggingFaceM4/COCO",
-        "config": "2014_captions",
-        "description": "COCO image captions for general visual understanding",
+        "hf_name": "lmms-lab/COCO-Caption",
+        "description": "COCO image captions with embedded images (81K pairs)",
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
-        "size_gb": 3.0,
+        "prefer_parquet": True,
+        "size_gb": 13.3,
         "priority": "recommended",
-        "samples": "118K",
+        "samples": "81K",
     },
     "conceptual_captions": {
         "hf_name": "google-research-datasets/conceptual_captions",
@@ -360,30 +361,8 @@ DATASETS = {
         "expert": "Expert 5: spatial_reasoning",
         "requires_coco_images": True,
     },
-    # NOTE: Visual Genome doesn't exist as standalone in this format
-    # "visual_genome": {
-    #     "hf_name": "lmms-lab/VisualGenome",
-    #     "config": "default",
-    #     "description": "Dense scene annotations and relationships (NOT AVAILABLE)",
-    #     "stage": 2,
-    #     "domain": "spatial_scene",
-    #     "expert": "Expert 4: spatial_scene",
-    #     "size_gb": 15.0,
-    #     "priority": "optional",
-    #     "samples": "108K images",
-    # },
-    # NOTE: Visual Genome - Using ranjaykrishna/visual_genome (region_descriptions_v1.2.0)
-    "visual_genome_region": {
-        "hf_name": "ranjaykrishna/visual_genome",
-        "config": "region_descriptions",
-        "description": "Dense region descriptions and relationships",
-        "stage": 2,
-        "domain": "spatial_scene",
-        "expert": "Expert 4: spatial_scene",
-        "size_gb": 10.0,
-        "priority": "recommended",
-        "samples": "108K",
-    },
+    # NOTE: Visual Genome dropped — script-based loader deprecated on HF,
+    # all alternative repos are gated/401.  spatial_scene covered by vqav2 + refcoco.
     "okvqa": {
         "hf_name": "lmms-lab/OK-VQA",
         "config": "default",
@@ -590,7 +569,7 @@ _MIN_USABLE = {
     "llava_instruct_150k": 100_000,
     "sharegpt4v": 50_000,
     "allava_instruct": 50_000,
-    "coco_captions": 80_000,
+    "coco_captions": 40_000,
     "conceptual_captions": 100_000,
     "textvqa": 30_000,
     "docvqa": 8_000,
@@ -600,7 +579,7 @@ _MIN_USABLE = {
     "mathvista": 4_000,
     "vqav2": 500_000,
     "gqa": 500_000,
-    "visual_genome_region": 50_000,
+
     "okvqa": 4_000,
     "aokvqa": 17_000,
     "scienceqa": 12_000,
@@ -1045,12 +1024,12 @@ def _download_images_from_dataset(
     return downloaded, failed
 
 
-def _download_coco_images(save_path: Path, splits: List[str] = None) -> bool:
-    """Download COCO images needed for datasets like GQA."""
+def _download_coco_images(save_path: Path, splits: List[str] = None, target_subdir: str = "images") -> bool:
+    """Download COCO images needed for datasets like GQA / ShareGPT4V."""
     if splits is None:
         splits = ["train2017", "val2017"]
     
-    images_dir = save_path / "images"
+    images_dir = save_path / target_subdir
     images_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"  Downloading COCO images for splits: {splits}")
@@ -1348,8 +1327,9 @@ def download_dataset(
             
             # Download COCO images if needed (for datasets like GQA)
             if info.get("requires_coco_images", False):
-                print(f"\n  Dataset requires COCO images - downloading...")
-                coco_success = _download_coco_images(save_path)
+                _coco_subdir = info.get("coco_images_subdir", "images")
+                print(f"\n  Dataset requires COCO images - downloading to {_coco_subdir}/...")
+                coco_success = _download_coco_images(save_path, target_subdir=_coco_subdir)
                 if coco_success:
                     image_validation_passed = True
                     print(f"  ✓ COCO images downloaded")

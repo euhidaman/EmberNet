@@ -102,7 +102,7 @@ except ImportError:
     STAGE2_SAMPLE_CAPS = {
         "textvqa": 50000, "docvqa": 40000, "ai2d": 15000,
         "chartqa": 30000, "mathvista": 6000, "plotqa": 60000,
-        "vqav2": 100000, "gqa": 100000, "visual_genome_region": 60000,
+        "vqav2": 100000, "gqa": 100000,
         "scienceqa": 21000, "okvqa": 14000, "aokvqa": 25000,
         "refcoco": 40000, "nlvr2": 40000, "vsr": 10000,
         "clevr": 80000, "winoground": 800,
