@@ -160,6 +160,7 @@ DATASETS = {
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
+        "prefer_parquet": True,
         "size_gb": 2.0,
         "priority": "critical",
         "samples": "102K",
@@ -186,7 +187,6 @@ DATASETS = {
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
-        "preferred_download": "snapshot",
         "size_gb": 3.0,
         "priority": "recommended",
         "samples": "118K",
@@ -380,7 +380,6 @@ DATASETS = {
         "stage": 2,
         "domain": "spatial_scene",
         "expert": "Expert 4: spatial_scene",
-        "preferred_download": "snapshot",
         "size_gb": 10.0,
         "priority": "recommended",
         "samples": "108K",
@@ -602,11 +601,11 @@ _MIN_USABLE = {
     "vqav2": 500_000,
     "gqa": 500_000,
     "visual_genome_region": 50_000,
-    "okvqa": 9_000,
+    "okvqa": 4_000,
     "aokvqa": 17_000,
     "scienceqa": 12_000,
-    "refcoco": 100_000,
-    "nlvr2": 80_000,
+    "refcoco": 12_000,
+    "nlvr2": 12_000,
     "vsr": 5_000,
     "winoground": 400,
 }
@@ -763,9 +762,30 @@ def _load_dataset_with_fallback(
     hf_name: str,
     config_name: str | None = None,
     token: str | None = None,
+    prefer_parquet: bool = False,
 ):
     """Load a dataset from Hugging Face with robust config fallback."""
     from datasets import get_dataset_config_names, load_dataset
+
+    pcfg = config_name or "default"
+
+    # If prefer_parquet, try auto-converted parquet first (has embedded images)
+    if prefer_parquet:
+        try:
+            train_pat = f"hf://datasets/{hf_name}@refs/convert/parquet/{pcfg}/train/*.parquet"
+            data_files = {"train": train_pat}
+            for extra_split in ("validation", "test", "dev"):
+                data_files[extra_split] = (
+                    f"hf://datasets/{hf_name}@refs/convert/parquet/{pcfg}/{extra_split}/*.parquet"
+                )
+            try:
+                ds = load_dataset("parquet", data_files=data_files, token=token)
+            except Exception:
+                ds = load_dataset("parquet", data_files={"train": train_pat}, token=token)
+            print(f"  [loaded from auto-converted parquet: {pcfg}]")
+            return ds, f"{pcfg}(parquet)"
+        except Exception:
+            pass  # fall through to normal loading
 
     errors = []
     candidates: List[str | None] = []
@@ -776,7 +796,7 @@ def _load_dataset_with_fallback(
     candidates.append(None)
 
     try:
-        for cfg in get_dataset_config_names(hf_name, trust_remote_code=True):
+        for cfg in get_dataset_config_names(hf_name):
             if cfg not in candidates:
                 candidates.append(cfg)
     except Exception:
@@ -785,36 +805,30 @@ def _load_dataset_with_fallback(
     for cfg in candidates:
         try:
             if cfg is None:
-                ds = load_dataset(hf_name, token=token, trust_remote_code=True)
+                ds = load_dataset(hf_name, token=token)
             else:
-                ds = load_dataset(
-                    hf_name,
-                    cfg,
-                    token=token,
-                    trust_remote_code=True,
-                )
+                ds = load_dataset(hf_name, cfg, token=token)
             return ds, cfg
         except Exception as exc:
             errors.append(f"config={cfg!r}: {exc}")
 
     # Fallback: try loading from HF auto-converted parquet
-    pcfg = config_name or "default"
-    try:
-        train_pat = f"hf://datasets/{hf_name}@refs/convert/parquet/{pcfg}/train/*.parquet"
-        data_files = {"train": train_pat}
-        # Try adding other splits
-        for extra_split in ("validation", "test", "dev"):
-            data_files[extra_split] = (
-                f"hf://datasets/{hf_name}@refs/convert/parquet/{pcfg}/{extra_split}/*.parquet"
-            )
+    if not prefer_parquet:  # skip if already tried above
         try:
-            ds = load_dataset("parquet", data_files=data_files, token=token)
-        except Exception:
-            ds = load_dataset("parquet", data_files={"train": train_pat}, token=token)
-        print(f"  [loaded from auto-converted parquet: {pcfg}]")
-        return ds, f"{pcfg}(parquet)"
-    except Exception as pe:
-        errors.append(f"parquet-fallback({pcfg}): {pe}")
+            train_pat = f"hf://datasets/{hf_name}@refs/convert/parquet/{pcfg}/train/*.parquet"
+            data_files = {"train": train_pat}
+            for extra_split in ("validation", "test", "dev"):
+                data_files[extra_split] = (
+                    f"hf://datasets/{hf_name}@refs/convert/parquet/{pcfg}/{extra_split}/*.parquet"
+                )
+            try:
+                ds = load_dataset("parquet", data_files=data_files, token=token)
+            except Exception:
+                ds = load_dataset("parquet", data_files={"train": train_pat}, token=token)
+            print(f"  [loaded from auto-converted parquet: {pcfg}]")
+            return ds, f"{pcfg}(parquet)"
+        except Exception as pe:
+            errors.append(f"parquet-fallback({pcfg}): {pe}")
 
     joined = " | ".join(errors) if errors else "unknown error"
     raise RuntimeError(f"Could not load dataset '{hf_name}' with any config. {joined}")
@@ -987,7 +1001,7 @@ def _download_images_from_dataset(
 
     CHUNK = 5_000
     pbar = _progress_bar(total=total_target, desc="    Images", unit="img",
-                         ncols=100, miniinterval=2)
+                         ncols=100, mininterval=2)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         chunk_futures = []
@@ -1220,6 +1234,7 @@ def download_dataset(
                 hf_name,
                 config_name,
                 token=hf_token,
+                prefer_parquet=info.get("prefer_parquet", False),
             )
 
             first_split = next(iter(ds.keys()))
