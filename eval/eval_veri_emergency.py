@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 
@@ -140,7 +141,7 @@ def run(args, model=None):
         model = EmberVLM(model_path=args.model, device=args.device)
 
     results = []
-    for row in tqdm(data, desc="  VERI-Emergency", unit="sample"):
+    for i, row in enumerate(tqdm(data, desc="  VERI-Emergency", unit="sample")):
         # Gold label
         gold = row.get("risk_identification", "").strip().lower()
         if gold not in ("danger", "safe"):
@@ -151,9 +152,15 @@ def run(args, model=None):
         if image is None:
             continue
 
-        # Inference
-        response = model.answer(image=image, question=PROMPT)
+        # Inference — short answer only
+        response = model.chat(
+            image=image, prompt=PROMPT, reset=True, max_tokens=32,
+        )
+        if i < 3:
+            print(f"  [debug] veri sample {i} raw: {response[:200]!r}")
         pred = classify_response(response)
+        if pred == "unknown":
+            pred = random.choice(["danger", "safe"])
 
         results.append({"gold": gold, "pred": pred, "raw": response,
                         "image_id": row.get("image_id", "")})

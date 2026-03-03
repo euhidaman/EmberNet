@@ -82,47 +82,35 @@ def _build_probe_ids(model, query: str, device):
     return torch.tensor([[1, 32001, 2, 3, 4, 5]], device=device)
 
 
-def _load_real_image(model, device, dtype):
-    """Try to load a real image from benchmarks or data dir."""
-    import torch
-    from pathlib import Path
-    candidates = [
-        Path("benchmarks/veri_emergency/images"),
-        Path("benchmarks/geobench_vlm/images"),
-        Path("data"),
-    ]
-    for cand in candidates:
-        if cand.exists():
-            for ext in ("*.png", "*.jpg", "*.jpeg", "*.bmp"):
-                imgs = sorted(cand.glob(ext))
-                if imgs:
-                    try:
-                        from PIL import Image
-                        pil = Image.open(imgs[0]).convert("RGB")
-                        pv = model.vision_encoder.preprocess_images([pil])
-                        return pv.to(device=device, dtype=dtype)
-                    except Exception:
-                        continue
-    return None
+_PROBE_IMAGE = Path(__file__).parent / "assets" / "halluc_probe.jpg"
+_probe_cache = {}
+
+def _get_fixed_probe_image(model, device, dtype):
+    """Load the fixed probe image (beach scene: person present, elephant absent)."""
+    key = (id(model), str(device))
+    if key in _probe_cache:
+        return _probe_cache[key]
+    if not _PROBE_IMAGE.exists():
+        print(f"  [halluc] probe image not found: {_PROBE_IMAGE}")
+        return None
+    from PIL import Image
+    pil = Image.open(_PROBE_IMAGE).convert("RGB")
+    pv = model.vision_encoder.preprocess_images([pil])
+    pv = pv.to(device=device, dtype=dtype)
+    _probe_cache[key] = pv
+    return pv
 
 
-def collect_activation_data(model, layer_indices: List[int],
-                            pixel_values=None) -> Dict:
+def collect_activation_data(model, layer_indices: List[int]) -> Dict:
     import torch
 
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
     n = len(layer_indices)
 
-    # Use provided pixel_values, else try loading a real image, else skip vision
-    if pixel_values is not None:
-        if pixel_values.dim() == 4 and pixel_values.shape[0] > 1:
-            pixel_values = pixel_values[:1]  # single image
-        pix = pixel_values.to(device=device, dtype=dtype)
-    else:
-        pix = _load_real_image(model, device, dtype)
+    pix = _get_fixed_probe_image(model, device, dtype)
     if pix is None:
-        print("  [halluc] No real image available — skipping (need real image for meaningful activations)")
+        print("  [halluc] No probe image — skipping (need visualizations/assets/halluc_probe.jpg)")
         return None
 
     queries = [
@@ -136,7 +124,6 @@ def collect_activation_data(model, layer_indices: List[int],
 
     def _hook(idx):
         def fn(mod, inp, out):
-            pre = inp[0].detach().float()
             post = out.detach().float()
             hook_data[idx] = {"post": post.squeeze(0).cpu()}
             try:
@@ -157,69 +144,78 @@ def collect_activation_data(model, layer_indices: List[int],
             print(f"  [halluc] hook layer {li}: {e}")
 
     model.eval()
-    present_acts, absent_acts = [], []
+    present_mat = None
+    absent_mat = None
     qe_acc = np.zeros(n)
     passes = 0
 
+    def _extract_mat():
+        mat = np.zeros((n, TOP_K_NEURONS))
+        for li_i in range(n):
+            if li_i not in hook_data:
+                continue
+            post = hook_data[li_i]["post"]
+            mag = post.abs().mean(dim=0).numpy()
+            if len(mag) >= TOP_K_NEURONS:
+                top = np.argsort(mag)[-TOP_K_NEURONS:]
+                vals = mag[top]
+            else:
+                vals = np.pad(mag, (0, TOP_K_NEURONS - len(mag)))
+            lo, hi = vals.min(), vals.max()
+            if hi - lo > 1e-6:
+                vals = (vals - lo) / (hi - lo)
+            mat[li_i] = vals
+        return mat
+
     with torch.no_grad():
-        for pq, aq in queries:
-            for qtype, q in [("present", pq), ("absent", aq)]:
-                hook_data.clear()
-                try:
-                    ids = _build_probe_ids(model, q, device)
-                    _ = model(input_ids=ids, pixel_values=pix)
-                except Exception as e:
-                    print(f"  [halluc] fwd ({qtype}): {e}")
-                    continue
-                if not hook_data:
-                    continue
-                passes += 1
-                mat = np.zeros((n, TOP_K_NEURONS))
+        # Present query
+        hook_data.clear()
+        try:
+            ids = _build_probe_ids(model, PRESENT_QUERY, device)
+            _ = model(input_ids=ids, pixel_values=pix)
+            if hook_data:
+                present_mat = _extract_mat()
                 for li_i in range(n):
-                    if li_i not in hook_data:
-                        continue
-                    post = hook_data[li_i]["post"]
-                    mag = post.abs().mean(dim=0).numpy()
-                    if len(mag) >= TOP_K_NEURONS:
-                        top = np.argsort(mag)[-TOP_K_NEURONS:]
-                        vals = mag[top]
-                    else:
-                        vals = np.pad(mag, (0, TOP_K_NEURONS - len(mag)))
-                    lo, hi = vals.min(), vals.max()
-                    if hi - lo > 1e-6:
-                        vals = (vals - lo) / (hi - lo)
-                    mat[li_i] = vals
-                    qe_acc[li_i] += hook_data[li_i].get("qe", 0.0)
-                (present_acts if qtype == "present" else absent_acts).append(mat)
+                    if li_i in hook_data:
+                        qe_acc[li_i] += hook_data[li_i].get("qe", 0.0)
+                passes += 1
+        except Exception as e:
+            print(f"  [halluc] fwd (present): {e}")
+
+        # Absent query
+        hook_data.clear()
+        try:
+            ids = _build_probe_ids(model, ABSENT_QUERY, device)
+            _ = model(input_ids=ids, pixel_values=pix)
+            if hook_data:
+                absent_mat = _extract_mat()
+                for li_i in range(n):
+                    if li_i in hook_data:
+                        qe_acc[li_i] += hook_data[li_i].get("qe", 0.0)
+                passes += 1
+        except Exception as e:
+            print(f"  [halluc] fwd (absent): {e}")
 
     for h in handles:
         h.remove()
     if passes > 0:
         qe_acc /= passes
 
-    # cosine helpers
+    if present_mat is None or absent_mat is None:
+        print("  [halluc] ABORT: forward pass produced no activations")
+        return None
+
+    # cosine similarity between present and absent
     def _cos(a, b):
         d = np.dot(a, b)
         nrm = np.linalg.norm(a) * np.linalg.norm(b)
         return float(d / max(nrm, 1e-9))
 
-    def _pw(vecs):
-        if len(vecs) < 2:
-            return 0.5
-        return float(np.mean([_cos(vecs[i].flatten(), vecs[j].flatten())
-                              for i in range(len(vecs))
-                              for j in range(i+1, len(vecs))]))
-
-    def _cross(a_list, b_list):
-        if not a_list or not b_list:
-            return 0.5
-        return float(np.mean([_cos(a.flatten(), b.flatten())
-                              for a in a_list for b in b_list]))
-
+    cos_pa = _cos(present_mat.flatten(), absent_mat.flatten())
     cos_sims = {
-        "present_present": _pw(present_acts),
-        "absent_absent":   _pw(absent_acts),
-        "present_absent":  _cross(present_acts, absent_acts),
+        "present_present": 1.0,  # single vector, self-sim = 1
+        "absent_absent":   1.0,
+        "present_absent":  cos_pa,
     }
 
     # ternary weights
@@ -235,9 +231,6 @@ def collect_activation_data(model, layer_indices: List[int],
         pass
 
     # magnitude bins
-    all_p = np.concatenate([m.flatten() for m in present_acts]) if present_acts else np.zeros(1)
-    all_a = np.concatenate([m.flatten() for m in absent_acts]) if absent_acts else np.zeros(1)
-
     def _bin(arr):
         nn = max(len(arr), 1)
         return np.array([
@@ -246,27 +239,24 @@ def collect_activation_data(model, layer_indices: List[int],
             float((arr >= 0.7).sum()) / nn * 100,
         ])
 
-    mag_bins = {"present": _bin(all_p), "absent": _bin(all_a)}
+    mag_bins = {"present": _bin(present_mat.flatten()), "absent": _bin(absent_mat.flatten())}
 
     # per-layer act diff
     ad = np.zeros(n)
     for li_i in range(n):
-        pm = np.mean([m[li_i].mean() for m in present_acts]) if present_acts else 0
-        am = np.mean([m[li_i].mean() for m in absent_acts]) if absent_acts else 0
-        ad[li_i] = abs(am - pm)
+        ad[li_i] = abs(float(absent_mat[li_i].mean()) - float(present_mat[li_i].mean()))
 
-    fb = [np.zeros((n, TOP_K_NEURONS))] * 2
     return dict(
-        activation_matrices_present=present_acts or fb,
-        activation_matrices_absent=absent_acts or fb,
+        activation_matrices_present=[present_mat],
+        activation_matrices_absent=[absent_mat],
         cosine_similarities=cos_sims,
-        ternary_weights_present=tw_p or [np.zeros(500)] * 2,
-        ternary_weights_absent=tw_a or [np.zeros(500)] * 2,
+        ternary_weights_present=tw_p or [np.zeros(500)],
+        ternary_weights_absent=tw_a or [np.zeros(500)],
         activation_magnitude_bins=mag_bins,
         per_layer_quant_error=qe_acc,
         per_layer_activation_diff=ad,
-        image_labels=[("person", "elephant"), ("sky", "submarine")],
-        image_ids=["probe_0", "probe_1"],
+        image_labels=[("person", "elephant")],
+        image_ids=["probe_0"],
     )
 
 
@@ -327,20 +317,16 @@ def _plot_snapshot(data: Dict, save_dir: Path, step: Optional[int] = None) -> Pa
     gs = gridspec.GridSpec(1, 3, figure=fig,
                            width_ratios=[2, 1, 1.2], wspace=0.30)
 
-    # Panel A -- 2x2 heatmaps
-    igs = gs[0].subgridspec(2, 2, hspace=0.40, wspace=0.30)
+    # Panel A -- 1x2 heatmaps (single image, present vs absent)
+    igs = gs[0].subgridspec(1, 2, wspace=0.30)
     pm = data["activation_matrices_present"]
     am = data["activation_matrices_absent"]
     specs = [
-        (0, 0, pm[0],                     f"{il[0][0]} (present)", "YlOrBr"),
-        (0, 1, am[0],                     f"{il[0][1]} (absent)",  "BuGn"),
-        (1, 0, pm[1] if len(pm) > 1 else pm[0],
-               (il[1][0] if len(il) > 1 else il[0][0]) + " (present)", "YlOrBr"),
-        (1, 1, am[1] if len(am) > 1 else am[0],
-               (il[1][1] if len(il) > 1 else il[0][1]) + " (absent)",  "BuGn"),
+        (0, pm[0], f"{il[0][0]} (present)", "YlOrBr"),
+        (1, am[0], f"{il[0][1]} (absent)",  "BuGn"),
     ]
-    for r, c, mat, title, cmap in specs:
-        ax = fig.add_subplot(igs[r, c])
+    for c, mat, title, cmap in specs:
+        ax = fig.add_subplot(igs[0, c])
         im = ax.imshow(mat, aspect="auto", cmap=cmap, vmin=0, vmax=1,
                        interpolation="nearest", origin="upper")
         ax.set_yticks(range(n)); ax.set_yticklabels(ll, fontsize=8)
@@ -351,30 +337,22 @@ def _plot_snapshot(data: Dict, save_dir: Path, step: Optional[int] = None) -> Pa
         cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cb.ax.tick_params(labelsize=7)
 
-    # Panel B -- cosine similarity
+    # Panel B -- cosine similarity (present vs absent)
     ax_b = fig.add_subplot(gs[1])
     cos = data["cosine_similarities"]
-    bars = [
-        ("present\nvs absent",  cos["present_absent"],  "#1f77b4"),
-        ("present\nvs present", cos["present_present"], "#2ca02c"),
-        ("absent\nvs absent",   cos["absent_absent"],   "#d62728"),
-    ]
-    vals = [b[1] for b in bars]
-    cols = [b[2] for b in bars]
-    bh = ax_b.barh(range(3), vals, color=cols, edgecolor="black",
-                    alpha=0.85, height=0.55)
-    ax_b.set_yticks(range(3))
-    ax_b.set_yticklabels([b[0] for b in bars], fontsize=9)
+    cos_val = cos["present_absent"]
+    disc = 1.0 - cos_val
+    ax_b.barh([0], [cos_val], color="#d62728", edgecolor="black",
+              alpha=0.85, height=0.4)
+    ax_b.text(min(cos_val + 0.02, 0.88), 0,
+              f"{cos_val:.3f}", va="center", fontsize=11, fontweight="bold")
+    ax_b.set_yticks([0])
+    ax_b.set_yticklabels(["present\nvs absent"], fontsize=9)
     ax_b.set_xlim(0, 1.05)
     ax_b.set_xlabel("Cosine Similarity", fontsize=9)
     ax_b.axvline(0.5, color="gray", ls="--", lw=0.8, alpha=0.6)
-    disc = 1.0 - cos["present_absent"]
-    ax_b.set_title(f"Activation similarity\n(discrimination={disc:.2f})",
+    ax_b.set_title(f"Activation Similarity\n(discrimination={disc:.3f})",
                    fontsize=11, fontweight="bold")
-    for bar, v in zip(bh, vals):
-        ax_b.text(min(bar.get_width() + 0.02, 0.92),
-                  bar.get_y() + bar.get_height() / 2,
-                  f"{v:.2f}", va="center", fontsize=9, fontweight="bold")
 
     # Panel C -- quantization analysis
     ic = gs[2].subgridspec(3, 1, hspace=0.55)
@@ -546,7 +524,6 @@ def generate(
     model=None,
     eval_dataset_path: Optional[str] = None,
     step: Optional[int] = None,
-    pixel_values=None,
 ) -> Path:
     if save_dir is None:
         save_dir = Path("plots/paper_figures")
@@ -560,7 +537,7 @@ def generate(
         if hasattr(model, "decoder") and hasattr(model.decoder, "layers"):
             valid = [li for li in LAYER_INDICES if li < len(model.decoder.layers)]
             if valid:
-                data = collect_activation_data(model, valid, pixel_values=pixel_values)
+                data = collect_activation_data(model, valid)
     except Exception as e:
         print(f"  [halluc] ABORT: activation collection failed — {e}")
         return save_dir / "fig_hallucination_activation.png"

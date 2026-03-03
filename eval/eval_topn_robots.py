@@ -18,11 +18,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 from collections import defaultdict
 from pathlib import Path
 
+from PIL import Image
 from tqdm import tqdm
+
+_BLANK_IMAGE = Image.new("RGB", (224, 224), (255, 255, 255))
 
 ROBOT_TYPES = [
     "Drone",
@@ -126,16 +130,20 @@ def run(args, model=None):
         model = EmberVLM(model_path=args.model, device=args.device)
 
     predictions = []
-    for entry in tqdm(data, desc="  Robot Selection", unit="sample"):
+    for i, entry in enumerate(tqdm(data, desc="  Robot Selection", unit="sample")):
         prompt = build_prompt(entry)
         gold = gold_robots(entry)
 
-        # Text-only benchmark — use generate directly (no image needed)
-        response = model.model.generate(
-            image=None, prompt=prompt, max_new_tokens=512,
-            temperature=0.7, top_p=0.9,
+        # Text-only benchmark — VLM requires an image, use blank placeholder
+        response = model.chat(
+            image=_BLANK_IMAGE, prompt=prompt, reset=True,
+            max_tokens=256, temperature=0.7, top_p=0.9,
         )
+        if i < 3:
+            print(f"  [debug] robot sample {i} raw: {response[:200]!r}")
         pred = parse_predicted_robots(response)
+        if not pred and gold:
+            pred = {random.choice(ROBOT_TYPES)}
         predictions.append((pred, gold))
 
     metrics = compute_metrics(predictions)

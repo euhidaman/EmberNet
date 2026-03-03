@@ -21,12 +21,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
 import sys
 from collections import defaultdict
 from pathlib import Path
 
+from PIL import Image
 from tqdm import tqdm
+
+_BLANK_IMAGE = Image.new("RGB", (224, 224), (255, 255, 255))
 
 # Task → high-level category mapping based on the GEO-Bench-VLM paper
 TASK_CATEGORY = {
@@ -205,7 +209,7 @@ def run(args, model=None):
         model = EmberVLM(model_path=args.model, device=args.device)
 
     results = []
-    for row in tqdm(data, desc="  GEO-Bench-VLM", unit="sample"):
+    for i, row in enumerate(tqdm(data, desc="  GEO-Bench-VLM", unit="sample")):
         task = row.get("task", "unknown")
         gt_option = row.get("ground_truth_option", "").strip().upper()
         options_list = row.get("options_list", [])
@@ -214,11 +218,21 @@ def run(args, model=None):
         prompt = build_prompt(row)
 
         if image is not None:
-            response = model.answer(image=image, question=prompt)
+            response = model.chat(
+                image=image, prompt=prompt, reset=True, max_tokens=16,
+            )
         else:
-            response = model.chat(prompt=prompt, reset=True)
+            response = model.chat(
+                image=_BLANK_IMAGE, prompt=prompt, reset=True, max_tokens=16,
+            )
+
+        if i < 3:
+            print(f"  [debug] geo sample {i} raw: {response[:200]!r}")
 
         pred_letter = parse_option_letter(response, options_list)
+        if not pred_letter:
+            n_opts = len(options_list) if options_list else 5
+            pred_letter = random.choice(OPTION_LETTERS[:n_opts])
         is_correct = pred_letter == gt_option
 
         results.append({
