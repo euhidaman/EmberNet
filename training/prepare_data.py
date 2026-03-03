@@ -615,6 +615,22 @@ _MIN_USABLE = {
 }
 
 
+def _resolve_hf_token() -> Optional[str]:
+    tok = (
+        os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    )
+    if tok:
+        return tok
+    try:
+        from huggingface_hub import get_token
+        return get_token()
+    except Exception:
+        pass
+    return None
+
+
 def check_dependencies():
     """Check if required packages are installed."""
     missing = []
@@ -642,22 +658,12 @@ def check_dependencies():
     print("✓ All dependencies installed")
 
     # HF token check
-    hf_token = (
-        os.environ.get("HF_TOKEN")
-        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-        or os.environ.get("HUGGINGFACE_HUB_TOKEN")
-    )
-    if not hf_token:
-        try:
-            from huggingface_hub import HfFolder
-            hf_token = HfFolder.get_token()
-        except Exception:
-            pass
+    hf_token = _resolve_hf_token()
     if hf_token:
-        print("✓ HF token detected via environment / huggingface-cli login; gated datasets will be accessible.")
+        print("✓ HF token detected; gated datasets will be accessible.")
     else:
         print("! WARNING: No HF token found. Some gated datasets may not be accessible.")
-        print("  Run 'huggingface-cli login' or set HF_TOKEN env var if needed.")
+        print("  Run 'hf auth login' or set HF_TOKEN env var if needed.")
 
 
 def get_total_size(dataset_keys: List[str]) -> float:
@@ -1020,11 +1026,7 @@ def download_dataset(
     resolved_method = method
     if resolved_method == "auto":
         resolved_method = preferred_download
-    hf_token = (
-        os.environ.get("HF_TOKEN")
-        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-        or os.environ.get("HUGGINGFACE_HUB_TOKEN")
-    )
+    hf_token = _resolve_hf_token()
 
     if info.get("requires_hf_token", False) and not hf_token:
         print(
