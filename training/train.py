@@ -78,6 +78,13 @@ except Exception as _ae_err:
     _HAS_AUTO_EVAL = False
 
 try:
+    from eval.run_risk_benchmarks import run_topn_robots, run_veri, run_geobench
+    _HAS_RISK_BENCH = True
+except Exception as _rb_err:
+    print(f"[WARNING] risk benchmarks unavailable: {_rb_err}")
+    _HAS_RISK_BENCH = False
+
+try:
     from codecarbon import EmissionsTracker
     _HAS_CODECARBON = True
 except ImportError:
@@ -1732,6 +1739,30 @@ def main():
         print("\n[auto_eval] Skipped — eval/auto_eval.py not importable (see warning above).")
     else:
         print("\n[auto_eval] Skipped — no checkpoint path available.")
+
+    # =========================================================================
+    # Post-training: risk benchmark evaluation
+    # =========================================================================
+    if _HAS_RISK_BENCH and checkpoint_path:
+        _bench_limit = 10 if args.trial else None
+        _bench_device = args.device if args.device != "auto" else "cuda"
+        _bench_out = str(Path(checkpoint_path).parent.parent / "results")
+        _bench_dir = str(Path(args.data_dir).parent / "benchmarks")
+        print(f"\n{'='*70}")
+        _mode_label = f"TRIAL (limit={_bench_limit})" if args.trial else "FULL"
+        print(f"  POST-TRAINING: Risk Benchmarks [{_mode_label}]")
+        print(f"{'='*70}")
+        for _bench_name, _bench_fn in [("topn_robots", run_topn_robots),
+                                        ("veri_emergency", run_veri),
+                                        ("geobench_vlm", run_geobench)]:
+            try:
+                _bm = _bench_fn(str(checkpoint_path), _bench_dir, _bench_out,
+                                _bench_device, _bench_limit)
+                print(f"  [bench] {_bench_name}: OK")
+            except Exception as _be:
+                print(f"  [bench] {_bench_name}: FAILED — {_be}")
+    elif not _HAS_RISK_BENCH:
+        print("\n[bench] Skipped — eval/run_risk_benchmarks.py not importable.")
 
     # =========================================================================
     # Post-training: generate all visualizations automatically
