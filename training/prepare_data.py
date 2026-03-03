@@ -542,6 +542,79 @@ RECOMMENDED_DATASETS = [k for k, v in DATASETS.items() if v["priority"] in ["cri
 ALL_DATASETS = list(DATASETS.keys())
 
 
+# =============================================================================
+# TRAINING SAMPLE CAPS
+# =============================================================================
+# Maximum samples used during training per dataset per stage.
+# Full datasets are downloaded to disk; caps are enforced at load time.
+# Adjust these values to control training data volume.
+
+STAGE1_SAMPLE_CAPS = {
+    "llava_instruct_150k": 40000,
+    "sharegpt4v": 30000,
+    # allava_instruct: excluded from Stage 1 via whitelist (cap=0 effectively)
+}
+
+STAGE2_SAMPLE_CAPS = {
+    # Vision/OCR (Experts 0,1)
+    "textvqa": 50000,
+    "docvqa": 40000,
+    "ai2d": 15000,
+    "infovqa": 30000,
+    "ocrvqa": 50000,
+    # Charts/Math (Experts 2,3)
+    "chartqa": 30000,
+    "mathvista": 6000,
+    "plotqa": 60000,
+    "figureqa": 50000,
+    "dvqa": 50000,
+    # Spatial/Scene (Experts 4,5)
+    "vqav2": 100000,
+    "gqa": 100000,
+    "visual_genome": 60000,
+    "visual_genome_region": 60000,
+    "refcoco": 40000,
+    "nlvr2": 40000,
+    "vsr": 10000,
+    # Knowledge/Reasoning (Experts 6,7)
+    "scienceqa": 21000,
+    "okvqa": 14000,
+    "aokvqa": 25000,
+    "clevr": 80000,
+    "winoground": 800,
+}
+
+# Stage 1 only uses these datasets (allava_instruct excluded by default).
+# Add "allava_instruct" here to include it in Stage 1 training.
+STAGE1_DATASET_WHITELIST = ["llava_instruct_150k", "sharegpt4v"]
+
+# Minimum usable samples per dataset (below this = broken, re-download).
+# Set to ~50-80% of expected train split size so partial downloads get caught.
+_MIN_USABLE = {
+    "llava_instruct_150k": 100_000,
+    "sharegpt4v": 50_000,
+    "allava_instruct": 200_000,
+    "coco_captions": 80_000,
+    "conceptual_captions": 100_000,
+    "textvqa": 30_000,
+    "docvqa": 8_000,
+    "ai2d": 2_500,
+    "chartqa": 20_000,
+    "plotqa": 150_000,
+    "mathvista": 4_000,
+    "vqav2": 500_000,
+    "gqa": 500_000,
+    "visual_genome_region": 50_000,
+    "okvqa": 9_000,
+    "aokvqa": 17_000,
+    "scienceqa": 12_000,
+    "refcoco": 100_000,
+    "nlvr2": 80_000,
+    "vsr": 5_000,
+    "winoground": 400,
+}
+
+
 def check_dependencies():
     """Check if required packages are installed."""
     missing = []
@@ -567,6 +640,24 @@ def check_dependencies():
         sys.exit(1)
 
     print("✓ All dependencies installed")
+
+    # HF token check
+    hf_token = (
+        os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    )
+    if not hf_token:
+        try:
+            from huggingface_hub import HfFolder
+            hf_token = HfFolder.get_token()
+        except Exception:
+            pass
+    if hf_token:
+        print("✓ HF token detected via environment / huggingface-cli login; gated datasets will be accessible.")
+    else:
+        print("! WARNING: No HF token found. Some gated datasets may not be accessible.")
+        print("  Run 'huggingface-cli login' or set HF_TOKEN env var if needed.")
 
 
 def get_total_size(dataset_keys: List[str]) -> float:
@@ -945,29 +1036,6 @@ def download_dataset(
     # Check if already exists — verify data integrity, not just directory
     # Minimum usable samples per dataset (below this = broken, re-download)
     # Set to ~50-80% of expected train split size so partial downloads get caught
-    _MIN_USABLE = {
-        "llava_instruct_150k": 100_000,
-        "sharegpt4v": 50_000,
-        "allava_instruct": 200_000,
-        "coco_captions": 80_000,
-        "conceptual_captions": 100_000,  # actual images on disk
-        "textvqa": 30_000,
-        "docvqa": 8_000,
-        "ai2d": 2_500,
-        "chartqa": 20_000,
-        "plotqa": 150_000,
-        "mathvista": 4_000,
-        "vqav2": 500_000,
-        "gqa": 500_000,
-        "visual_genome_region": 50_000,
-        "okvqa": 9_000,
-        "aokvqa": 17_000,
-        "scienceqa": 12_000,
-        "refcoco": 100_000,
-        "nlvr2": 80_000,
-        "vsr": 5_000,
-        "winoground": 400,
-    }
     _required_min = _MIN_USABLE.get(dataset_key, 500)
 
     if save_path.exists() and not force:
@@ -1165,11 +1233,35 @@ def download_dataset(
             "save_path": str(save_path.absolute()),
             "download_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
+        # Compute usable_samples (reflects actual loadable data, not just metadata row counts)
+        usable_samples = total_samples
+        if info.get("download_images_from_urls"):
+            img_dir = save_path / "images"
+            if img_dir.is_dir():
+                usable_samples = sum(1 for _ in img_dir.iterdir())
+            else:
+                usable_samples = 0
+        elif resolved_method == "snapshot" and total_samples == 0:
+            parquet_files = list(save_path.glob("**/*.parquet"))
+            if parquet_files:
+                try:
+                    import pandas as pd
+                    usable_samples = sum(len(pd.read_parquet(p)) for p in parquet_files)
+                except Exception:
+                    usable_samples = 0
+        metadata["usable_samples"] = usable_samples
+
         metadata.update(snapshot_meta)
         with open(save_path / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
 
-        print(f"✓ Successfully saved {dataset_key} to {save_path}")
+        # Per-dataset download summary log
+        _img_ok = metadata.get("images_downloaded", 0)
+        _img_fail = metadata.get("images_failed", 0)
+        print(f"✓ {dataset_key}: usable={usable_samples}, total_rows={total_samples}, images_ok={_img_ok}, images_fail={_img_fail}")
+        _ds_min = _MIN_USABLE.get(dataset_key, 500)
+        if usable_samples < _ds_min:
+            print(f"! {dataset_key}: usable samples below minimum ({usable_samples}/{_ds_min}). May be too small or too broken.")
         print(f"  Download time: {download_time:.1f} seconds")
 
         # Special handling for llava_instruct_150k - auto extract if needed
@@ -1227,11 +1319,21 @@ def download_dataset(
                     "save_path": str(save_path.absolute()),
                     "download_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
+                # Compute usable_samples for snapshot fallback
+                _snap_usable = 0
+                _snap_parquets = list(save_path.glob("**/*.parquet"))
+                if _snap_parquets:
+                    try:
+                        import pandas as pd
+                        _snap_usable = sum(len(pd.read_parquet(p)) for p in _snap_parquets)
+                    except Exception:
+                        pass
+                metadata["usable_samples"] = _snap_usable
                 metadata.update(snapshot_meta)
                 with open(save_path / "metadata.json", "w", encoding="utf-8") as f:
                     json.dump(metadata, f, indent=2)
 
-                print(f"✓ Successfully saved {dataset_key} to {save_path} (snapshot fallback)")
+                print(f"✓ {dataset_key}: usable={_snap_usable}, total_rows=0 (snapshot fallback)")
                 print(f"  Download time: {download_time:.1f} seconds")
                 return True
             except Exception as fallback_e:
@@ -1377,92 +1479,149 @@ Result: A tiny VLM that can handle diverse visual tasks efficiently!
     print(f"{'='*70}\n")
 
 
+def _compute_usable_for_dir(ds_path: Path, info: dict) -> int:
+    """Compute usable sample count for an already-downloaded dataset directory."""
+    usable = 0
+
+    # First try metadata.json (includes usable_samples from download time)
+    meta_path = ds_path / "metadata.json"
+    if meta_path.exists():
+        try:
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+            usable = meta.get("usable_samples", 0)
+            if usable > 0:
+                return usable
+            # Fallback to total_samples / images_downloaded
+            usable = meta.get("total_samples", 0)
+            img_dl = meta.get("images_downloaded", 0)
+            if usable == 0 and img_dl > 0:
+                usable = img_dl
+        except Exception:
+            pass
+
+    # For URL-image datasets, count actual image files on disk
+    if info.get("download_images_from_urls"):
+        img_dir = ds_path / "images"
+        if img_dir.is_dir():
+            usable = sum(1 for _ in img_dir.iterdir())
+        else:
+            usable = 0
+        return usable
+
+    if usable > 0:
+        return usable
+
+    # Fallback: count parquet rows or check for json files
+    parquet_files = list(ds_path.glob("**/*.parquet"))
+    if parquet_files:
+        try:
+            import pandas as pd
+            usable = sum(len(pd.read_parquet(p)) for p in parquet_files)
+        except Exception:
+            usable = 1  # at least files exist
+    elif any(ds_path.glob("**/*.json")):
+        usable = 1  # at least metadata exists
+
+    return usable
+
+
 def verify_data_sufficiency(output_dir: Path) -> bool:
-    """Check that downloaded data is sufficient for training both stages."""
-    print(f"\n{'='*70}")
-    print("DATA SUFFICIENCY VERIFICATION")
-    print(f"{'='*70}\n")
+    """Check that downloaded data is sufficient for training both stages.
+
+    Prints a human-readable summary table with usable_samples and status.
+    Also persists usable_samples back into each dataset's metadata.json.
+    """
+    print(f"\n{'='*75}")
+    print("DATASET SUMMARY")
+    print(f"{'='*75}")
 
     issues = []
-    warnings = []
     stage1_samples = 0
     stage2_experts_covered = set()
+    rows = []
 
-    # Required minimums for good output
-    MIN_STAGE1_SAMPLES = 100_000   # need at least 100K for decent alignment
-    MIN_EXPERT_SAMPLES = 1_000     # at least 1K per expert domain
-    LOW_SAMPLE_THRESHOLD = 100     # anything below this is basically broken
+    MIN_EXPERT_SAMPLES = 1_000
     EXPERT_DOMAINS = {
         "vision_ocr", "vision_diagram", "code_math_chart",
         "code_math_formula", "spatial_scene", "spatial_reasoning",
         "agentic_knowledge", "agentic_reasoning",
     }
 
-    # Track which critical datasets are present
-    missing_critical = []
-
     for key, info in DATASETS.items():
         ds_path = output_dir / key
         if not ds_path.exists():
             if info["priority"] == "critical":
-                missing_critical.append(key)
                 issues.append(f"MISSING critical dataset: {key}")
+            rows.append((key, str(info["stage"]), info["domain"], info["priority"],
+                         info["samples"], 0, "MISSING"))
             continue
 
+        usable = _compute_usable_for_dir(ds_path, info)
+
+        # Persist usable_samples back into metadata.json
         meta_path = ds_path / "metadata.json"
-        total = 0
         if meta_path.exists():
             try:
                 with open(meta_path, "r") as f:
                     meta = json.load(f)
-                total = meta.get("total_samples", 0)
-                img_dl = meta.get("images_downloaded", 0)
-                splits = meta.get("splits", [])
-                if total == 0 and img_dl > 0:
-                    total = img_dl
+                meta["usable_samples"] = usable
+                with open(meta_path, "w") as f:
+                    json.dump(meta, f, indent=2)
             except Exception:
                 pass
 
-        # For URL-image datasets, the real count is downloaded images, not metadata rows
-        if info.get("download_images_from_urls"):
-            img_dir = ds_path / "images"
-            if img_dir.is_dir():
-                actual = sum(1 for _ in img_dir.iterdir())
-                total = actual  # USE actual images, not metadata row count
-            else:
-                total = 0  # no images dir = no usable data
+        # Determine status
+        min_req = _MIN_USABLE.get(key, 500)
+        if usable >= min_req:
+            status = "OK"
+        elif usable > 0:
+            status = "LOW"
+        else:
+            status = "BROKEN"
 
-        if total == 0:
-            # Check for parquet/json files as proxy
-            has_parquet = any(ds_path.glob("**/*.parquet"))
-            has_json = any(ds_path.glob("**/*.json"))
-            if has_parquet or has_json:
-                total = 1  # at least something exists
+        if status == "BROKEN" and info["priority"] == "critical":
+            issues.append(f"BROKEN critical dataset: {key}")
+        elif status == "LOW" and info["priority"] == "critical":
+            issues.append(f"LOW usable samples for critical dataset: {key} ({usable}/{min_req})")
 
         if info["stage"] == 1:
-            stage1_samples += total
-            print(f"  Stage 1  {key:25s}  {total:>8,} samples  [{info['priority']}]")
+            stage1_samples += usable
         else:
-            domain = info["domain"]
-            if total > MIN_EXPERT_SAMPLES:
-                stage2_experts_covered.add(domain)
-            print(f"  Stage 2  {key:25s}  {total:>8,} samples  [{domain}]")
+            if usable > MIN_EXPERT_SAMPLES:
+                stage2_experts_covered.add(info["domain"])
+
+        rows.append((key, str(info["stage"]), info["domain"], info["priority"],
+                     info["samples"], usable, status))
+
+    # Print summary table
+    hdr = f"{'key':<25s} {'stage':>5s} {'domain':<20s} {'priority':<12s} {'expected':>10s} {'usable':>8s} {'status':<8s}"
+    print(hdr)
+    print("-" * len(hdr))
+    for key, stage, domain, priority, expected, usable, status in rows:
+        status_str = status
+        if status == "LOW":
+            status_str = "LOW (cap or broken URLs)"
+        elif status == "MISSING":
+            status_str = "MISSING"
+        print(f"{key:<25s} {stage:>5s} {domain:<20s} {priority:<12s} {expected:>10s} {usable:>8,} {status_str}")
 
     # Stage 1 check
-    print(f"\n{'='*70}")
+    print(f"\n{'='*75}")
+    MIN_STAGE1_SAMPLES = 100_000
     if stage1_samples < MIN_STAGE1_SAMPLES:
-        issues.append(f"Stage 1 has only {stage1_samples:,} samples (need {MIN_STAGE1_SAMPLES:,}+ for alignment)")
-        print(f"✗ Stage 1: {stage1_samples:,} samples (INSUFFICIENT)")
+        issues.append(f"Stage 1 has only {stage1_samples:,} samples (need {MIN_STAGE1_SAMPLES:,}+)")
+        print(f"\u2717 Stage 1: {stage1_samples:,} samples (INSUFFICIENT)")
     else:
-        print(f"✓ Stage 1: {stage1_samples:,} samples (OK)")
+        print(f"\u2713 Stage 1: {stage1_samples:,} samples (OK)")
 
     # Stage 2 expert coverage
     missing_experts = EXPERT_DOMAINS - stage2_experts_covered
     if missing_experts:
         issues.append(f"Missing expert data for: {', '.join(sorted(missing_experts))}")
-        print(f"✗ Stage 2: Missing data for experts: {', '.join(sorted(missing_experts))}")
+        print(f"\u2717 Stage 2: Missing data for experts: {', '.join(sorted(missing_experts))}")
     else:
-        print(f"✓ Stage 2: All 8 expert domains covered")
+        print(f"\u2713 Stage 2: All 8 expert domains covered")
 
     # Train/val split check
     has_any_val = False
@@ -1478,19 +1637,19 @@ def verify_data_sufficiency(output_dir: Path) -> bool:
             except Exception:
                 pass
     if has_any_val:
-        print(f"✓ Validation splits: Found in downloaded data")
+        print(f"\u2713 Validation splits: Found in downloaded data")
     else:
         print(f"! Validation splits: Not found (will auto-carve 10% from training data)")
 
-    print(f"{'='*70}")
+    print(f"{'='*75}")
     if issues:
-        print(f"\n⚠ {len(issues)} issue(s) found:")
+        print(f"\n\u26a0 {len(issues)} issue(s) found:")
         for issue in issues:
-            print(f"  ✗ {issue}")
+            print(f"  \u2717 {issue}")
         print(f"\nRun with --recommended or --all to download missing data.")
         return False
     else:
-        print(f"\n✓ Data is sufficient for training. Ready to proceed!")
+        print(f"\n\u2713 Data is sufficient for training. Ready to proceed!")
         return True
 
 
@@ -1553,6 +1712,11 @@ Examples:
         action="store_true",
         help="Verify existing data sufficiency for training (no downloads)"
     )
+    action_group.add_argument(
+        "--full-pipeline",
+        action="store_true",
+        help="Download ALL datasets needed for Stage 1 + Stage 2 training"
+    )
 
     # Configuration arguments
     parser.add_argument(
@@ -1599,7 +1763,12 @@ Examples:
     check_dependencies()
 
     # Determine which datasets to download
-    if args.all:
+    if args.full_pipeline:
+        # Full pipeline: download all datasets for Stage 1 + Stage 2
+        # Uses critical + recommended datasets (same as --recommended)
+        datasets_to_download = RECOMMENDED_DATASETS
+        mode = "FULL-PIPELINE"
+    elif args.all:
         datasets_to_download = ALL_DATASETS
         mode = "ALL"
     elif args.recommended:
@@ -1697,6 +1866,8 @@ Examples:
                 info["download_method"] = metadata.get("download_method")
                 info["splits"] = metadata.get("splits", [])
                 info["num_samples"] = metadata.get("num_samples", {})
+                info["total_samples"] = metadata.get("total_samples", 0)
+                info["usable_samples"] = metadata.get("usable_samples", 0)
             except Exception:
                 pass
         index["datasets"][dataset_key] = info
@@ -1706,6 +1877,9 @@ Examples:
 
     print(f"\nDownload manifest saved to: {manifest_path}")
     print(f"Dataset index saved to: {index_path}")
+
+    # Run verification / summary table at the end
+    verify_data_sufficiency(output_dir)
 
     if successful:
         print(f"\n✓ Successfully downloaded {len(successful)} datasets to {output_dir.absolute()}")

@@ -86,6 +86,30 @@ DOMAIN_TO_EXPERT = {
 _DATASET_SAMPLE_CACHE: Dict[str, List[Dict[str, Any]]] = {}
 
 
+# =============================================================================
+# TRAINING SAMPLE CAPS (imported from prepare_data or defined here as fallback)
+# =============================================================================
+try:
+    from training.prepare_data import (
+        STAGE1_SAMPLE_CAPS, STAGE2_SAMPLE_CAPS, STAGE1_DATASET_WHITELIST,
+    )
+except ImportError:
+    # Fallback if prepare_data can't be imported (e.g. running data.py standalone)
+    STAGE1_SAMPLE_CAPS = {
+        "llava_instruct_150k": 40000,
+        "sharegpt4v": 30000,
+    }
+    STAGE2_SAMPLE_CAPS = {
+        "textvqa": 50000, "docvqa": 40000, "ai2d": 15000,
+        "chartqa": 30000, "mathvista": 6000, "plotqa": 60000,
+        "vqav2": 100000, "gqa": 100000, "visual_genome_region": 60000,
+        "scienceqa": 21000, "okvqa": 14000, "aokvqa": 25000,
+        "refcoco": 40000, "nlvr2": 40000, "vsr": 10000,
+        "clevr": 80000, "winoground": 800,
+    }
+    STAGE1_DATASET_WHITELIST = ["llava_instruct_150k", "sharegpt4v"]
+
+
 @dataclass
 class DataConfig:
     """Configuration for data loading."""
@@ -165,10 +189,12 @@ class EmberNetDataset(Dataset):
         split: str = "train",
         domain: str = "general",
         max_samples: Optional[int] = None,
+        stage: int = 1,
     ):
         self.config = config or DataConfig()
         self.split = split
         self.domain = domain
+        self.stage = stage
         self.domain_tag = DOMAIN_TAGS.get(domain, DOMAIN_TAGS["general"])
         self.data_root = Path(self.config.data_dir)
         self.max_samples = max_samples
@@ -254,7 +280,12 @@ class EmberNetDataset(Dataset):
             should_load = False
             if self.domain == "general":
                 if dataset_stage == "1":
-                    should_load = True
+                    # In Stage 1 training, enforce whitelist (excludes allava_instruct by default)
+                    if self.stage == 1 and STAGE1_DATASET_WHITELIST and key not in STAGE1_DATASET_WHITELIST:
+                        print(f"  [Whitelist] Skipping {key} (not in Stage 1 whitelist)")
+                        should_load = False
+                    else:
+                        should_load = True
             elif dataset_domain == self.domain:
                 should_load = True
 
@@ -264,6 +295,7 @@ class EmberNetDataset(Dataset):
         print(f"Index scan: Found {len(datasets_to_load)} datasets for domain='{self.domain}'")
 
         for key, method, save_path, hf_name, hf_config in datasets_to_load:
+            loaded_samples = []
             try:
                 if method == "snapshot":
                     print(f"Loading {key} from snapshot directory...")
@@ -279,18 +311,35 @@ class EmberNetDataset(Dataset):
                                 snapshot_samples = snapshot_samples[val_start:]
                             else:
                                 snapshot_samples = snapshot_samples[:val_start]
-                            all_samples.extend(snapshot_samples)
+                            loaded_samples = snapshot_samples
                         else:
                             print(f"  Snapshot empty for {key}; trying HuggingFace hub...")
-                            all_samples.extend(self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config))
+                            loaded_samples = self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config)
                     else:
                         print(f"  Snapshot path not found for {key}; trying HuggingFace hub...")
-                        all_samples.extend(self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config))
+                        loaded_samples = self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config)
                 else:
-                    all_samples.extend(self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config))
+                    loaded_samples = self._load_huggingface(key, hf_name=hf_name, hf_config=hf_config)
             except Exception as e:
                 print(f"  [SKIP] {key}: {e}")
                 continue
+
+            # Apply per-dataset training cap (uses caps from prepare_data.py)
+            # This enforces the "needed" sample counts without truncating data on disk.
+            if self.max_samples is None:  # only apply caps when NOT in trial mode
+                caps = STAGE1_SAMPLE_CAPS if self.stage == 1 else STAGE2_SAMPLE_CAPS
+                if key in caps:
+                    cap = caps[key]
+                    if cap == 0:
+                        print(f"  [Cap] {key}: disabled (cap=0), skipping")
+                        continue
+                    if len(loaded_samples) > cap:
+                        _orig_len = len(loaded_samples)
+                        _rng = random.Random(42)
+                        loaded_samples = _rng.sample(loaded_samples, cap)
+                        print(f"  [Cap] {key}: subsampled to {cap:,} (from {_orig_len:,} available)")
+
+            all_samples.extend(loaded_samples)
 
         return all_samples
 
@@ -1669,6 +1718,7 @@ def create_dataloaders(
             split="train",
             domain="general",
             max_samples=max_samples_per_dataset,
+            stage=stage,
         )
         # In trial mode, skip validation dataset (saves reloading all data)
         if max_samples_per_dataset is not None:
@@ -1681,6 +1731,7 @@ def create_dataloaders(
                 split="validation",
                 domain="general",
                 max_samples=max_samples_per_dataset,
+                stage=stage,
             )
     else:
         # Stage 2: Mix domain-specific datasets
@@ -1723,6 +1774,7 @@ def create_dataloaders(
                     split="train",
                     domain=domain,
                     max_samples=max_samples_per_dataset,
+                    stage=stage,
                 )
                 if len(ds) > 0:
                     datasets[domain] = ds
