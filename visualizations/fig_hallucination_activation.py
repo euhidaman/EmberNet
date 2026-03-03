@@ -131,22 +131,48 @@ def _build_probe_ids(model, query: str, device):
     return torch.tensor([[1, 32001, 2, 3, 4, 5]], device=device)
 
 
-def _dummy_pixels(model, device, dtype):
+def _load_real_image(model, device, dtype):
+    """Try to load a real image from benchmarks or data dir."""
     import torch
-    sz = 384
-    try:
-        sz = getattr(model.config, "image_size", 384)
-    except Exception:
-        pass
-    return torch.randn(1, 3, sz, sz, device=device, dtype=dtype)
+    from pathlib import Path
+    candidates = [
+        Path("benchmarks/veri_emergency/images"),
+        Path("benchmarks/geobench_vlm/images"),
+        Path("data"),
+    ]
+    for cand in candidates:
+        if cand.exists():
+            for ext in ("*.png", "*.jpg", "*.jpeg", "*.bmp"):
+                imgs = sorted(cand.glob(ext))
+                if imgs:
+                    try:
+                        from PIL import Image
+                        pil = Image.open(imgs[0]).convert("RGB")
+                        pv = model.vision_encoder.preprocess_images([pil])
+                        return pv.to(device=device, dtype=dtype)
+                    except Exception:
+                        continue
+    return None
 
 
-def collect_activation_data(model, layer_indices: List[int]) -> Dict:
+def collect_activation_data(model, layer_indices: List[int],
+                            pixel_values=None) -> Dict:
     import torch
 
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
     n = len(layer_indices)
+
+    # Use provided pixel_values, else try loading a real image, else skip vision
+    if pixel_values is not None:
+        if pixel_values.dim() == 4 and pixel_values.shape[0] > 1:
+            pixel_values = pixel_values[:1]  # single image
+        pix = pixel_values.to(device=device, dtype=dtype)
+    else:
+        pix = _load_real_image(model, device, dtype)
+    if pix is None:
+        print("  [halluc] No real image available — skipping (need real image for meaningful activations)")
+        return None
 
     queries = [
         ("Is there a person in this image?",
@@ -180,7 +206,6 @@ def collect_activation_data(model, layer_indices: List[int]) -> Dict:
             print(f"  [halluc] hook layer {li}: {e}")
 
     model.eval()
-    pix = _dummy_pixels(model, device, dtype)
     present_acts, absent_acts = [], []
     qe_acc = np.zeros(n)
     passes = 0
@@ -570,6 +595,7 @@ def generate(
     model=None,
     eval_dataset_path: Optional[str] = None,
     step: Optional[int] = None,
+    pixel_values=None,
 ) -> Path:
     if save_dir is None:
         save_dir = Path("plots/paper_figures")
@@ -583,7 +609,7 @@ def generate(
         if hasattr(model, "decoder") and hasattr(model.decoder, "layers"):
             valid = [li for li in LAYER_INDICES if li < len(model.decoder.layers)]
             if valid:
-                data = collect_activation_data(model, valid)
+                data = collect_activation_data(model, valid, pixel_values=pixel_values)
     except Exception as e:
         print(f"  [halluc] collection failed ({e}), using synthetic")
 

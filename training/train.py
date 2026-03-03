@@ -1257,7 +1257,10 @@ class Trainer:
                             from visualizations.fig_hallucination_activation import generate as _gen_halluc
                             self.model.eval()
                             _snap_dir = Path(self.config.output_dir) / "plots" / "paper_figures"
-                            _gen_halluc(save_dir=_snap_dir, model=self._raw_model, step=self.global_step)
+                            # Pass real pixel_values from current batch
+                            _halluc_pix = batch.get("pixel_values") if isinstance(batch, dict) else None
+                            _gen_halluc(save_dir=_snap_dir, model=self._raw_model,
+                                        step=self.global_step, pixel_values=_halluc_pix)
                             self.model.train()
                         except Exception as _he:
                             print(f"  [halluc-snap] step {self.global_step} failed: {_he}")
