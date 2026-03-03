@@ -156,28 +156,27 @@ DATASETS = {
     "sharegpt4v": {
         "hf_name": "Lin-Chen/ShareGPT4V",
         "config": "ShareGPT4V",
-        "description": "Detailed image descriptions from GPT-4V",
+        "description": "Detailed image descriptions from GPT-4V (102K SFT pairs)",
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
-        "download_images_from_urls": True,
-        "image_url_field": "image",
-        "size_gb": 8.0,
+        "size_gb": 2.0,
         "priority": "critical",
-        "samples": "100K",
+        "samples": "102K",
     },
     "allava_instruct": {
         "hf_name": "FreedomIntelligence/ALLaVA-4V",
-        "config": "allava_vflan",
-        "description": "Diverse visual instruction tuning data",
+        "config": "allava_laion",
+        "description": "ALLaVA LAION instruct with bundled images",
         "stage": 1,
         "domain": "general",
         "expert": "Projector (not experts)",
-        "download_images_from_urls": True,
-        "image_url_field": "image",
-        "size_gb": 6.0,
+        "preferred_download": "snapshot",
+        "snapshot_allow_patterns": ["allava_laion/*", ".gitattributes", "README.md"],
+        "extract_archives": True,
+        "size_gb": 50.0,
         "priority": "recommended",
-        "samples": "700K",
+        "samples": "469K",
     },
     # NOTE: COCO captions from HuggingFaceM4/COCO
     "coco_captions": {
@@ -281,8 +280,6 @@ DATASETS = {
         "stage": 2,
         "domain": "code_math_chart",
         "expert": "Expert 2: code_math_chart",
-        "download_images_from_urls": True,
-        "image_url_field": "imgname",
         "size_gb": 1.0,
         "priority": "critical",
         "samples": "32K",
@@ -464,7 +461,7 @@ DATASETS = {
         "domain": "spatial_reasoning",
         "expert": "Expert 5: spatial_reasoning",
         "download_images_from_urls": True,
-        "image_url_field": "image",
+        "image_url_field": "image_link",
         "size_gb": 0.5,
         "priority": "recommended",
         "samples": "10K",
@@ -593,7 +590,7 @@ STAGE1_DATASET_WHITELIST = ["llava_instruct_150k", "sharegpt4v"]
 _MIN_USABLE = {
     "llava_instruct_150k": 100_000,
     "sharegpt4v": 50_000,
-    "allava_instruct": 200_000,
+    "allava_instruct": 50_000,
     "coco_captions": 80_000,
     "conceptual_captions": 100_000,
     "textvqa": 30_000,
@@ -779,7 +776,7 @@ def _load_dataset_with_fallback(
     candidates.append(None)
 
     try:
-        for cfg in get_dataset_config_names(hf_name):
+        for cfg in get_dataset_config_names(hf_name, trust_remote_code=True):
             if cfg not in candidates:
                 candidates.append(cfg)
     except Exception:
@@ -788,16 +785,36 @@ def _load_dataset_with_fallback(
     for cfg in candidates:
         try:
             if cfg is None:
-                ds = load_dataset(hf_name, token=token)
+                ds = load_dataset(hf_name, token=token, trust_remote_code=True)
             else:
                 ds = load_dataset(
                     hf_name,
                     cfg,
                     token=token,
+                    trust_remote_code=True,
                 )
             return ds, cfg
         except Exception as exc:
             errors.append(f"config={cfg!r}: {exc}")
+
+    # Fallback: try loading from HF auto-converted parquet
+    pcfg = config_name or "default"
+    try:
+        train_pat = f"hf://datasets/{hf_name}@refs/convert/parquet/{pcfg}/train/*.parquet"
+        data_files = {"train": train_pat}
+        # Try adding other splits
+        for extra_split in ("validation", "test", "dev"):
+            data_files[extra_split] = (
+                f"hf://datasets/{hf_name}@refs/convert/parquet/{pcfg}/{extra_split}/*.parquet"
+            )
+        try:
+            ds = load_dataset("parquet", data_files=data_files, token=token)
+        except Exception:
+            ds = load_dataset("parquet", data_files={"train": train_pat}, token=token)
+        print(f"  [loaded from auto-converted parquet: {pcfg}]")
+        return ds, f"{pcfg}(parquet)"
+    except Exception as pe:
+        errors.append(f"parquet-fallback({pcfg}): {pe}")
 
     joined = " | ".join(errors) if errors else "unknown error"
     raise RuntimeError(f"Could not load dataset '{hf_name}' with any config. {joined}")
@@ -831,23 +848,85 @@ def _extract_archives_in_dir(dataset_dir: Path) -> int:
     return extracted
 
 
+def _count_snapshot_samples(save_path: Path) -> int:
+    """Count usable samples in a snapshot-downloaded dataset directory."""
+    count = 0
+
+    # Arrow files (datasets .save_to_disk format)
+    arrow_files = list(save_path.glob("**/data-*.arrow")) + list(save_path.glob("**/*.arrow"))
+    if arrow_files:
+        try:
+            import pyarrow as pa
+            for af in set(arrow_files):
+                with pa.memory_map(str(af)) as mm:
+                    reader = pa.ipc.open_file(mm)
+                    count += sum(reader.get_batch(i).num_rows for i in range(reader.num_record_batches))
+            if count > 0:
+                return count
+        except Exception:
+            pass
+
+    # Parquet files
+    parquet_files = list(save_path.glob("**/*.parquet"))
+    if parquet_files:
+        try:
+            import pyarrow.parquet as pq
+            return sum(pq.read_metadata(str(p)).num_rows for p in parquet_files)
+        except Exception:
+            try:
+                import pandas as pd
+                return sum(len(pd.read_parquet(p, columns=[])) for p in parquet_files)
+            except Exception:
+                pass
+
+    # JSON files (common for conversation-style datasets)
+    json_files = [f for f in save_path.rglob("*.json")
+                  if f.name not in ("metadata.json", "dataset_info.json", "dataset_index.json",
+                                    "state.json", "config.json")]
+    for jf in json_files:
+        try:
+            with open(jf, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                count += len(data)
+        except Exception:
+            pass
+    if count > 0:
+        return count
+
+    # JSONL files
+    for jf in save_path.rglob("*.jsonl"):
+        try:
+            with open(jf, "r", encoding="utf-8") as f:
+                count += sum(1 for line in f if line.strip())
+        except Exception:
+            pass
+
+    return count
+
+
 def _snapshot_download_dataset(
     hf_name: str,
     save_path: Path,
     token: str | None = None,
     extract_archives: bool = False,
+    allow_patterns: list | None = None,
 ) -> Dict[str, object]:
     """Download dataset repository files directly (zip/tar/parquet/etc)."""
     from huggingface_hub import snapshot_download
 
     save_path.mkdir(parents=True, exist_ok=True)
 
-    snapshot_download(
+    dl_kwargs = dict(
         repo_id=hf_name,
         repo_type="dataset",
         local_dir=str(save_path),
         token=token,
     )
+    if allow_patterns:
+        dl_kwargs["allow_patterns"] = allow_patterns
+
+    snapshot_download(**dl_kwargs)
 
     extracted_count = 0
     if extract_archives:
@@ -1098,12 +1177,15 @@ def download_dataset(
     start_time = time.time()
 
     try:
+        should_extract = extract_archives or info.get("extract_archives", False)
+
         if resolved_method == "snapshot":
             snapshot_meta = _snapshot_download_dataset(
                 hf_name,
                 save_path,
                 token=hf_token,
-                extract_archives=extract_archives,
+                extract_archives=should_extract,
+                allow_patterns=info.get("snapshot_allow_patterns"),
             )
             resolved_config = config_name
             image_columns = []
@@ -1113,7 +1195,25 @@ def download_dataset(
             missing_images = 0
             splits = []
             num_samples = {}
-            total_samples = 0
+            total_samples = _count_snapshot_samples(save_path)
+            # Image-text pair analysis for snapshot downloads
+            _img_count = 0
+            _img_dir = save_path / "images"
+            if _img_dir.is_dir():
+                _img_count = sum(1 for _ in _img_dir.iterdir())
+            else:
+                for ext in ("*.jpg", "*.jpeg", "*.png", "*.gif", "*.webp"):
+                    _img_count += len(list(save_path.rglob(ext)))
+            print(f"  ── Snapshot Analysis ──")
+            print(f"  Total text entries: {total_samples:,}")
+            print(f"  Image files found:  {_img_count:,}")
+            if _img_count > 0:
+                image_validation_passed = True
+                print(f"  Image-text pairs:   ~{min(total_samples, _img_count):,} estimated")
+            elif total_samples > 0:
+                print(f"  (text-only snapshot; images may need separate download)")
+            _expert_label = info.get("expert", "N/A")
+            print(f"  Expert target:      {_expert_label}")
         else:
             # Load dataset from HuggingFace via datasets library
             ds, resolved_config = _load_dataset_with_fallback(
@@ -1161,6 +1261,41 @@ def download_dataset(
                         print(f"! Warning: No images present in sample rows for dataset: {hf_name}")
                 else:
                     raise ValueError(f"No images present in sample rows for dataset: {hf_name}")
+
+            # --- Image-text pair analysis ---
+            _text_cols = [c for c in features if c not in image_columns and
+                          _is_text_feature(features[c])]
+            _img_present = sample_count - missing_images
+            _txt_present = 0
+            for idx in range(sample_count):
+                row = ds[first_split][idx]
+                if any(isinstance(row.get(c), str) and row.get(c).strip() for c in _text_cols):
+                    _txt_present += 1
+            _valid_pairs = 0
+            for idx in range(sample_count):
+                row = ds[first_split][idx]
+                _has_i = any(_image_value_present(row.get(col), save_path) for col in image_columns)
+                _has_t = any(isinstance(row.get(c), str) and row.get(c).strip() for c in _text_cols)
+                if _has_i and _has_t:
+                    _valid_pairs += 1
+            _pair_pct = (_valid_pairs * 100 // sample_count) if sample_count > 0 else 0
+            _est_pairs = total_samples * _pair_pct // 100 if _pair_pct > 0 else 0
+            print(f"  ── Image-Text Pair Analysis ({sample_count} rows sampled) ──")
+            print(f"  Columns:      {list(features.keys())}")
+            print(f"  Image cols:   {image_columns or '(none - will download separately)'}")
+            print(f"  Text cols:    {_text_cols}")
+            print(f"  Splits:       {', '.join(f'{s}({num_samples[s]:,})' for s in splits)}")
+            print(f"  Images found: {_img_present}/{sample_count}"
+                  f"  Text found: {_txt_present}/{sample_count}"
+                  f"  Valid pairs: {_valid_pairs}/{sample_count} ({_pair_pct}%)")
+            print(f"  Estimated valid image-text pairs: ~{_est_pairs:,} / {total_samples:,} total")
+            if will_download_images and _img_present == 0:
+                print(f"  (images will be downloaded from URLs after save)")
+            _expert_label = info.get("expert", "N/A")
+            if _est_pairs > 0 or will_download_images:
+                print(f"  Expert suitability: {_expert_label} → OK (data available for training)")
+            else:
+                print(f"  Expert suitability: {_expert_label} → WARN (no valid pairs yet)")
 
             # Save to disk
             save_path.mkdir(parents=True, exist_ok=True)
@@ -1244,13 +1379,7 @@ def download_dataset(
             else:
                 usable_samples = 0
         elif resolved_method == "snapshot" and total_samples == 0:
-            parquet_files = list(save_path.glob("**/*.parquet"))
-            if parquet_files:
-                try:
-                    import pandas as pd
-                    usable_samples = sum(len(pd.read_parquet(p)) for p in parquet_files)
-                except Exception:
-                    usable_samples = 0
+            usable_samples = _count_snapshot_samples(save_path)
         metadata["usable_samples"] = usable_samples
 
         metadata.update(snapshot_meta)
@@ -1322,14 +1451,7 @@ def download_dataset(
                     "download_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
                 # Compute usable_samples for snapshot fallback
-                _snap_usable = 0
-                _snap_parquets = list(save_path.glob("**/*.parquet"))
-                if _snap_parquets:
-                    try:
-                        import pandas as pd
-                        _snap_usable = sum(len(pd.read_parquet(p)) for p in _snap_parquets)
-                    except Exception:
-                        pass
+                _snap_usable = _count_snapshot_samples(save_path)
                 metadata["usable_samples"] = _snap_usable
                 metadata.update(snapshot_meta)
                 with open(save_path / "metadata.json", "w", encoding="utf-8") as f:
@@ -1494,7 +1616,6 @@ def _compute_usable_for_dir(ds_path: Path, info: dict) -> int:
             usable = meta.get("usable_samples", 0)
             if usable > 0:
                 return usable
-            # Fallback to total_samples / images_downloaded
             usable = meta.get("total_samples", 0)
             img_dl = meta.get("images_downloaded", 0)
             if usable == 0 and img_dl > 0:
@@ -1514,17 +1635,8 @@ def _compute_usable_for_dir(ds_path: Path, info: dict) -> int:
     if usable > 0:
         return usable
 
-    # Fallback: count parquet rows or check for json files
-    parquet_files = list(ds_path.glob("**/*.parquet"))
-    if parquet_files:
-        try:
-            import pandas as pd
-            usable = sum(len(pd.read_parquet(p)) for p in parquet_files)
-        except Exception:
-            usable = 1  # at least files exist
-    elif any(ds_path.glob("**/*.json")):
-        usable = 1  # at least metadata exists
-
+    # Use the robust snapshot counter (arrow → parquet → json → jsonl)
+    usable = _count_snapshot_samples(ds_path)
     return usable
 
 
