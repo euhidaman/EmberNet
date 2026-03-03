@@ -340,6 +340,9 @@ class TrainingConfig:
     # Hallucination snapshot interval (0 = disabled)
     hallucination_snapshot_interval: int = 50
 
+    # t-SNE alignment snapshot interval (0 = disabled)
+    tsne_alignment_interval: int = 500
+
     # PCA backbone comparison interval (0 = disabled)
     pca_backbones_interval: int = 50
     disable_pca_backbones: bool = False
@@ -1218,6 +1221,19 @@ class Trainer:
                         except Exception as _he:
                             print(f"  [halluc-snap] step {self.global_step} failed: {_he}")
 
+                    # t-SNE alignment snapshot
+                    if (self.config.tsne_alignment_interval > 0
+                            and (self.global_step == 1
+                                 or self.global_step % self.config.tsne_alignment_interval == 0)):
+                        try:
+                            from visualizations.fig_tsne_alignment import generate as _gen_tsne
+                            self.model.eval()
+                            _tsne_dir = Path(self.config.output_dir) / "plots" / "paper_figures"
+                            _gen_tsne(save_dir=_tsne_dir, model=self._raw_model, batch=batch, step=self.global_step)
+                            self.model.train()
+                        except Exception as _te:
+                            print(f"  [tsne-snap] step {self.global_step} failed: {_te}")
+
                     # PCA backbone comparison snapshot
                     if (self.config.pca_backbones_interval > 0
                             and not self.config.disable_pca_backbones
@@ -1421,7 +1437,8 @@ def run_training(args, stage: int, resume_from: Optional[str] = None):
         log_interval = 5
         eval_interval = 9999  # Skip mid-training eval; final eval still runs
         save_interval = 9999
-        hallucination_snapshot_interval = 0
+        hallucination_snapshot_interval = 5
+        tsne_alignment_interval = 5
         output_dir = args.output_dir if args.output_dir != "./checkpoints" else "./checkpoints/trial"
         # Disable AMP in trial mode for stability unless explicitly enabled
         if not hasattr(args, '_amp_explicitly_set'):
@@ -1436,6 +1453,7 @@ def run_training(args, stage: int, resume_from: Optional[str] = None):
         eval_interval = 500
         save_interval = 1000
         hallucination_snapshot_interval = 50
+        tsne_alignment_interval = 500
         output_dir = args.output_dir
     else:
         epochs = args.epochs if args.epochs is not None else 3
@@ -1447,6 +1465,7 @@ def run_training(args, stage: int, resume_from: Optional[str] = None):
         eval_interval = 500
         save_interval = 1000
         hallucination_snapshot_interval = 50
+        tsne_alignment_interval = 500
         output_dir = args.output_dir
 
     # Create stage-specific output directory
@@ -1475,6 +1494,7 @@ def run_training(args, stage: int, resume_from: Optional[str] = None):
         eval_interval=eval_interval,
         save_interval=save_interval,
         hallucination_snapshot_interval=hallucination_snapshot_interval,
+        tsne_alignment_interval=tsne_alignment_interval,
     )
     config.max_samples_per_dataset = max_samples
 
