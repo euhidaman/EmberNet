@@ -340,6 +340,11 @@ class TrainingConfig:
     # Hallucination snapshot interval (0 = disabled)
     hallucination_snapshot_interval: int = 50
 
+    # Early stopping
+    use_early_stopping: bool = True
+    early_stopping_patience: int = 5
+    early_stopping_min_delta: float = 0.001
+
     # t-SNE alignment snapshot interval (0 = disabled)
     tsne_alignment_interval: int = 500
 
@@ -487,6 +492,11 @@ class Trainer:
         self.global_step = 0
         self.best_loss = float('inf')
         self.training_log: List[Dict] = []
+
+        # Early stopping state
+        self._es_counter = 0
+        self._es_best_loss = float('inf')
+        self._es_triggered = False
 
         # ---- Live training plots ----
         # plot every 50 steps in trial mode (small datasets), 200 otherwise
@@ -1196,14 +1206,38 @@ class Trainer:
                             self.best_loss = val_loss
                             self._save_checkpoint("best_model.pt", is_best=True)
 
+                        # Early stopping check
+                        if self.config.use_early_stopping:
+                            if val_loss < self._es_best_loss - self.config.early_stopping_min_delta:
+                                self._es_best_loss = val_loss
+                                self._es_counter = 0
+                            else:
+                                self._es_counter += 1
+                                print(f"  [early-stop] No improvement for {self._es_counter}/{self.config.early_stopping_patience} evals "
+                                      f"(best={self._es_best_loss:.4f}, current={val_loss:.4f}, delta={self.config.early_stopping_min_delta})")
+                                if self._es_counter >= self.config.early_stopping_patience:
+                                    print(f"\n{'='*70}")
+                                    print(f"EARLY STOPPING triggered at step {self.global_step} (epoch {epoch+1})")
+                                    print(f"  Best val loss: {self._es_best_loss:.4f}")
+                                    print(f"  Patience exhausted: {self._es_counter} evals without >{self.config.early_stopping_min_delta} improvement")
+                                    print(f"{'='*70}\n")
+                                    self._es_triggered = True
+
                         # Log validation to wandb
                         if self.use_wandb:
-                            wandb.log({
+                            log_val = {
                                 "val/loss": val_loss,
                                 "val/best_loss": self.best_loss,
-                            }, step=self.global_step)
+                            }
+                            if self.config.use_early_stopping:
+                                log_val["val/es_counter"] = self._es_counter
+                            wandb.log(log_val, step=self.global_step)
 
                         self.model.train()
+
+                    # Break inner loop if early stopping fired
+                    if self._es_triggered:
+                        break
 
                     # Save checkpoint
                     if self.global_step % self.config.save_interval == 0:
@@ -1253,6 +1287,11 @@ class Trainer:
 
             # Close progress bar for this epoch
             pbar.close()
+
+            # Break epoch loop if early stopping fired
+            if self._es_triggered:
+                print(f"  Ending training early (epoch {epoch+1}/{self.config.epochs})")
+                break
 
             # End of epoch - handle case where all batches were skipped
             if epoch_steps == 0:
