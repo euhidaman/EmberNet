@@ -422,7 +422,11 @@ class Trainer:
             initialize_bitnet_weights(self.model)
             print("✓ BitNet weights initialized")
 
+        import time as _t
+        print(f"Moving model to {self.device}...", end=" ", flush=True)
+        _mv_t0 = _t.time()
         self.model = self.model.to(self.device)
+        print(f"done ({_t.time() - _mv_t0:.1f}s)")
 
         # Multi-GPU: wrap with DataParallel when >1 GPU available
         self.n_gpus = torch.cuda.device_count() if self.device.type == "cuda" else 0
@@ -434,9 +438,12 @@ class Trainer:
         self.ema_model = None
         if config.use_ema:
             from copy import deepcopy
+            print("Creating EMA model copy...", end=" ", flush=True)
+            _ema_t0 = _t.time()
             self.ema_model = deepcopy(self._raw_model)
             for p in self.ema_model.parameters():
                 p.requires_grad = False
+            print(f"done ({_t.time() - _ema_t0:.1f}s)")
             print("✓ EMA model initialized")
 
         # Apply gradient checkpointing if configured
@@ -643,26 +650,33 @@ class Trainer:
     def _load_checkpoint(self, checkpoint_path: str):
         """Load model from checkpoint."""
         print(f"Loading checkpoint from {checkpoint_path}")
+        import sys, time as _t
+        _ckpt_t0 = _t.time()
 
         # PyTorch 2.6+ changed weights_only default to True
         # We need weights_only=False for checkpoints with config objects
         # Add safe_globals to allow TrainingConfig
+        print("  Loading checkpoint file into memory...", end=" ", flush=True)
         try:
             checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         except Exception as e:
-            print(f"Error loading checkpoint with weights_only=False: {e}")
+            print(f"\n  Error loading checkpoint with weights_only=False: {e}")
             # Fallback: try with weights_only=True if checkpoint is simple
             try:
                 checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
             except Exception as e2:
-                print(f"Error loading checkpoint with weights_only=True: {e2}")
+                print(f"  Error loading checkpoint with weights_only=True: {e2}")
                 raise e
+        print(f"done ({_t.time() - _ckpt_t0:.1f}s)")
 
+        print("  Restoring model state_dict...", end=" ", flush=True)
+        _restore_t0 = _t.time()
         if "model_state_dict" in checkpoint:
             self._raw_model.load_state_dict(checkpoint["model_state_dict"])
             self.global_step = checkpoint.get("global_step", 0)
         else:
             self._raw_model.load_state_dict(checkpoint)
+        print(f"done ({_t.time() - _restore_t0:.1f}s)")
 
     def _save_checkpoint(self, filename: str, is_best: bool = False):
         """Save model checkpoint."""

@@ -120,6 +120,9 @@ class EmberNetVLM(nn.Module):
         )
 
         # Build language decoder
+        print("Building BitNet MoE decoder...", end=" ", flush=True)
+        import time as _t
+        _dec_t0 = _t.time()
         decoder_config = BitNetMoEConfig(
             vocab_size=self.config.vocab_size,
             hidden_size=self.config.hidden_size,
@@ -134,6 +137,7 @@ class EmberNetVLM(nn.Module):
             router_aux_loss_coef=self.config.router_aux_loss_coef,
         )
         self.decoder = BitNetMoEDecoder(decoder_config)
+        print(f"done ({_t.time() - _dec_t0:.1f}s)")
 
         # Image token embedding placeholder
         self.image_newline = nn.Parameter(
