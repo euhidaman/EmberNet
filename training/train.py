@@ -1829,12 +1829,14 @@ def main():
         else:
             print(f"  [viz] No model available — model-dependent plots will skip")
 
+        print("  [viz] Building context (architecture + quantization extraction) …", flush=True)
         _ctx = _build_context(
             _raw,
             model=_live_model,
             output_dir=str(_ckpt_base),
             checkpoint_path=checkpoint_path,
         )
+        print("  [viz] Context built ✓", flush=True)
 
         # Inject real per-group LR history saved by the last stage's live plotter.
         for _stage_dir in ("stage2", "stage1"):
