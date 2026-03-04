@@ -347,10 +347,17 @@ class TrainingConfig:
     # Hallucination snapshot interval (0 = disabled)
     hallucination_snapshot_interval: int = 50
 
-    # Early stopping
+    # Early stopping (val-loss based)
     use_early_stopping: bool = True
     early_stopping_patience: int = 5
     early_stopping_min_delta: float = 0.001
+
+    # Train-loss early stopping (fires even without a val_loader)
+    # Checks smoothed window-avg loss every `train_es_interval` optimizer steps.
+    use_train_early_stopping: bool = True
+    train_es_interval: int = 100       # check every N optimizer steps
+    train_es_patience: int = 10        # N checks with no improvement → stop
+    train_es_min_delta: float = 0.005  # minimum drop to reset the counter
 
     # t-SNE alignment snapshot interval (0 = disabled)
     tsne_alignment_interval: int = 500
@@ -513,10 +520,14 @@ class Trainer:
         # Full metrics history for training_metrics.json (feeds post-training viz)
         self._metrics_history: List[Dict] = []
 
-        # Early stopping state
+        # Early stopping state (val-loss based)
         self._es_counter = 0
         self._es_best_loss = float('inf')
         self._es_triggered = False
+
+        # Train-loss early stopping state
+        self._train_es_counter = 0
+        self._train_es_best_loss = float('inf')
 
         # ---- Live training plots ----
         # plot every 50 steps in trial mode (small datasets), 200 otherwise
@@ -1340,6 +1351,31 @@ class Trainer:
                         if self.use_wandb:
                             wandb.log(log_dict, step=self.global_step)
 
+                    # Train-loss early stopping (runs even without a val_loader)
+                    if (self.config.use_train_early_stopping
+                            and self.global_step % self.config.train_es_interval == 0
+                            and _window_losses):
+                        _tess_avg = float(np.mean(_window_losses))
+                        if _tess_avg < self._train_es_best_loss - self.config.train_es_min_delta:
+                            self._train_es_best_loss = _tess_avg
+                            self._train_es_counter = 0
+                        else:
+                            self._train_es_counter += 1
+                            pbar.write(
+                                f"  [train-ES] No improvement for "
+                                f"{self._train_es_counter}/{self.config.train_es_patience} checks "
+                                f"(best={self._train_es_best_loss:.4f}, now={_tess_avg:.4f})"
+                            )
+                            if self._train_es_counter >= self.config.train_es_patience:
+                                print(f"\n{'='*70}")
+                                print(f"TRAIN EARLY STOPPING triggered at step {self.global_step} "
+                                      f"(epoch {epoch+1})")
+                                print(f"  Best windowed train loss : {self._train_es_best_loss:.4f}")
+                                print(f"  Patience exhausted       : {self._train_es_counter} checks "
+                                      f"× {self.config.train_es_interval} steps")
+                                print(f"{'='*70}\n")
+                                self._es_triggered = True
+
                     # Evaluation — skip mid-training validation in trial mode
                     # (saves ~650s per eval pass; final eval still runs at end)
                     _skip_mid_val = bool(self.config.max_samples_per_dataset)
@@ -1634,14 +1670,14 @@ def run_training(args, stage: int, resume_from: Optional[str] = None):
         if not hasattr(args, '_amp_explicitly_set'):
             args.no_amp = True
     elif args.main:
-        epochs = args.epochs if args.epochs is not None else (3 if stage == 1 else 10)
+        epochs = args.epochs if args.epochs is not None else (2 if stage == 1 else 5)
         batch_size = args.batch_size if args.batch_size is not None else (8 if stage == 1 else 4)
         grad_accum = args.grad_accum if args.grad_accum is not None else 4
         max_samples = args.max_samples_per_dataset
         use_wandb = args.wandb and not args.no_wandb
         log_interval = 10
-        eval_interval = 500
-        save_interval = 1000
+        eval_interval = 200  # more frequent → tighter early-stopping response
+        save_interval = 500
         hallucination_snapshot_interval = 50
         tsne_alignment_interval = 500
         output_dir = args.output_dir

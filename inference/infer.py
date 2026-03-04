@@ -77,6 +77,7 @@ class EmberVLM:
         device: Optional[str] = None,
         torch_dtype: Optional[torch.dtype] = None,
         use_va_refiner: bool = False,
+        sparse_experts: bool = False,
         va_threshold: float = 0.7,
         va_burst_threshold: float = 0.7,
         va_soft_penalty: float = 5.0,
@@ -107,6 +108,10 @@ class EmberVLM:
 
         # Load or create model
         self._load_model(model_path)
+
+        # Sparse expert loading (only top-k experts in memory per layer)
+        if sparse_experts:
+            self.model.enable_sparse_inference()
 
         # Attach VA Refiner if requested
         if use_va_refiner:
@@ -223,6 +228,26 @@ class EmberVLM:
                 top_p=top_p,
                 **kwargs,
             )
+
+        # Print generation stats (tok/s)
+        stats = getattr(self.model, '_last_generation_stats', None)
+        if stats:
+            _mode = "sparse" if stats.get("sparse_inference") else "dense"
+            print(f"  [{stats['device']}/{_mode}] "
+                  f"{stats['tokens_generated']} tokens | "
+                  f"{stats['tok_per_s']:.1f} tok/s | "
+                  f"prefill {stats['prefill_ms']:.0f}ms | "
+                  f"decode {stats['avg_decode_ms']:.1f}ms/tok | "
+                  f"total {stats['total_time_s']:.2f}s")
+
+        # Print expert routing summary
+        routing = self.model.get_expert_routing()
+        if routing and "expert_names" in routing:
+            _names = routing["expert_names"]
+            _pcts = routing["expert_usage_pct"]
+            _top = sorted(range(len(_pcts)), key=lambda i: _pcts[i], reverse=True)[:3]
+            _parts = [f"{_names[i]}={_pcts[i]:.0f}%" for i in _top]
+            print(f"  [routing] top experts: {', '.join(_parts)}")
 
         # Add assistant response to history
         self._conversation_history.append({
@@ -531,6 +556,8 @@ def main():
                         help="Run demo")
     parser.add_argument("--device", type=str, default=None,
                         help="Device (cuda/cpu)")
+    parser.add_argument("--cpu-sparse", action="store_true",
+                        help="Force CPU + sparse expert loading (on-demand, top-k only in memory)")
     parser.add_argument("--use-va-refiner", action="store_true",
                         help="Enable VA Refiner hallucination mitigation")
     parser.add_argument("--va-threshold", type=float, default=0.7,
@@ -557,9 +584,11 @@ def main():
                 _cc.start()
             except Exception:
                 _cc = None
+        _device = "cpu" if args.cpu_sparse else args.device
         model = EmberVLM(
             model_path=args.model,
-            device=args.device,
+            device=_device,
+            sparse_experts=args.cpu_sparse,
             use_va_refiner=args.use_va_refiner,
             va_threshold=args.va_threshold,
             va_burst_threshold=args.va_burst_threshold,

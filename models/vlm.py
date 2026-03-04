@@ -31,6 +31,7 @@ USAGE:
 from dataclasses import dataclass
 from typing import Optional, List, Tuple, Union, Dict
 from pathlib import Path
+import time as _time
 
 import torch
 import torch.nn as nn
@@ -159,6 +160,18 @@ class EmberNetVLM(nn.Module):
 
         # Expert routing info captured during the most recent generate() call
         self._last_routing_info: Optional[Dict] = None
+
+        # Generation timing stats from the most recent generate() call
+        self._last_generation_stats: Optional[Dict] = None
+
+    def enable_sparse_inference(self):
+        """Enable memory-efficient sparse expert loading.
+
+        Only the router and shared expert stay resident per layer.
+        Domain experts are loaded on-demand based on routing decisions.
+        Ideal for CPU inference where memory is limited.
+        """
+        self.decoder.enable_sparse_inference()
 
     def set_va_refiner(self, va_refiner: Optional["VARefiner"]) -> None:
         """Attach or detach a VARefiner.  Pass None to disable."""
@@ -510,6 +523,9 @@ class EmberNetVLM(nn.Module):
 
         device = next(self.parameters()).device
         dtype = next(self.parameters()).dtype
+        _is_sparse = getattr(self.decoder, '_sparse_mode', False)
+        _t_start = _time.perf_counter()
+        _token_times: list = []
 
         # Load and preprocess image
         if image is not None:
@@ -576,6 +592,7 @@ class EmberNetVLM(nn.Module):
         _routing_steps.append(self._extract_step_routing(_first_router_logits))
 
         for step in range(max_new_tokens):
+            _tok_t0 = _time.perf_counter()
             next_token_logits = logits[:, -1, :]
 
             # --- VA Refiner: intervene before sampling ---
@@ -622,6 +639,7 @@ class EmberNetVLM(nn.Module):
                 next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
 
             generated_ids.append(next_token.item())
+            _token_times.append(_time.perf_counter() - _tok_t0)
 
             # Check for EOS
             if next_token.item() == self.config.eos_token_id:
@@ -689,6 +707,23 @@ class EmberNetVLM(nn.Module):
             response = f"[Generated {len(generated_ids)} tokens]"
 
         response = response.strip()
+
+        # ---- Generation timing stats ----
+        _t_total = _time.perf_counter() - _t_start
+        _n_tok = len(generated_ids)
+        _tok_s = _n_tok / _t_total if _t_total > 0 else 0.0
+        _prefill_ms = (_token_times[0] * 1000) if _token_times else 0.0
+        _decode_times = _token_times[1:] if len(_token_times) > 1 else _token_times
+        _avg_decode_ms = (sum(_decode_times) / len(_decode_times) * 1000) if _decode_times else 0.0
+        self._last_generation_stats = {
+            "tokens_generated": _n_tok,
+            "total_time_s": round(_t_total, 3),
+            "tok_per_s": round(_tok_s, 2),
+            "prefill_ms": round(_prefill_ms, 1),
+            "avg_decode_ms": round(_avg_decode_ms, 1),
+            "device": str(device),
+            "sparse_inference": _is_sparse,
+        }
 
         # --- VA Refiner teardown + answer calibration ---
         if _va_active:

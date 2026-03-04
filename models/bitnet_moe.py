@@ -435,19 +435,30 @@ class BitNetMoELayer(nn.Module):
                 self.expert_usage[i] = 0.99 * self.expert_usage[i] + 0.01 * selected
 
         # Compute per-expert outputs
-        for expert_idx in range(self.num_experts):
+        _sparse = getattr(self, '_sparse', False)
+        _needed = top_k_indices.unique().tolist() if _sparse else range(self.num_experts)
+        _tmp_experts = {}
+        if _sparse:
+            for eidx in _needed:
+                _tmp_experts[eidx] = self._load_expert(eidx, hidden_flat.device, hidden_flat.dtype)
+
+        for expert_idx in _needed:
             expert_mask = (top_k_indices == expert_idx).any(dim=-1)
             if not expert_mask.any():
                 continue
 
             expert_input = hidden_flat[expert_mask]
-            expert_output = self.experts[expert_idx](expert_input)
+            expert_fn = _tmp_experts[expert_idx] if _sparse else self.experts[expert_idx]
+            expert_output = expert_fn(expert_input)
 
             # Aggregate weights for this expert
             weight_mask = (top_k_indices == expert_idx).float()
             weights = (weight_mask * top_k_weights).sum(dim=-1)[expert_mask]
 
             final_output[expert_mask] += expert_output * weights.unsqueeze(-1)
+
+        if _sparse:
+            del _tmp_experts
 
         # Shared expert contribution
         if self.use_shared_expert:
@@ -460,6 +471,32 @@ class BitNetMoELayer(nn.Module):
         output = final_output.view(batch_size, seq_len, hidden_dim)
 
         return output, router_logits
+
+    # ------------------------------------------------------------------
+    # Sparse inference: on-demand expert loading
+    # ------------------------------------------------------------------
+
+    def enable_sparse_inference(self):
+        """Offload expert weights — only router + shared expert stay resident."""
+        self._sparse = True
+        self._expert_states = {}
+        self._cached_intermediate = self.experts[0].gate_proj.out_features
+        for i in range(self.num_experts):
+            self._expert_states[i] = {
+                k: v.detach().clone()
+                for k, v in self.experts[i].state_dict().items()
+            }
+        # Free expert parameters (keep module shells for state_dict compat)
+        for expert in self.experts:
+            for p in expert.parameters():
+                p.requires_grad_(False)
+                p.data = torch.empty(0)
+
+    def _load_expert(self, idx, device, dtype):
+        """Instantiate a temporary expert with stored weights."""
+        expert = BitNetExpert(self.hidden_size, self._cached_intermediate)
+        expert.load_state_dict(self._expert_states[idx])
+        return expert.to(device=device, dtype=dtype).eval()
 
 
 class BitNetMoEBlock(nn.Module):
@@ -731,6 +768,16 @@ class BitNetMoEDecoder(nn.Module):
         if trainable_only:
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
         return sum(p.numel() for p in self.parameters())
+
+    def enable_sparse_inference(self):
+        """Enable sparse expert loading across all decoder layers."""
+        n_experts_offloaded = 0
+        for layer in self.layers:
+            layer.moe.enable_sparse_inference()
+            n_experts_offloaded += layer.moe.num_experts
+        self._sparse_mode = True
+        print(f"\u2713 Sparse inference enabled: {len(self.layers)} layers, "
+              f"{n_experts_offloaded} experts offloaded (top-{self.config.num_experts_per_tok} loaded on demand)")
 
 
 # Utility function to create model
